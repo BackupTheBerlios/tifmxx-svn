@@ -2,7 +2,7 @@ struct CFlash
 {
 	void *vtable;            // 0x000 : 11 methods, 7 empty	
 	char *base_addr;         // 0x008 - iomem base address for socket
-
+	PKINTERRUPT card_int;    // 0x010
 	char need_sw;            // 0x018 
 
 	char muiMediaID;         // 0x028
@@ -62,7 +62,7 @@ struct CMMCSD : public CFlash // mmc, sd
 	int dwBlocks;            // 0x0C0
 	char byReadBlockLen;     // 0x0C4
 	short wBlockLen;         // 0x0C6 (cmmcsd_var_3)
-
+	char byWriteBlockLen;    // 0x0C8
 	int dwSize;              // 0x0CC
 
 	int cmmcsd_var_11;       // 0x0E0
@@ -74,7 +74,7 @@ struct CMMCSD : public CFlash // mmc, sd
 	int dwRCA;               // 0x0D4 (cmmcsd_var_13)
 
 	char cmmcsd_var_1;       // 0x0D8
-	int cmmcsd_var_5;        // 0x0DC
+	int byStatus;            // 0x0DC (cmmcsd_var_5)
 
 	char cmmcsd_var_2;       // 0x100
 	char cmmcsd_var_4;       // 0x101
@@ -94,12 +94,13 @@ struct CMMCSD : public CFlash // mmc, sd
 	char* Name();                             // vtable + 0x28
 	char RescueRWFail();                      // vtable + 0x30
 	char InitializeCard();                    // vtable + 0x38
-	ReadSectors();                            // vtable + 0x40
-	WriteSectors();                           // vtable + 0x48
+	// seems like: arg_1 == start_offset, arg_2 == count, arg_3 == some_other_count
+	char ReadSectors(int arg_1, short *arg_2, short *arg_3);  // vtable + 0x40
+	char WriteSectors(int arg_1, short *arg_2, short *arg_3); // vtable + 0x48
 	char WriteProtectedWorkaround()           // vtable + 0x50
 
 	//CMMCSD specific functions:
-	void sub_0_1FEE0(PRKEVENT c_event, int arg_2);
+	char sub_0_1FEE0(PRKEVENT c_event, int arg_2);
 	char DetectCardType();
 	char Standby();
 	char ReadCSDInformation();

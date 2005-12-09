@@ -10,11 +10,12 @@ CFlash::CFlash(char *_base_addr)
 		muiMediaID = (read16(base_addr + 0x8) >> 0x4) & 0x7;
 	
 	}
-	else // card not inserted
-		muiMediaID = 0;
+	else muiMediaID = 0; // card not inserted
 
 	var_2 = 0;
-	arr_1 = {0, 0, 0, 1, 0, 0, 0, 0};
+	vara_0 = 0; vara_1 = 0; vara_2 = 0; WriteProtected = 1;
+	vara_4 = 0; vara_5 = 0; vara_6 = 0; vara_7 = 0;
+
 	var_3 = 0; var_4 = -1; var_5 = 0;
 	KeInitializeEvent(event_1, 0, 0);
 	KeInitializeEvent(event_2, 0, 0);
@@ -23,8 +24,8 @@ CFlash::CFlash(char *_base_addr)
 
 CFlash::~CFlash()
 {
-	if(arr_1[3] == 0) KeSetEvent(event_1, 0, 0);
-	arr_1[3] = 1;	
+	if(WriteProtected == 0) KeSetEvent(event_1, 0, 0);
+	WriteProtected = 1;	
 }
 
 char
@@ -37,23 +38,23 @@ int
 CFlash::vtbl02()
 {
 	int r_val = 0;
-	if(arr_1[1] == 0) return 0;
+	if(vara_1 == 0) return 0;
 	if(var_2 & 0x4)
 	{
 		r_val = 0x200;
-		arr_1[6] = 1;
+		vara_6 = 1;
 	}
 	else KeSetEvent(event_2, 0, 0); // wake up threads waiting here
 
 	if(var_2 & 0x1) r_val |= 0x0100;
-	arr_1[2] = 0;
+	vara_2 = 0;
 	return r_val;
 } 
 
 char
 CFlash::vtbl03(char arg_1, char arg_2)
 {
-	arr_1[1] = arg_1; arr_1[0] = arg_2;
+	vara_1 = arg_1; vara_0 = arg_2;
 	char r_val = arg_1;
 
 	if(arg_1 == 0) return 0;
@@ -112,7 +113,7 @@ CFlash::RescueRWFail()
 	write16zx(base_addr + 0x24, 0x1);
 	write16zx(base_addr + 0x18, 0xffff);
 	write16zx(base_addr + 0x14, 0x5);
-	arr_1[5] = 0;
+	vara_5 = 0;
 	return 0;
 }
 
@@ -207,7 +208,7 @@ CMMCSD::vtbl02()
 {
 	int r_val = CFlash::vtbl02();
 
-	if(arr_1[0] != 0)
+	if(vara_0 != 0)
 	{
 		if(cmmcsd_var_10 & 0x8)
 		{ 
@@ -221,7 +222,7 @@ CMMCSD::vtbl02()
 
 		cmmcsd_var_5 = cmmcsd_var_11;
 		KeSetEvent(cmmcsd_event_1, 0, 0);
-		arr_1[0] = 0;
+		vara_0 = 0;
 	}
 	return r_val;
 }
@@ -295,7 +296,7 @@ CMMCSD::InitializeCard()
 	write32(base_addr + 0x110, cmmcsd_var_12 | 0x800);
 	sub_0_1FEE0(cmmcsd_event_1, -1000000); // arg_2: 0xfff0bdc0
 
-	if(arr_1[4] != 0) return 0x86;
+	if(vara_4 != 0) return 0x86;
 
 	if(0 != (r_val = DetectCardType())) return r_val;
 
@@ -373,8 +374,182 @@ CMMCSD::InitializeCard()
 	return r_val;
 }
 
+char 
+CMMCSD::ReadSectors(int arg_1, short *arg_2, short *arg_3)
+{	
+	char r_val;
+
+	if(arg_1 != -1)
+	{
+		if(arg_1 >= dwBlocks) return 0x82;		
+		if(!*arg_2) return 0;
+		if(*arg_2 > 0x800) return 0x2b;
+				
+		char mdwMMCSD_STATUS; // lvar_x20;
+
+		for(short cnt = 0; cnt < 10000; cnt++)
+		{
+			if(0 != (r_val = GetState(&mdwMMCSD_STATUS, 0))) break;
+			if(mdwMMCSD_STATUS != 4) continue;
+			if(cmmcsd_var_14 == 1) goto x1F61F;
+		}
+
+		if(mdwMMCSD_STATUS != 4) goto x1F62D; //decode this condition
+
+x1F61F:		if(r_val != 0 || cmmcsd_var_14 == r_val)
+		{
+x1F62D:			if(r_val == 0x86) return 0x86; // thread killed
+			else if(0 != (r_val = InitializeCard())) return r_val;
+		}
+x1F65C:
+		write32(base_addr + 0x12c, *arg_2 - 1);
+		write32(base_addr + 0x128, wBlockLen - 1);
+		write32(base_addr + 0x130, 0x8000);
+		KeSynchronizeExecution(card_int, sub_0_1C100, byStatus); // wait for ISR connected to card_int?
+		if(*arg_2 == 1) // read single block
+			r_val = sub_0_1CE40(0x11, arg_1 << byReadBlockLen, 0xb100);
+		else // read multiple blocks
+			r_val = sub_0_1CE40(0x12, arg_1 << byReadBlockLen, 0xb100);
+		
+		if(r_val) return r_val;
+	} //1F72A
+
+	if(*arg_2 > *arg_3)
+	{
+		*arg_2 -= *arg_3;
+		*arg_3 = 0;
+		return r_val;
+	}
+	if(0 != (r_val = WaitForBRS())) return r_val; // BRS error
+
+	if(*arg_2 != 1 || arg_1 == -1)
+	{ // 1F776
+		r_val = sub_0_1CE40(0xc, 0, 0x2900); // stop transmission
+		if(r_val)
+		{
+			if(r_val == 0x86) return r_val; // card removed
+			if(cmmcsd_var_9 == 0)
+			{
+				cmmcsd_var_9 = 1;
+				if(0 != (r_val = InitializeCard())) return r_val;
+			}
+		} 
+		else // dead clause?
+		{ // 1F7E2
+			if(r_val == 0x86) return r_val;
+		}
+	}	
+// 1F7D5
+	*arg_3 -= *arg_2;
+	*arg_2 = 0;
+	return r_val;
+}
+
+char
+CMMCSD::WriteSectors(int arg_1, short *arg_2, short *arg_3)
+{
+	char r_val;
+
+	WriteProtected |= (0x200 & read16(base_addr + 0x8)) ? 1 : 0;
+	if(WriteProtected) return 0xc1; // card is write protected
+
+	if(arg_1 != -1)
+	{
+		if(arg_1 >= dwBlocks) return 0x82;
+		if(!*arg_2) return 0;
+		if(*arg_2 > 0x800) return 0x2b;
+		
+		char mdwMMCSD_STATUS; // lvar_x20;
+
+		for(short cnt = 0; cnt < 10000; cnt++)
+		{
+			if(0 != (r_val = GetState(&mdwMMCSD_STATUS, 0))) break;
+			if(mdwMMCSD_STATUS != 4) continue;
+			if(cmmcsd_var_14 == 1) goto x1F92C;
+		}
+
+		if(mdwMMCSD_STATUS != 4) goto x1F93A; //decode this condition
+
+x1F92C:		if(r_val != 0 || cmmcsd_var_14 == r_val)
+		{
+x1F93A:			if(r_val == 0x86) return 0x86; // thread killed
+			else if(0 != (r_val = InitializeCard())) return r_val;
+		}
+x1F955:
+		write32(base_addr + 0x12c, *arg_2 - 1);
+		write32(base_addr + 0x128, wBlockLen - 1);
+		write32(base_addr + 0x130, 0x80);
+		KeSynchronizeExecution(card_int, sub_0_1C100, byStatus); // wait for ISR connected to card_int?
+		if(*arg_2 == 1) // write single block
+			r_val = sub_0_1CE40(0x18, arg_1 << byWriteBlockLen, 0x3100);
+		else // write multiple blocks
+			r_val = sub_0_1CE40(0x19, arg_1 << byWriteBlockLen, 0x3100);
+
+		if(r_val) return r_val;
+	}
+// 1FA18
+	if(*arg_2 <= *arg_3)
+	{
+		if(0 != (r_val = WaitForBRS())) return r_val; // BRS error
+
+		if(*arg_2 != 1 || arg_1 == -1)
+		{ // 1FA7D
+			mdwMMCSD_STATUS = 0;
+			for(short cnt = 0; cnt < 10000; cnt++)
+			{
+				r_val = GetState(&mdwMMCSD_STATUS, 0);
+				if(r_val) break;
+				if(mdwMMCSD_STATUS == 7) continue;
+				if(cmmcsd_var_14 == 1)
+				{
+					r_val = sub_0_1CE40(0xc, 0, 0x2900);
+					break;
+				}
+			}
+			if(r_val) return r_val;
+		}
+		// 1FB51	
+		mdwMMCSD_STATUS = 0;
+		for(short cnt = 0; cnt < 10000; cnt++)
+		{
+			r_val = GetState(&mdwMMCSD_STATUS, 0);
+			if(r_val) break;
+			if(mdwMMCSD_STATUS != 4) continue;
+			if(cmmcsd_var_14 == 1) goto x1FB9B;
+		}
+		if(mdwMMCSD_STATUS != 4) goto x1FBA9;
+	x1FB9B: if(!r_val && cmmcsd_var_14 != r_val) goto x1FBD4;
+	x1FBAB: if(r_val == 0x86) return 0x86;
+		if(0 != (r_val = InitializeCard())) return r_val;
+	x1FBD4: *arg_3 -= *arg_2;
+		*arg_2 = 0;
+	}
+	else
+	{ // 1FBE6
+		*arg_2 -= *arg_3;
+		*arg_3 = 0;
+	}
+
+	KeSynchronizeExecution(card_int, sub_0_27DE0, byStatus);
+	return r_val;
+}
+
 char
 CMMCSD::WriteProtectedWorkaround()
 {
 	return 0;
+}
+
+char
+CMMCSD::sub_0_1FEE0(PRKEVENT c_event, int time_out)
+{
+	PRKEVENT event_array[] = {event_1, c_event};
+	NTSTATUS r_val = KeWaitForMultipleObjects(2, event_array, 1, 0, 0, 0, arg_2, ??);
+	KeClearEvent(c_event);
+	return (r_val == 0x102) ? 0x87 : 0; // wait timeout
+}
+
+char
+CMMCSD::DetectCardType()
+{
 }
