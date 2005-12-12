@@ -3,24 +3,25 @@ struct CFlash
 	void *vtable;            // 0x000 : 11 methods, 7 empty	
 	char *base_addr;         // 0x008 - iomem base address for socket
 	PKINTERRUPT card_int;    // 0x010
-	char need_sw;            // 0x018 
+	char need_sw;            // 0x018
+	short var_9;             // 0x01A 
 
 	char muiMediaID;         // 0x028
 	int var_1;               // 0x02C
 	char is_xx12;            // 0x030
 
 	short var_2;             // 0x038
-//!	char arr_1[8];           // 0x03A	
-	char vara_0;             // 0x03A
+	char vara_0;             // 0x03A // (arr_1)
 	char vara_1;             // 0x03B
 	char vara_2;             // 0x03C
-	char WriteProtected;     // 0x03D
+	char mbWriteProtected;   // 0x03D (WriteProtected)
 	char vara_4;             // 0x03E
 	char vara_5;             // 0x03F
-	char vara_6;             // 0x041
-	char vara_7;             // 0x042
-	int var_8;               // 0x044
-	short Size;              // 0x048 - card size in MB (var_6)
+	char vara_6;             // 0x040
+	char vara_7;             // 0x041
+
+	int SerialNumber;        // 0x044 (var_8)
+	short mwSize;            // 0x048 (Size) - card size in MB (var_6)
 	short mwCylinders;       // 0x04A
 	short mwHeadCount;       // 0x04C
 	short mwSectorsPerTrack; // 0x04E
@@ -52,63 +53,6 @@ struct CSocket : public CFlash
 
 	~CSocket();	
 	void SocketPowerCtrl();
-};
-
-struct CMMCSD : public CFlash // mmc, sd
-{
-	//alloc: 0x130 bytes
-	void *vtable; // 0x000 : 11 methods
-
-	int dwBlocks;            // 0x0C0
-	char byReadBlockLen;     // 0x0C4
-	short wBlockLen;         // 0x0C6 (cmmcsd_var_3)
-	char byWriteBlockLen;    // 0x0C8
-	int dwSize;              // 0x0CC
-
-	int cmmcsd_var_11;       // 0x0E0
-	int cmmcsd_var_10;       // 0x0E4
-	PRKEVENT cmmcsd_event_1; // 0x0E8
-
-	char bySizeMult;         // 0x0D0
-	short cmmcsd_var_12:     // 0x0D2
-	int dwRCA;               // 0x0D4 (cmmcsd_var_13)
-
-	char cmmcsd_var_1;       // 0x0D8
-	int byStatus;            // 0x0DC (cmmcsd_var_5)
-
-	char cmmcsd_var_2;       // 0x100
-	char cmmcsd_var_4;       // 0x101
-
-	long cmmcsd_var_6;       // 0x120
-	short cmmcsd_var_7;	 // 0x128
-	short cmmcsd_var_8;	 // 0x12A
-	char cmmcsd_var_14;      // 0x12C
-	char cmmcsd_var_9;	 // 0x12E
-
-	CMMSD(char *_base_addr);
-	~CMMSD();                                 // vtable + 0x00
-	//! vtable + 0x08 -> CFlash::CloseWrite();
-	int vtbl02();                             // vtable + 0x10
-	char vtbl03(char arg_1, char arg_2);      // vtable + 0x18
-	char* LongName();                         // vtable + 0x20
-	char* Name();                             // vtable + 0x28
-	char RescueRWFail();                      // vtable + 0x30
-	char InitializeCard();                    // vtable + 0x38
-	// seems like: arg_1 == start_offset, arg_2 == count, arg_3 == some_other_count
-	char ReadSectors(int arg_1, short *arg_2, short *arg_3);  // vtable + 0x40
-	char WriteSectors(int arg_1, short *arg_2, short *arg_3); // vtable + 0x48
-	char WriteProtectedWorkaround()           // vtable + 0x50
-
-	//CMMCSD specific functions:
-	char sub_0_1FEE0(PRKEVENT c_event, int arg_2);
-	char DetectCardType();
-	char Standby();
-	char ReadCSDInformation();
-	char GetCHS();
-	void ReportMediaModel(); // print some debug info
-	char sub_0_1CE40(char arg_1, int arg_2, short arg_3);
-	char Execute(char *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCount, void *pData);
-	char GetState(char *arg_1, char arg_2);
 };
 
 struct CSM : public CFlash // smartmedia, xD

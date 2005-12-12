@@ -338,13 +338,13 @@ static struct pci_driver tifmxx_driver =
 };
 
 static int __init 
-tifmxx_init (void)
+tifmxx_init()
 {
   	return pci_module_init( &tifmxx_driver );
 }
 
 static void __exit 
-tifmxx_exit (void)
+tifmxx_exit()
 {
   	pci_unregister_driver(&tifmxx_driver);
 }
