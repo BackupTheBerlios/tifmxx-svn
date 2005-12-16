@@ -14,12 +14,14 @@ struct CMMCSD : public CFlash // mmc, sd
 	char mbySizeMult;        // 0x0D0 (bySizeMult)
 	short mwClkSpeed;        // 0x0D2 (cmmcsd_var_12)
 	int dwRCA;               // 0x0D4 (cmmcsd_var_13)
+
+	char var_xd6;            // 0x0D6
+	char var_xd7;            // 0x0D7
 	char cmmcsd_var_1;       // 0x0D8
 	int byStatus;            // 0x0DC (cmmcsd_var_5)
 	int cmmcsd_var_11;       // 0x0E0
 	int cmmcsd_var_10;       // 0x0E4
-	PRKEVENT cmmcsd_event_1; // 0x0E8
-	
+	KEVENT cmmcsd_event_1;   // 0x0E8 // correct KeEventSet/Clear to use references
 	char mbCardBusy;         // 0x100 (cmmcsd_var_2)
 	char cmmcsd_var_4;       // 0x101	
 	char mpSerialNumber[21]; // 0x102
@@ -58,12 +60,11 @@ struct CMMCSD : public CFlash // mmc, sd
 	char RescueRWFail();                      // vtable + 0x30
 	char InitializeCard();                    // vtable + 0x38
 	// seems like: arg_1 == start_offset, arg_2 == count, arg_3 == some_other_count
-	char ReadSectors(int arg_1, short *arg_2, short *arg_3);  // vtable + 0x40
+	char ReadSectors(int arg_1, short *arg_2, short *arg_3, char arg_4);  // vtable + 0x40
 	char WriteSectors(int arg_1, short *arg_2, short *arg_3); // vtable + 0x48
 	char WriteProtectedWorkaround()           // vtable + 0x50
 
 	//CMMCSD specific functions:
-	char sub_0_1FEE0(PRKEVENT c_event, int arg_2);
 	char DetectCardType();
 	char Standby();
 	char ReadCSDInformation();
@@ -80,4 +81,5 @@ struct CMMCSD : public CFlash // mmc, sd
 	char WaitForCard();
 	char WaitForAF();
 	char WaitForAE();
+	void sub_0_1EEA0(char *arg_1);
 };

@@ -13,42 +13,6 @@ Cxx21::~Cxx21()
 		if(mpFlash[cnt]) mpFlash[cnt]->vtable[0](1);
 }
 
-char
-Cxx21::GetIntObj(PKINTERRUPT _int_obj)
-{
-	int_obj = _int_obj; return 0;
-}
-
-char
-Cxx21::GetSDSwitch(int reg_SDSwitch)
-{
-	SDSwitch = reg_SDSwitch; return 0;
-}
-
-char
-Cxx21::GetSMEnable(int reg_SMEnable)
-{
-	SMEnable = reg_SMEnable; return 0;
-}
-
-char
-Cxx21::GetMSPEnable(int reg_MSPEnable)
-{
-	MSPEnable = reg_MSPEnable; return 0;
-}
-
-char
-Cxx21::GetSMCISEnable(int reg_SMCISEnable)
-{
-	SMCISEnable = reg_SMCISEnable; return 0;
-}
-
-char
-Cxx21::GetInsDelEnable(int reg_InsDelEnable)
-{
-	InsDelEnable = reg_InsDelEnable; return 0;
-}
-
 void
 Cxx21::GetNumSockets(int _num_sockets) // 104C:803B <- 2, other <- 4
 {
@@ -61,6 +25,49 @@ Cxx21::Initialize()
 {
 	write32(iomem + 0xc, 0xffffffff);
         write32(iomem + 0x8, 0x8000000f);
+}
+
+char
+Cxx21::sub_0_1A100()
+{
+	unsigned int v1;
+
+	v1 = read32(base_addr + 0x14);
+	if(v1 == 0 || v1 == 0xffffffff) return 0;
+	var_1 = v1;
+	char rc = v1 & 0x80000000;
+
+	if(var_2 || !v1) goto out;
+	
+	write32(base_addr + 0xc, 0x80000000);
+	
+	if(0 != mpFlash[0])
+	{
+		if((var_1 & 0x00010000) || (var_1 & 0x00000100))
+			mpFlash[0]->vtbl03();
+	}
+
+	if(0 != mpFlash[1])
+	{
+		if((var_1 & 0x00020000) || (var_1 & 0x00000200))
+			mpFlash[1]->vtbl03();
+	}
+
+	if(0 != mpFlash[2])
+	{
+		if((var_1 & 0x00040000) || (var_1 & 0x00000400))
+			mpFlash[2]->vtbl03();
+	}
+
+	if(0 != mpFlash[3])
+	{
+		if((var_1 & 0x00080000) || (var_1 & 0x00000800))
+			mpFlash[3]->vtbl03();
+	}
+
+out:
+	write32(base_addr + 0x14, var_1);
+	return rc;
 }
 
 char
@@ -108,7 +115,7 @@ Cxx21::CardDetection(char socket)
 			if(mpFlash[socket] != 0)
 			{
 				//! old card was removed
-				mpFlash[socket]->sub_0_1FE70(); //KeSetEvent
+				mpFlash[socket]->sub_0_1FE70();
 			}
 			//1A37B
 			switch(socket)
@@ -155,47 +162,298 @@ Cxx21::CardDetection(char socket)
 	return retval;		
 }
 
-char
-Cxx21::sub_0_1A100()
+char 
+Cxx21::sub_0_1A610(char socket)
 {
-	unsigned int v1;
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1; // socket empty
+	return 0;
+}
 
-	v1 = read32(base_addr + 0x14);
-	if(v1 == 0 || v1 == 0xffffffff) return 0;
-	var_1 = v1;
-	char rc = v1 & 0x80000000;
+char 
+Cxx21::InitializeCard(char socket)
+{
+	char r_val;
 
-	if(var_2 || !v1) goto out;
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;
+	if(mpFlash[socket]->vara_2) return 0;
+	mpFlash[socket]->SDSwitch = SDSwitch;
+	mpFlash[socket]->SMEnable = SMEnable;
+	mpFlash[socket]->SMCISEnable = SMCISEnable;
+	mpFlash[socket]->InsDelEnable = InsDelEnable;
 	
-	write32(base_addr + 0xc, 0x80000000);
+	if(0 != (r_val = mpFlash[socket]->Initialize())) return r_val;
+	char t_id = mpFlash[socket]->GetMediaID();
+	CFlash *t_fld;
+
+	if(t_id == 0x12)
+	{
+		if(mpFlash[socket]) delete mpFlash[socket];
+		// second argument: 0 == serial mode 2
+		t_fld = new CMS(base_addr + ((socket + 1) << 0xa), MSPEnable ? (socket == d_socket) : 0);
+	}
+	else if(t_id == 0x22)
+	{
+		if(mpFlash[socket]) delete mpFlash[socket];
+		// second argument: 0 == serial mode 3
+		t_fld = new CMSPro(base_addr + ((socket + 1) << 0xa), socket == d_socket);
+	}
+	else return 0;
+	//1A8A3
+	mpFlash[socket] = t_fld;
+	t_fld->card_int = int_obj;
+	return mpFlash[socket]->Initialize();
+}
+
+char
+Cxx21::GetMediaID(char socket)
+{
+	if(socket >= num_sockets) return 0xa0;
+
+	if(sock_valid[socket] == 0) return 0xa1;
 	
-	if(0 != mpFlash[0])
-	{
-		if((var_1 & 0x00010000) || (var_1 & 0x00000100))
-			mpFlash[0]->vtable[3]();
-	}
+	return mpFlash[socket]->GetMediaID();
+}
 
-	if(0 != mpFlash[1])
+struct tigd* 
+Cxx21::GetGeometry(struct tigd *arg_1, char socket)
+{
+	*arg_1 = {0, 0, 0, 0};
+	if(socket < num_sockets && sock_valid[socket])
 	{
-		if((var_1 & 0x00020000) || (var_1 & 0x00000200))
-			mpFlash[1]->vtable[3]();
+		struct tigd lvar_x20;
+		mpFlash[socket]->GetGeometry(&lvar_x20);
+		*arg_1 = lvar_x20;
 	}
+	return arg_1;
+}
 
-	if(0 != mpFlash[2])
-	{
-		if((var_1 & 0x00040000) || (var_1 & 0x00000400))
-			mpFlash[2]->vtable[3]();
-	}
+char 
+Cxx21::Read(char uiSocket, int uiLBA, short ReadSectorCount, int DMAPhysicalAddress, char *pDMAPageCount) // read5
+{
+	if(uiSocket >= num_sockets) return 0xa0;
+	if(!sock_valid[uiSocket]) return 0xa1;     // socket empty
+	if(uiLBA == -1) return 0x82;
+	if(mpFlash[uiSocket]->vara_6) return 0xc3; // socket busy
+	
+	mpFlash[uiSocket]->vara_6 = 1;
+	
+	return mpFlash[uiSocket]->Read(uiLBA, &ReadSectorCount, DMAPhysicalAddress, pDMAPageCount);
+}
 
-	if(0 != mpFlash[3])
-	{
-		if((var_1 & 0x00080000) || (var_1 & 0x00000800))
-			mpFlash[3]->vtable[3]();
-	}
+char 
+Cxx21::Read(char uiSocket, int DMAPhysicalAddress, char *pDMAPageCount) // read3
+{
+	if(uiSocket >= num_sockets) return 0xa0;
+	if(!sock_valid[uiSocket]) return 0xa1;     // socket empty
+	if(mpFlash[uiSocket]->vara_6) return 0xc3; // socket busy
 
-out:
-	write32(base_addr + 0x14, var_1);
-	return rc;
+	mpFlash[uiSocket]->vara_6 = 1;
+	short ReadSectorCount = 0;
+	return mpFlash[uiSocket]->Read(-1, &ReadSectorCount, DMAPhysicalAddress, pDMAPageCount);
+}
+
+char 
+Cxx21::Write(char uiSocket, int uiLBA, short WriteSectorCount, int DMAPhysicalAddress, char *pDMAPageCount) // write5
+{
+	if(uiSocket >= num_sockets) return 0xa0;
+	if(!sock_valid[uiSocket]) return 0xa1;     // socket empty
+	if(uiLBA == -1) return 0x82;
+	if(mpFlash[uiSocket]->vara_6) return 0xc3; // socket busy
+	
+	mpFlash[uiSocket]->vara_6 = 1;
+	
+	return mpFlash[uiSocket]->Write(uiLBA, &WriteSectorCount, DMAPhysicalAddress, pDMAPageCount);
+}
+
+char
+Cxx21::Write(char uiSocket, int DMAPhysicalAddress, char *pDMAPageCount) // write 3
+{
+	if(uiSocket >= num_sockets) return 0xa0;
+	if(!sock_valid[uiSocket]) return 0xa1;     // socket empty
+	if(mpFlash[uiSocket]->vara_6) return 0xc3; // socket busy
+
+	mpFlash[uiSocket]->vara_6 = 1;
+	short WriteSectorCount = 0;
+	return mpFlash[uiSocket]->Write(-1, &WriteSectorCount, DMAPhysicalAddress, pDMAPageCount);
+}
+
+char 
+Cxx21::GetSMDmaParams(char socket, int arg_2, int arg_3, int arg_4)
+{
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;     // socket empty
+	mpFlash[socket]->GetSMDmaParams(arg2, arg_3, arg_4);
+	return 0;
+}
+
+char 
+Cxx21::sub_0_1AFE0(char socket, CMMCSD::ExecParam *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCount)
+{
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;
+	if(mpFlash[socket]->GetMediaID() != 0x23) return 0xa2;
+	return (CMMCSD*)mpFlash[socket]->Execute(pParam, uiDMAPhysicalAddress, uiDMAPageCount, 0);
+}
+
+char 
+Cxx21::sub_0_1B0A0(char socket, int uiDMAPhysicalAddress, char *uiDMAPageCount)
+{
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;
+	if(mpFlash[socket]->GetMediaID() != 0x23) return 0xa2;
+	return (CMMCSD*)mpFlash[socket]->Execute(0, uiDMAPhysicalAddress, uiDMAPageCount, 0);
+}
+
+char 
+Cxx21::sub_0_1B150(char socket, CMMCSD::ExecParam *pParam, char *pData)
+{
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;
+	if(mpFlash[socket]->GetMediaID() != 0x23) return 0xa2;
+	char uiDMAPageCount = 0;
+	return (CMMCSD*)mpFlash[socket]->Execute(pParam, 0, &uiDMAPageCount, pData);
+}
+
+char
+Cxx21::sub_0_1B210(char socket, char *arg_2)
+{
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;
+	if(mpFlash[socket]->GetMediaID() != 0x23) return 0xa2;
+	(CMMCSD*)mpFlash[socket]->sub_0_1EEA0(arg_2);
+	return 0;
+}
+
+char*
+Cxx21::sub_0_1B2E0(char socket)
+{
+	if(socket >= num_sockets) return "Invalid Socket";
+	if(!sock_valid[socket]) return "Invalid Socket";
+	if(mpFlash[socket]->GetMediaID() != 0x23) return "Not an SD/MMC card";
+	return (CMMCSD*)mpFlash[socket]->mpSerialNumber;
+}
+
+char 
+Cxx21::sub_0_1B3A0(char socket, int *arg_2)
+{
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;
+	*arg_2 = mpFlash[socket]->SerialNumber;
+	return 0;
+}
+
+char 
+Cxx21::WriteProtected(char socket)
+{
+	if(socket >= num_sockets) return 1;
+	if(!sock_valid[socket]) return 1;
+	return mpFlash[socket]->mbWriteProtected;
+}
+
+char
+Cxx21::CloseWrite(char socket)
+{
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;
+	if(mpFlash[socket]->vara_6) return 0xc3;
+	return mpFlash[socket]->CloseWrite();
+}
+
+char 
+Cxx21::sub_0_1B570(char socket, char arg_2)
+{
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;
+	mpFlash[socket]->Power(arg_2);
+	return 0;
+}
+
+char 
+Cxx21::sub_0_1B5E0(char socket)
+{
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;
+	if(mpFlash[socket]->GetMediaID() != 0x22) return 0xa2;
+	return (CMSPro*)mpFlash[socket]->FormatX();
+}
+
+char 
+Cxx21::CISFixCheck(char socket, char arg_2)
+{
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;
+	char t_id = mpFlash[socket]->GetMediaID();
+	if(t_id != 0x1 && t_id != 0x4) return 0xa2;
+	return (CSM*)mpFlash[socket]->CISFixOrCheck(arg_2);
+}
+
+char
+Cxx21::RescueAction(char socket)
+{
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;
+	return mpFlash[socket]->RescueRWFail();
+}
+
+char
+Cxx21::GetIntObj(PKINTERRUPT _int_obj)
+{
+	int_obj = _int_obj; return 0;
+}
+
+char
+Cxx21::GetSDSwitch(int reg_SDSwitch)
+{
+	SDSwitch = reg_SDSwitch; return 0;
+}
+
+char
+Cxx21::GetSMEnable(int reg_SMEnable)
+{
+	SMEnable = reg_SMEnable; return 0;
+}
+
+char
+Cxx21::GetSMCISEnable(int reg_SMCISEnable)
+{
+	SMCISEnable = reg_SMCISEnable; return 0;
+}
+
+char
+Cxx21::GetInsDelEnable(int reg_InsDelEnable)
+{
+	InsDelEnable = reg_InsDelEnable; return 0;
+}
+
+char
+Cxx21::GetMSPEnable(int reg_MSPEnable)
+{
+	MSPEnable = reg_MSPEnable; return 0;
+}
+
+char 
+Cxx21::SocketValid(char socket)
+{
+	if(socket >= num_sockets) return 0;
+	if(!sock_valid[socket]) return 0;
+	return 1;
+}
+
+char 
+Cxx21::sub_0_1B930(char socket)
+{
+	return (mpFlash[socket] == 0);
+}
+
+char 
+Cxx21::KillEvent(char socket)
+{
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;
+	mpFlash[socket]->sub_0_1FE70();
+	return 0;
 }
 
 char 
@@ -206,16 +464,16 @@ Cxx21::sub_0_1BA00()
 	int t_val, r_val = 0;
 	
 	if(mpFlash[0] != 0)
-		if(0x100 & mpFlash[0]->vtable[2]()) r_val = 0x100;
+		if(0x100 & mpFlash[0]->vtbl02()) r_val = 0x100;
 		
 	if(mpFlash[1] != 0)
-		if(0x100 & mpFlash[1]->vtable[2]()) r_val |= 0x200;
+		if(0x100 & mpFlash[1]->vtbl02()) r_val |= 0x200;
 	
 	if(mpFlash[2] != 0)
-		if(0x100 & mpFlash[2]->vtable[2]()) r_val |= 0x400;
+		if(0x100 & mpFlash[2]->vtbl02()) r_val |= 0x400;
 	
 	if(mpFlash[3] != 0)
-		if(0x100 & mpFlash[3]->vtable[2]()) r_val |= 0x800;
+		if(0x100 & mpFlash[3]->vtbl02()) r_val |= 0x800;
 
 	if(var_1 & 0x1) 
 	{
@@ -241,12 +499,72 @@ Cxx21::sub_0_1BA00()
 	return r_val;
 }
 
-char
-Cxx21::GetMediaID(char socket)
+char 
+Cxx21::RemoveCard(char socket)
 {
 	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;
+	// turn socket power off
+	write16zx(mpFlash[socket]->base_addr + 0x4, 0xfff8 & read16(mpFlash[socket]->base_addr + 0x4));
+	if(mpFlash[socket]) delete mpFlash[socket];
+	mpFlash[socket] = 0;
+	sock_valid[socket] = 0;
+	return 0;
+}
 
-	if(sock_valid[socket] == 0) return 0xa1;
-	
-	return mpFlash[socket]->GetMediaID();
+char 
+Cxx21::SocketPower(char socket, char arg_2)
+{
+	if(socket >= num_sockets) return 0xa0;
+	if(!sock_valid[socket]) return 0xa1;
+	if(mpFlash[socket]->vara_6) return 0xc3; // socket busy
+	if(arg_2) return 0;
+
+	mpFlash[socket]->Power(1);
+	mpFlash[socket]->sub_0_1FD80(-50000);
+	write16zx(mpFlash[socket]->base_addr + 0x4, read16(mpFlash[socket]->base_addr + 0x4) & 0xfff8);
+	mpFlash[socket]->sub_0_1FD80(-450000);
+	// I don't know what this does here.
+	if(socket >= num_sockets) return 0;
+	if(!sock_valid[socket]) return 0;
+	mpFlash[socket]->Power(0);
+	return 0;
+}
+
+char 
+Cxx21::Suspend()
+{
+	write32(base_addr + 0xc, 0x80000000);
+	char socket = 0;
+	if(num_sockets > 0)
+	{
+		do
+		{
+			RemoveCard(socket);
+			socket ++;
+		} while(socket < num_sockets)
+	}
+	return 0;
+}
+
+char
+Cxx21::Resume()
+{
+	var_2 = 0;
+	write32(base_addr + 0x14, 0xffffffff);
+	write32(base_addr + 0xc, 0xffffffff);
+	write32(base_addr + 0x8, 0x80000000);
+	char socket = 0, r_val;
+	if(num_sockets > 0)
+	{
+		do
+		{
+			CardDetection(socket);
+			r_val = InitializeCard(socket);
+			if(r_val && r_val != 0xa1) RemoveCard(socket);
+			socket ++;
+		} while(socket < num_sockets)
+	}
+	write32(base_addr + 0x8, 0xf | read32(base_addr + 0x8));
+	return 0;
 }

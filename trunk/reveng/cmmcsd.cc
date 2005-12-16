@@ -183,7 +183,7 @@ CMMCSD::InitializeCard()
 }
 
 char 
-CMMCSD::ReadSectors(int arg_1, short *arg_2, short *arg_3)
+CMMCSD::ReadSectors(int arg_1, short *arg_2, short *arg_3, char arg_4) // arg_4 unused?
 {	
 	char r_val;
 
@@ -346,15 +346,6 @@ char
 CMMCSD::WriteProtectedWorkaround()
 {
 	return 0;
-}
-
-char
-CMMCSD::sub_0_1FEE0(PRKEVENT c_event, int time_out)
-{
-	PRKEVENT event_array[] = {event_1, c_event};
-	NTSTATUS r_val = KeWaitForMultipleObjects(2, event_array, 1, 0, 0, 0, arg_2, ??);
-	KeClearEvent(c_event);
-	return (r_val == 0x102) ? 0x87 : 0; // wait timeout
 }
 
 char
@@ -1180,4 +1171,11 @@ CMMCSD::WaitForAE()
 	
 	if(r_val != 0x87) return r_val;
 	return (r_val == 0x87) ? 0 : r_val;
+}
+
+void 
+CMMCSD::sub_0_1EEA0(char *arg_1)
+{
+	arg_1[0] = var_xd7;
+	arg_1[1] = var_xd6;
 }
