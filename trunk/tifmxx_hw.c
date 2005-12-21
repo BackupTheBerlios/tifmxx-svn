@@ -35,42 +35,7 @@
 #include <linux/pci.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
-#include <linux/spinlock.h>
-#include <scsi/scsi.h>
-#include <scsi/scsi_host.h>
-#include <scsi/scsi_tcq.h>
-#include <scsi/scsi_cmnd.h>
-#include <scsi/scsi_dbg.h>
-
-#define DRIVER_NAME "tifmxx"
-#define DRIVER_VERSION "0.1"
-
-#define FM_DEBUG(x...) printk(KERN_DEBUG DRIVER_NAME ": " x)
-
-/* There is some waiting associated with some socket operations 
- * (up to 100 msec in worst case). So it's better to have independent
- * tasklets for each socket.
- */
-struct tifmxx_sock_data
-{
-	spinlock_t               *lock;
-	char __iomem             *sock_addr;  // pointer to socket registers
-
-	struct scsi_cmnd         *srb;        // current command
-
-	unsigned                 sock_status; // current socket status
-	struct tasklet_struct    work_thread;
-};
-
-struct tifmxx_data
-{
-	spinlock_t               *lock;
-	struct pci_dev           *dev;	
-	char __iomem             *mmio_base;
-
-	unsigned                 max_sockets;
-	struct tifmxx_sock_data  *sockets[4];
-};
+#include "tifmxx.h"
 
 static struct pci_device_id tifmxx_pci_tbl [] = 
 {
@@ -89,122 +54,39 @@ tifmxx_interrupt (int irq, void *dev_instance, struct pt_regs *regs)
 }
 
 static void
-tifmxx_work_thread(unsigned long data)
+tifmxx_work_thread(void *data)
 {
 	struct tifmxx_sock_data *sock = (struct tifmxx_sock_data*)data;	
   	FM_DEBUG("Work thread called\n");
 }
 
-static int 
-tifmxx_scsi_queue(struct scsi_cmnd *srb, void (*done)(struct scsi_cmnd*))
+extern struct scsi_host_template tifmxx_host_template;
+
+static inline void
+tifmxx_data_init(struct tifmxx_data *fm)
 {
-	struct tifmxx_data *fm = 
-		(struct tifmxx_data*)srb->device->host->hostdata;
+	struct tifmxx_sock_data *c_socket;
+	int cnt;
 
-	unsigned long f1, f2; 
+	if(fm->max_sockets > MAX_SUPPORTED_SOCKETS) return;
 
-	FM_DEBUG("%s called\n", __FUNCTION__);
-
-	spin_lock_irqsave(fm->lock, f1);
-	struct tifmxx_sock_data *c_socket = fm->sockets[srb->device->id];
-
-	// check that the target exists at all
-	if(c_socket == NULL)
+	for(cnt = 0; cnt < fm->max_sockets; cnt++)
 	{
-		// bad target
-		printk(KERN_ERR DRIVER_NAME ": Invalid target = %d\n", 
-		       srb->device->id);
-		srb->result = DID_BAD_TARGET << 16;
-		done(srb);
-		spin_unlock_irqrestore(fm->lock, f1);
-		return 0;
+		c_socket = fm->sockets[cnt] = 
+			kmalloc(sizeof(struct tifmxx_sock_data), GFP_KERNEL);
+		if(!c_socket) return;
+		memset(c_socket, 0, sizeof(struct tifmxx_sock_data));
+		spin_lock_init(&c_socket->lock);
+		INIT_WORK(&c_socket->work_q, tifmxx_work_thread,
+			  (void*)c_socket);
+		c_socket->sock_addr = fm->mmio_base + 
+				      (((unsigned long)cnt + 1) << 10);
 	}
 	
-	// check that the target has no pending commands
-	
-	spin_lock_irqsave(c_socket->lock, f2);	
-	if(c_socket->srb != NULL)
-	{
-		printk(KERN_ERR DRIVER_NAME ": SCSI queue full, target = %d\n", 
-		       srb->device->id);
-		
-		spin_unlock_irqrestore(c_socket->lock, f2);
-		spin_unlock_irqrestore(fm->lock, f1);  
-                return SCSI_MLQUEUE_DEVICE_BUSY;
-	}
-	
-	srb->scsi_done = done;
-	c_socket->srb = srb;
-	//get the command running	
-	tasklet_schedule(&csocket->work_thread);
-	spin_unlock_irqrestore(c_socket->lock, f2);	
-	spin_unlock_irqrestore(fm->lock, f1);  
-	return 0;
+	// 4 socket FM device has special ability on socket 2
+	if(fm->max_sockets == 4)
+		fm->sockets[2]->flags |= MS_SOCKET;
 }
-
-static int 
-tifmxx_scsi_eh_abort(struct scsi_cmnd *srb)
-{
-	FM_DEBUG("eh_abort called\n");
-	return SUCCESS;
-}
-
-static int 
-tifmxx_scsi_eh_device_reset(struct scsi_cmnd *srb)
-{
-	FM_DEBUG("eh_device_reset called\n");
-	return SUCCESS;
-}
-
-static int 
-tifmxx_scsi_eh_bus_reset(struct scsi_cmnd *srb)
-{
-	FM_DEBUG("eh_bus_reset called\n");
-	return SUCCESS;
-}
-
-static int 
-tifmxx_scsi_slave_config(struct scsi_device *sdev)
-{
-	FM_DEBUG("slave_config called\n");
-	return 0;
-}
-
-static int 
-tifmxx_scsi_info(struct Scsi_Host *host, char *buffer, char **start,
-		 off_t offset, int length, int inout)
-{
-	FM_DEBUG("info called\n");
-	return 0;
-}
-
-static const char* 
-tifmxx_scsi_host_info(struct Scsi_Host *host)
-{
-	return "SCSI emulation for TI FlashMedia storage controller";
-}
-
-static struct scsi_host_template tifmxx_host_template =
-{
-	.module                  = THIS_MODULE,
-	.name                    = "TI FlashMedia Controller",
-	.proc_name               = "TI FlashMedia Controller",
-	.proc_info               = tifmxx_scsi_info,
-	.info                    = tifmxx_scsi_host_info,
-	.queuecommand            = tifmxx_scsi_queue,
-	.eh_abort_handler        = tifmxx_scsi_eh_abort,
-	.eh_device_reset_handler = tifmxx_scsi_eh_device_reset,
-	.eh_bus_reset_handler    = tifmxx_scsi_eh_bus_reset,
-	.slave_configure         = tifmxx_scsi_slave_config,	
-	.can_queue               = 1,
-	.this_id                 = -1, 
-	.sg_tablesize            = SG_ALL,
-	.max_sectors             = 240, 
-	.cmd_per_lun             = 1, 
-	.emulated                = 1,
-	.skip_settle_delay       = 1
-//.sdev_attrs	
-};
 
 static int 
 tifmxx_probe (struct pci_dev *pdev, const struct pci_device_id *ent)
@@ -238,15 +120,14 @@ tifmxx_probe (struct pci_dev *pdev, const struct pci_device_id *ent)
 	memset(fm, 0, sizeof(struct tifmxx_data));
 	fm->dev = pdev;	
 	fm->max_sockets = (pdev->device == 0x803B) ? 2 : 4;
-	spin_lock_init(fm->lock);	
+	spin_lock_init(&fm->lock);
+	tifmxx_data_init(fm);
 
 	host->max_id = fm->max_sockets;
 	host->max_lun = 0;
 	host->max_channel = 0;
 
 	/* This device has only one memory region */
-	printk(KERN_INFO DRIVER_NAME": Trying to map %lx bytes from address %lx\n",
-	       pci_resource_len(pdev, 0), pci_resource_start(pdev, 0));
 	mmio_base = ioremap_nocache(pci_resource_start(pdev, 0), 
 				    pci_resource_len(pdev, 0));
 	if (mmio_base == NULL) 
@@ -258,7 +139,6 @@ tifmxx_probe (struct pci_dev *pdev, const struct pci_device_id *ent)
 	fm->mmio_base = mmio_base;
 	pci_set_drvdata(pdev, host);
 
-        /* Cxx21::Initialize */
 	writel(0xffffffff, mmio_base + 0x0c);
 	writel(0x8000000f, mmio_base + 0x08);
 
@@ -292,36 +172,36 @@ tifmxx_remove (struct pci_dev *pdev)
 {
 	struct Scsi_Host *host = pci_get_drvdata(pdev); 
 	struct tifmxx_data *fm = (struct tifmxx_data*)host->hostdata;
-
-	unsigned long f1, f2, cnt;
+	int cnt;
 	
 	free_irq(fm->dev->irq, fm); // no more interrupts
-	spin_lock_irqsave(fm->lock, f1);
+	spin_lock(&fm->lock);
 	for(cnt = 0; cnt < fm->max_sockets; cnt++)
 	{
 		struct tifmxx_sock_data *c_socket = fm->sockets[cnt];
 		if(c_socket)
 		{
-			spin_lock_irqsave(c_socket, f2);
+			spin_lock(&c_socket->lock);
 			fm->sockets[cnt] = 0;
-			tasklet_kill(&c_socket->work_thread);
-			//! tell things to hardware if needed
+			cancel_delayed_work(&c_socket->work_q);
+			flush_scheduled_work();
+			
+			//! tell things to hardware
 			if(c_socket->srb)
 			{
-				srb->result = DID_ABORT << 16;
-				srb->scsi_done(srb);
+				c_socket->srb->result = DID_ABORT << 16;
+				c_socket->srb->scsi_done(c_socket->srb);
 			}
 			//! may be call scsi_remove_device
-			spin_unlock_irqrestore(c_socket, f2);
+			spin_unlock(&c_socket->lock);
 			kfree(c_socket);
-		}		
-	}	
+		}
+	}
 	
 	// reset hardware
-	/* Cxx21::~Cxx21 */
-	writel(0xffffffff, mmio_base + 0x0c);
+	writel(0xffffffff, fm->mmio_base + 0x0c);
 	
-	spin_unlock_irqrestore(fm->lock, f1);
+	spin_unlock(&fm->lock);
 	
 	scsi_remove_host(host);	
 	pci_release_regions(pdev);
