@@ -35,6 +35,7 @@
 #include <linux/pci.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/delay.h>
 #include "tifmxx.h"
 
 static struct pci_device_id tifmxx_pci_tbl [] = 
@@ -83,9 +84,68 @@ tifmxx_interrupt(int irq, void *dev_instance, struct pt_regs *regs)
   	return rc;
 }
 
+static unsigned int
+tifmxx_sock_power_cycle(struct tifmxx_sock_data *sock)
+{
+	unsigned int p_reg;
+
+	writel(0x0e00, sock->sock_addr + 0x4);
+	msleep_interruptible(10);
+	p_reg = readl(sock->sock_addr + 0x8);
+	if(!(0x8 & p_reg)) return 0;
+	if(sock->flags & XX12_SOCKET)
+		writel((p_reg & 0x7) | 0x0c00, sock->sock_addr + 0x4);
+	else
+	{
+		// SmartMedia cards need extra 40 msec
+		if(1 == ((readl(sock->sock_addr + 0x8) >> 4) & 7)) msleep_interruptible(40); 
+		writel(readl(sock->sock_addr + 0x4) | 0x0040, sock->sock_addr + 0x4);
+		msleep_interruptible(10);
+		writel((p_reg & 0x7) | 0x0c40, sock->sock_addr + 0x4);
+	}
+	msleep_interruptible(10); // socket is supposed to go up
+	if(!(sock->flags & XX12_SOCKET))
+		writel(readl(sock->sock_addr + 0x4) & 0xffbf, sock->sock_addr + 0x4);
+
+	writel(0x0007, sock->sock_addr + 0x28);
+	writel(0x0001, sock->sock_addr + 0x24);
+
+	return (readl(sock->sock_addr + 0x8) >> 4) & 7;
+}
+
 static void
 tifmxx_detect_card(struct tifmxx_data *fm, unsigned int sock_num)
 {
+	struct tifmxx_sock_data *sock = fm->sockets[sock_num];
+	unsigned int media_id;
+	//unsigned long f;
+	
+	read_lock(&sock->lock);
+	if(!(sock->flags & CARD_PRESENT)) // detect and insert new card
+	{
+		media_id = tifmxx_sock_power_cycle(sock);
+		//!read_unlock(&sock->lock); - needed later
+		switch(media_id)
+		{
+			case 1:
+				FM_DEBUG("SmartMedia card inserted, not supported\n");
+				break;
+			case 2:
+				FM_DEBUG("MemoryStick card inserted, not supported\n");
+				break;
+			case 3:
+				FM_DEBUG("MMC/SD in socket %d detected\n", sock_num);
+				break;
+		}
+
+	}
+	else // remove old one
+	{
+		//! wake up scsi threads, mark socket as empty
+	}
+	writel(0x00010100 << sock_num, sock->sock_addr + 0xc);
+	writel(0x00010100 << sock_num, sock->sock_addr + 0x8);
+	read_unlock(&sock->lock);
 }
 
 static void
@@ -114,7 +174,7 @@ tifmxx_isr_bh(void *data)
 static void
 tifmxx_eval_scsi(void *data)
 {
-	struct tifmxx_sock_data *sock = (struct tifmxx_sock_data*)data;
+	//struct tifmxx_sock_data *sock = (struct tifmxx_sock_data*)data;
 
 }
 
@@ -132,11 +192,18 @@ tifmxx_sock_data_init(struct tifmxx_data *fm)
 	{
 		c_socket = fm->sockets[cnt] = 
 			kmalloc(sizeof(struct tifmxx_sock_data), GFP_KERNEL);
+
 		if(!c_socket) goto clean_up_and_fail;
+
 		memset(c_socket, 0, sizeof(struct tifmxx_sock_data));
+
 		rwlock_init(&c_socket->lock);
+
 		INIT_WORK(&c_socket->do_scsi_cmd, tifmxx_eval_scsi,
 			  (void*)c_socket);
+
+		init_MUTEX(&c_socket->irq_ack);
+
 		c_socket->sock_addr = fm->mmio_base + 
 				      (((unsigned long)cnt + 1) << 10);
 		c_socket->host = fm;
@@ -219,16 +286,12 @@ tifmxx_probe (struct pci_dev *pdev, const struct pci_device_id *ent)
 	fm = (struct tifmxx_data*)host->hostdata;
 	memset(fm, 0, sizeof(struct tifmxx_data));
 	fm->dev = pdev;	
+	
 	fm->max_sockets = (pdev->device == 0x803B) ? 2 : 4;
 	rwlock_init(&fm->lock);
 	INIT_WORK(&fm->isr_bh, tifmxx_isr_bh, (void*)fm);
 
-	if(!tifmxx_sock_data_init(fm)) 
-	{
-		tifmxx_sock_data_fini(fm);
-		goto err_out_free_host;
-	}
-
+	
 	host->max_id = fm->max_sockets;
 	host->max_lun = 0;
 	host->max_channel = 0;
@@ -243,21 +306,27 @@ tifmxx_probe (struct pci_dev *pdev, const struct pci_device_id *ent)
         }
 	
 	fm->mmio_base = mmio_base;
+	
+	if(!tifmxx_sock_data_init(fm))  goto err_out_del_sock_data;
+
 	pci_set_drvdata(pdev, host);
 
-	writel(0xffffffff, mmio_base + 0x0c);
-	writel(0x8000000f, mmio_base + 0x08);
-
-	rc = scsi_add_host(host, &pdev->dev); if (rc) goto err_out_iounmap;
+	rc = scsi_add_host(host, &pdev->dev); 
+	if (rc) goto err_out_del_sock_data;
+	
 	rc = request_irq(pdev->irq, tifmxx_interrupt, SA_SHIRQ, DRIVER_NAME, fm); 
 	if (rc) goto err_out_remove_host;			
 	
+	writel(0xffffffff, mmio_base + 0x0c);
+	writel(0x8000000f, mmio_base + 0x08);
 	//! detect cards, add scsi devices
 
 	return 0; 
 
 err_out_remove_host:
 	scsi_remove_host(host);
+err_out_del_sock_data:
+	tifmxx_sock_data_fini(fm);
 err_out_iounmap:
 	iounmap(mmio_base);
 err_out_free_host:

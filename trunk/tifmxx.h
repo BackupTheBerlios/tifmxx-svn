@@ -3,6 +3,7 @@
 
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
+#include <asm/semaphore.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_tcq.h>
@@ -31,10 +32,6 @@ enum { CLOSING = 0x80000000 };
  */
 enum { P_IDLE = 0, P_POWER = 1 };
 
-/* There is some waiting associated with some socket operations 
- * (up to 100 msec in worst case). So it's better to have independent
- * work items for each socket.
- */
 struct tifmxx_data;
 
 struct tifmxx_sock_data
@@ -52,6 +49,8 @@ struct tifmxx_sock_data
 	unsigned int             media_id;
 
 	unsigned int             p_state;
+	
+	struct semaphore         irq_ack;
 
 	void                     (*finalize)(struct tifmxx_sock_data *sock);
 	void                     (*signal_irq)(struct tifmxx_sock_data *sock, unsigned int card_irq_status);
