@@ -1,7 +1,7 @@
 #include "cxx21.h"
 
 Cxx21::Cxx21(char *_base_addr)
-      :base_addr(_base_addr), var_1(0), var_2(0), num_sockets(4), d_socket(2)
+      :base_addr(_base_addr), irq_status(0), var_2(0), num_sockets(4), d_socket(2)
 {
 	for(int c = 4; c>0; c--) { mpFlash[c] = 0; sock_valid[c] = 0; }
 }
@@ -30,44 +30,48 @@ Cxx21::Initialize()
 char
 Cxx21::sub_0_1A100()
 {
-	unsigned int v1;
-
-	v1 = read32(base_addr + 0x14);
-	if(v1 == 0 || v1 == 0xffffffff) return 0;
-	var_1 = v1;
-	char rc = v1 & 0x80000000;
-
-	if(var_2 || !v1) goto out;
+	char r_val, lvar_1, lvar_2;
+	unsigned int lvar_3 = read32(base_addr + 0x14);
+	if(lvar_3 == 0 || lvar_3 == 0xffffffff) return 0;
+	irq_status = lvar_3;
 	
-	write32(base_addr + 0xc, 0x80000000);
+	if(lvar_3 & 0x80000000) r_val = 1;
+	if(!var_2 && r_val)
+	{
+		write32(base_addr + 0xc, 0x80000000);
+		
+		if(mpFlash[0])
+		{
+			lvar_1 = (lvar_3 & 0x00010000) ? 1 : 0;
+			lvar_2 = (lvar_3 & 0x00000100) ? 1 : 0;
+			if(lvar_1 || lvar_2)
+				mpFlash[0]->vtbl03(lvar_1, lvar_2);
+		}
+		if(mpFlash[1])
+		{
+			lvar_1 = (lvar_3 & 0x00020000) ? 1 : 0;
+			lvar_2 = (lvar_3 & 0x00000200) ? 1 : 0;
+			if(lvar_1 || lvar_2)
+				mpFlash[1]->vtbl03(lvar_1, lvar_2);
+		}
+		if(mpFlash[2])
+		{
+			lvar_1 = (lvar_3 & 0x00040000) ? 1 : 0;
+			lvar_2 = (lvar_3 & 0x00000400) ? 1 : 0;
+			if(lvar_1 || lvar_2)
+				mpFlash[2]->vtbl03(lvar_1, lvar_2);
+		}
+		if(mpFlash[3])
+		{
+			lvar_1 = (lvar_3 & 0x00080000) ? 1 : 0;
+			lvar_2 = (lvar_3 & 0x00000800) ? 1 : 0;
+			if(lvar_1 || lvar_2)
+				mpFlash[3]->vtbl03(lvar_1, lvar_2);
+		}
+	} // 1A206
 	
-	if(0 != mpFlash[0])
-	{
-		if((var_1 & 0x00010000) || (var_1 & 0x00000100))
-			mpFlash[0]->vtbl03();
-	}
-
-	if(0 != mpFlash[1])
-	{
-		if((var_1 & 0x00020000) || (var_1 & 0x00000200))
-			mpFlash[1]->vtbl03();
-	}
-
-	if(0 != mpFlash[2])
-	{
-		if((var_1 & 0x00040000) || (var_1 & 0x00000400))
-			mpFlash[2]->vtbl03();
-	}
-
-	if(0 != mpFlash[3])
-	{
-		if((var_1 & 0x00080000) || (var_1 & 0x00000800))
-			mpFlash[3]->vtbl03();
-	}
-
-out:
-	write32(base_addr + 0x14, var_1);
-	return rc;
+	write32(base_addr + 0x14, irq_status);
+	return r_val;
 }
 
 char
@@ -76,7 +80,7 @@ Cxx21::CardDetection(char socket)
 	char *socket_ptr = base_addr + (((long)socket + 1) << 10); // == r13
 	char m_id;
 	CSocket *t_socket;
-	char retval; // == r15
+	char r_val;
 	
 	if(mpFlash[socket] == 0 || 0x43 != (m_id = mpFlash[socket]->GetMediaID()))
 	{ // 1A2Af
@@ -85,81 +89,73 @@ Cxx21::CardDetection(char socket)
 		if(num_sockets != 4) t_socket->is_xx12 = 1;
 		t_socket->SocketPowerCtrl();
 		m_id = t_socket->GetMediaID();
-		t_socket->vtable[0](1);	//destructor
+		delete t_socket;
 	}
 	// 1A328
-	switch(m_id)
-	{
-		case 1:
-			// generic SmartMedia
-			mpFlash[socket] = new CSM(socket_ptr);
-			if(!mpFlash[socket]) return 0x88; //alloc failed
-			sock_valid[socket] = 1;
-			break;
-		case 2:
-			// generic MemoryStick
-			mpFlash[socket] = (sel_3 == 0) ? new CMS(socket_ptr, 0):
-				 new CMS(socket_ptr, (socket == d_socket));
-			
-			if(!mpFlash[socket]) return 0x88;
-			sock_valid[socket] = 1;
-			break;
-		case 3:
-			// generic MMCSD
-			mpFlash[socket] = new MMCSD(socket_ptr);
-			if(!mpFlash[socket]) return 0x88; 
-			sock_valid[socket] = 1;
-			break;
-		default: // 1A344 - no valid card
-			retval = 0x83; 
-			if(mpFlash[socket] != 0)
-			{
-				//! old card was removed
-				mpFlash[socket]->sub_0_1FE70();
-			}
-			//1A37B
-			switch(socket)
-			{
-	    			case 0:
-					write32(iomem + 0xc, 0x00010100);
-					sock_valid[socket] = 0;
-					break;
-	    			case 1:
-					write32(iomem + 0xc, 0x00020200);
-					sock_valid[socket] = 0;
-					break;
-	    			case 2:
-					write32(iomem + 0xc, 0x00040400);
-					sock_valid[socket] = 0;
-					break;
-	    			case 3:
-					write32(iomem + 0xc, 0x00080800);
-					sock_valid[socket] = 0;
-					break;
-	    			default:
-				sock_valid[socket] = 0;
-			}
-	}	
-//1A543
-	if(!retval)
-	{ 
-		switch(socket)
-		{
-			case 0:
-				write32(iomem + 0x8, 0x00010100);
-				break;
-			case 1:
-				write32(iomem + 0x8, 0x00020200);
-				break;
-			case 2:
-				write32(iomem + 0x8, 0x00040400);
-				break;
-			case 3:
-				write32(iomem + 0x8, 0x00080800);
-				break;
-		}
+	if(m_id == 1)
+	{ // 1A4EC
+		mpFlash[socket] = new CSM(socket_ptr);
+		if(mpFlash[socket]) sock_valid[socket] = 1;
+		else return 0x88;
+	} 
+	else if(m_id == 2)
+	{ // 1A455
+		mpFlash[socket] = new CMSBase(socket_ptr, (MSPEnable) ? (socket == d_socket) : 0);
+		if(mpFlash[socket]) sock_valid[socket] = 1;
+		else return 0x88;
 	}
-	return retval;		
+	else if(m_id == 3)
+	{ // 1A3F9
+		mpFlash[socket] = new CMMCSD(socket_ptr);
+		if(mpFlash[socket]) sock_valid[socket] = 1;
+		else return 0x88;
+	}
+	else
+	{ // 1A344
+		r_val = 0x83;
+		if(mpFlash[socket] != 0) mpFlash[socket]->sub_0_1FE70();
+		if(socket == 0)
+		{
+			write32(base_addr + 0xc, 0x00010100);
+			sock_valid[socket] = 0;
+		}
+		else if(socket == 1)
+		{
+			write32(base_addr + 0xc, 0x00020200);
+			sock_valid[socket] = 0;
+		}
+		else if(socket == 2)
+		{
+			write32(base_addr + 0xc, 0x00040400);
+			sock_valid[socket] = 0;
+		}
+		else if(socket == 3)
+		{
+			write32(base_addr + 0xc, 0x00080800);
+			sock_valid[socket] = 0;
+		}
+		else
+			sock_valid[socket] = 0; // Am i missing something?
+	}
+	// 1A543
+	if(mpFlash[socket])
+	{
+		mpFlash[socket]->card_int = int_obj;
+		if(num_sockets != 4) mpFlash[socket]->is_xx12 = 1;
+	}
+
+	if(r_val)
+	{
+		if(socket == 0)
+			write32(base_addr + 0x8, 0x00010100);
+		else if(socket == 1)
+			write32(base_addr + 0x8, 0x00020200);
+		else if(socket == 2)
+			write32(base_addr + 0x8, 0x00040400);
+		else if(socket == 3)
+			write32(base_addr + 0x8, 0x00080800);
+	}
+	return r_val;
 }
 
 char 
@@ -475,22 +471,22 @@ Cxx21::sub_0_1BA00()
 	if(mpFlash[3] != 0)
 		if(0x100 & mpFlash[3]->vtbl02()) r_val |= 0x800;
 
-	if(var_1 & 0x1) 
+	if(irq_status & 0x1) 
 	{
 		CardDetection(0); r_val |= 0x1;
 	}
 
-	if(var_1 & 0x2) 
+	if(irq_status & 0x2) 
 	{
 		CardDetection(1); r_val |= 0x2;
 	}
 
-	if(var_1 & 0x4) 
+	if(irq_status & 0x4) 
 	{
 		CardDetection(2); r_val |= 0x4;
 	}
 
-	if(var_1 & 0x8) 
+	if(irq_status & 0x8) 
 	{
 		CardDetection(3); r_val |= 0x8;
 	}

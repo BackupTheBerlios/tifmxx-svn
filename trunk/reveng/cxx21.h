@@ -10,7 +10,7 @@ class Cxx21
 	int SMCISEnable;     // 0x01C
 	int InsDelEnable     // 0x020
 
-	int var_1;           // 0x024
+	int irq_status;      // 0x024 (var_1)
 	char var_2;          // 0x028
 	
 	CSocket *mpFlash[4]; // 0x030

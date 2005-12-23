@@ -6,44 +6,48 @@ tifmxx_scsi_queue(struct scsi_cmnd *srb, void (*done)(struct scsi_cmnd*))
 	struct tifmxx_data *fm = 
 		(struct tifmxx_data*)srb->device->host->hostdata;
 	struct tifmxx_sock_data *c_socket = 0;
+	unsigned long f;
+	int rc = 0, no_target = 0;
 
 	FM_DEBUG("%s called\n", __FUNCTION__);
 
-	spin_lock(&fm->lock);
-	c_socket = fm->sockets[srb->device->id];
+	read_lock(&fm->lock);
+	c_socket = (srb->device->id < fm->max_sockets) ? fm->sockets[srb->device->id] : 0;
 
 	// check that the target exists at all
-	if(c_socket == NULL)
+	if(c_socket)
+	{
+		write_lock_irqsave(&c_socket->lock, f);
+		if(c_socket->flags & CARD_PRESENT)
+		{
+			if(c_socket->srb != NULL)
+			{
+				printk(KERN_ERR DRIVER_NAME ": SCSI queue full, target = %d\n", srb->device->id);
+				rc = SCSI_MLQUEUE_DEVICE_BUSY;
+			}
+			else
+			{
+				srb->scsi_done = done;
+				c_socket->srb = srb;
+				//get the command running	
+				schedule_work(&c_socket->do_scsi_cmd);
+			}
+		}
+		else no_target = 1;
+		write_unlock_irqrestore(&c_socket->lock, f);
+	}
+	else no_target = 1;
+
+	if(no_target)
 	{
 		// bad target
-		printk(KERN_ERR DRIVER_NAME ": Invalid target = %d\n", 
-		       srb->device->id);
+		printk(KERN_ERR DRIVER_NAME ": Invalid target = %d\n", srb->device->id);
 		srb->result = DID_BAD_TARGET << 16;
 		done(srb);
-		spin_unlock(&fm->lock);
-		return 0;
 	}
 	
-	// check that target has no pending commands
-	
-	spin_lock(&c_socket->lock);	
-	if(c_socket->srb != NULL)
-	{
-		printk(KERN_ERR DRIVER_NAME ": SCSI queue full, target = %d\n", 
-		       srb->device->id);
-		
-		spin_unlock(&c_socket->lock);
-		spin_unlock(&fm->lock);  
-                return SCSI_MLQUEUE_DEVICE_BUSY;
-	}
-	
-	srb->scsi_done = done;
-	c_socket->srb = srb;
-	//get the command running	
-	schedule_work(&c_socket->work_q);
-	spin_unlock(&c_socket->lock);	
-	spin_unlock(&fm->lock);  
-	return 0;
+	read_unlock(&fm->lock);
+	return rc;
 }
 
 static int 
