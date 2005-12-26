@@ -25,9 +25,10 @@ static void
 tifmxx_mmcsd_clean_up(struct tifmxx_sock_data *sock)
 {
 	struct scsi_device *s_dev;	
-
-	cancel_delayed_work(&sock->do_scsi_cmd);
-	flush_scheduled_work();
+	
+	writel(0, sock->sock_addr + 0x118);
+	sock->flags |= CARD_REMOVED;
+	wake_up_all(&sock->irq_ack);	
 
 	if(sock->srb)
 	{
@@ -46,7 +47,7 @@ tifmxx_mmcsd_clean_up(struct tifmxx_sock_data *sock)
 	sock->process_irq = 0;
 	sock->signal_irq = 0;
 	if(sock->mmcsd_p) kfree(sock->mmcsd_p);
-	sock->flags &= 0xffff0000;
+	sock->flags &= (~CARD_PRESENT);
 }
 
 static void
@@ -57,7 +58,11 @@ tifmxx_mmcsd_process_irq(struct tifmxx_sock_data *sock)
 	if(!(sock->flags & INT_B1))
 	{
 		if(sock->r_var_2 & 0x4) { rc = 0x0200; sock->flags |= CARD_BUSY; }
-		else wake_up_all(&sock->irq_ack); // signal event_2
+		else 
+		{
+			sock->flags |= SOCK_EVENT;
+			wake_up_all(&sock->irq_ack); // signal event_2
+		}
 		
 		if(sock->r_var_2 & 0x4) rc |= 0x0100;
 		sock->flags &= ~CARD_READY;
@@ -116,14 +121,14 @@ tifmxx_mmcsd_initialize(struct tifmxx_sock_data *sock, unsigned long *irq_flags)
 	writel(sock->mmcsd_p->clk_speed | 0x0800, sock->sock_addr + 0x110);
 	writel(0x8000, sock->sock_addr + 0x130);
 	writel(0x41e9, sock->sock_addr + 0x118);
-	writel(0x0020 | readl(sock->mmcsd_p->sock_addr + 0x138), sock->sock_addr + 0x138);
+	writel(0x0020 | readl(sock->sock_addr + 0x138), sock->sock_addr + 0x138);
 	writel(0x0040, sock->sock_addr + 0x11c);
 	writel(0x07ff, sock->sock_addr + 0x120);
 	writel(0x0080, sock->sock_addr + 0x104);
-	writel(sock->clk_speed | 0x0800, sock->sock_addr + 0x110);
+	writel(sock->mmcsd_p->clk_speed | 0x0800, sock->sock_addr + 0x110);
 
 	spin_unlock_irqrestore(&sock->lock, *irq_flags);
-	wait_event_timeout(&sock->irq_ack, (sock->flags & (CARD_EVENT | CARD_REMOVED)), msecs_to_jiffies(100));
+	wait_event_timeout(sock->irq_ack, (sock->flags & (CARD_EVENT | CARD_REMOVED)), msecs_to_jiffies(100));
 	spin_lock_irqsave(&sock->lock, *irq_flags);
 
 	sock->flags &= ~CARD_EVENT;
@@ -160,6 +165,7 @@ tifmxx_mmcsd_init(struct tifmxx_sock_data *sock)
 			sock->signal_irq = tifmxx_mmcsd_signal_irq;
 			
 			writel(0, sock->sock_addr + 0x118);
+			sock->flags &= 0xffff0000; // kill volatile flags
 			sock->flags |= CARD_PRESENT | CARD_RO;
 			scsi_add_device(sock->host, 0, sock->sock_id, 0);
 		}

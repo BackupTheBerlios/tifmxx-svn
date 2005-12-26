@@ -93,8 +93,7 @@ CFlash::RescueRWFail()
 		write16zx(base_addr + 0x4, (short)uiVoltage | 0x0c40);	
 	}
 	else write16zx(base_addr +0x4, (short)uiVoltage | 0x0c00);
-	// Here we see an exact verbatim disassembly of original code.
-	// It's not my fault!
+
 	if(!(0x80 & read16(base_addr + 0x8)))
 	{
 		t1 = sys_var_0014[0];

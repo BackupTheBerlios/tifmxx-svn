@@ -33,7 +33,7 @@ tifmxx_scsi_queue(struct scsi_cmnd *srb, void (*done)(struct scsi_cmnd*))
 	FM_DEBUG("%s called\n", __FUNCTION__);
 
 	read_lock(&fm->lock);
-	sock = (srb->device->id < fm->max_sockets) ? fm->sockets[srb->device->id] : 0;
+	sock = (srb->device->id < fm->max_sockets) ? &fm->sockets[srb->device->id] : 0;
 
 	spin_lock_irqsave(&sock->lock, f);
 	if(sock->flags & CARD_PRESENT)

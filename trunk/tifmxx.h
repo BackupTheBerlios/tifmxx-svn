@@ -26,6 +26,7 @@
  *      CARD_BUSY    -> vara_6 variable from reveng
  *      CARD_READY   -> vara_2 variable from reveng, set after card initialization success
  *      CARD_REMOVED -> vara_4 variable from reveng, set by detection routine on card removal, condition for event_1
+ *      SOCK_EVENT   -> socket event (event_2)
  *      CARD_EVENT   -> card needs attention (to replace cmmcsd_event_1)
  * -- Flags above 0x8000 are carried over on card insertion/removal
  *      MS_SOCKET    -> better Sony MS support on this socket
@@ -39,8 +40,8 @@
  */
 
 enum { INT_B0 = 0x1, INT_B1 = 0x2, CARD_PRESENT = 0x4, CARD_RO = 0x8, CARD_BUSY = 0x40, CARD_READY = 0x80,
-       CARD_REMOVED = 0x100, CARD_EVENT = 0x200, MS_SOCKET = 0x10000, XX12_SOCKET = 0x20000, ALLOW_SD = 0x40000,
-       ALLOW_MMC = 0x80000, ALLOW_MSP = 0x100000, ALLOW_SM = 0x200000, ALLOW_SMCIS = 0x400000, 
+       CARD_REMOVED = 0x100, SOCK_EVENT = 0x200, CARD_EVENT = 0x400, MS_SOCKET = 0x10000, XX12_SOCKET = 0x20000, 
+       ALLOW_SD = 0x40000, ALLOW_MMC = 0x80000, ALLOW_MSP = 0x100000, ALLOW_SM = 0x200000, ALLOW_SMCIS = 0x400000, 
        ALLOW_SMDLY = 0x800000 };
 
 struct tifmxx_data;
@@ -104,7 +105,7 @@ struct tifmxx_data
 
 	unsigned int             irq_status;
 	unsigned int             max_sockets;
-	struct tifmxx_sock_data  *sockets[MAX_SUPPORTED_SOCKETS];
+	struct tifmxx_sock_data  sockets[MAX_SUPPORTED_SOCKETS];
 	
 	struct work_struct       isr_bh;
 };

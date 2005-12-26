@@ -70,10 +70,10 @@ tifmxx_interrupt(int irq, void *dev_instance, struct pt_regs *regs)
 						  (((irq_status >> (cnt + 8)) & 1) ? INT_B0 : 0);
 				if(card_irq_status)
 				{
-					spin_lock_irqsave(&fm->sockets[cnt]->lock, f);
-					if(CARD_PRESENT & fm->sockets[cnt]->flags)
-						fm->sockets[cnt]->signal_irq(fm->sockets[cnt], card_irq_status);
-					spin_unlock_irqrestore(&fm->sockets[cnt]->lock, f);
+					spin_lock_irqsave(&fm->sockets[cnt].lock, f);
+					if(CARD_PRESENT & fm->sockets[cnt].flags)
+						fm->sockets[cnt].signal_irq(&fm->sockets[cnt], card_irq_status);
+					spin_unlock_irqrestore(&fm->sockets[cnt].lock, f);
 				}
 			}
 		}
@@ -116,16 +116,14 @@ tifmxx_sock_power_cycle(char __iomem *sock_addr, unsigned int sock_flags)
 static void
 tifmxx_detect_card(struct tifmxx_data *fm, unsigned int sock_num)
 {
-	struct tifmxx_sock_data *sock = fm->sockets[sock_num];
+	struct tifmxx_sock_data *sock = &fm->sockets[sock_num];
 	char __iomem *sock_addr;
 	unsigned int sock_flags;
 	unsigned int media_id;
 	unsigned long f;
 	
-	spin_lock_irqsave(&sock->lock, f);
 	sock_addr = sock->sock_addr;
 	sock_flags = sock->flags;
-	spin_unlock_irqrestore(&sock->lock, f);
 
 	if(!(sock->flags & CARD_PRESENT)) // detect and insert new card
 	{
@@ -175,9 +173,9 @@ tifmxx_isr_bh(void *data)
 	for(cnt = 0; cnt < fm->max_sockets; cnt++)
 	{
 	
-		spin_lock_irqsave(&fm->sockets[cnt]->lock, f);
-		if(fm->sockets[cnt]->flags & CARD_PRESENT) fm->sockets[cnt]->process_irq(fm->sockets[cnt]);
-		spin_unlock_irqrestore(&fm->sockets[cnt]->lock, f);
+		spin_lock_irqsave(&fm->sockets[cnt].lock, f);
+		if(fm->sockets[cnt].flags & CARD_PRESENT) fm->sockets[cnt].process_irq(&fm->sockets[cnt]);
+		spin_unlock_irqrestore(&fm->sockets[cnt].lock, f);
 	}
 
 	for(cnt = 0; cnt < fm->max_sockets; cnt++)
@@ -193,20 +191,16 @@ tifmxx_isr_bh(void *data)
 
 extern struct scsi_host_template tifmxx_host_template;
 
-static int
+static inline void
 tifmxx_sock_data_init(struct Scsi_Host *fm_host)
 {
 	struct tifmxx_data *fm = (struct tifmxx_data*)fm_host->hostdata;
 	struct tifmxx_sock_data *sock;
 	int cnt;
 
-	if(fm->max_sockets > MAX_SUPPORTED_SOCKETS) return 0;
-
 	for(cnt = 0; cnt < fm->max_sockets; cnt++)
 	{
-		sock = fm->sockets[cnt] = kmalloc(sizeof(struct tifmxx_sock_data), GFP_KERNEL);
-
-		if(!sock) goto clean_up_and_fail;
+		sock = &fm->sockets[cnt];
 
 		memset(sock, 0, sizeof(struct tifmxx_sock_data));
 
@@ -226,29 +220,43 @@ tifmxx_sock_data_init(struct Scsi_Host *fm_host)
 	
 	// 4 socket FM device has special ability on socket 2
 	if(fm->max_sockets == 4)
-		fm->sockets[2]->flags |= MS_SOCKET;
-
-	return 1;
-
-clean_up_and_fail:
-	for(cnt = 0; fm->sockets[cnt]; cnt++) kfree(fm->sockets[cnt]);
-	return 0;
+		fm->sockets[2].flags |= MS_SOCKET;
 }
 
 static void
+tifmxx_remove_card(struct tifmxx_data *fm, unsigned int sock_num)
+{
+	unsigned long f;
+	struct tifmxx_sock_data *sock;
+
+	read_lock(&fm->lock);
+	if(sock_num <= fm->max_sockets)
+	{
+		sock = &fm->sockets[sock_num];
+		spin_lock_irqsave(&sock->lock, f);
+		if(sock->flags & CARD_PRESENT)
+		{
+			writel(0xfff8 & readl(sock->sock_addr + 0x4), sock->sock_addr + 0x4);
+			sock->clean_up(sock);
+		}
+		spin_unlock_irqrestore(&sock->lock, f);
+	}
+	read_unlock(&fm->lock);
+}
+
+static inline void
 tifmxx_sock_data_fini(struct tifmxx_data *fm)
 {
 	unsigned int cnt;
 
 	for(cnt = 0; cnt < fm->max_sockets; cnt++)
 	{
-		struct tifmxx_sock_data *sock = fm->sockets[cnt];
+		struct tifmxx_sock_data *sock = &fm->sockets[cnt];
 		if(sock)
 		{	
 			write_lock(&sock->lock);
 			if(sock->clean_up) sock->clean_up(sock);
-			kfree(sock);
-			fm->sockets[cnt] = 0;
+			write_unlock(&sock->lock);
 		}
 	}
 }
@@ -304,12 +312,12 @@ tifmxx_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	
 	fm->mmio_base = mmio_base;
 	
-	if(!tifmxx_sock_data_init(host))  goto err_out_del_sock_data;
+	tifmxx_sock_data_init(host);
 
 	pci_set_drvdata(pdev, host);
 
 	rc = scsi_add_host(host, &pdev->dev); 
-	if (rc) goto err_out_del_sock_data;
+	if (rc) goto err_out_iounmap;
 	
 	rc = request_irq(pdev->irq, tifmxx_interrupt, SA_SHIRQ, DRIVER_NAME, fm); 
 	if (rc) goto err_out_remove_host;			
@@ -322,8 +330,7 @@ tifmxx_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 err_out_remove_host:
 	scsi_remove_host(host);
-err_out_del_sock_data:
-	tifmxx_sock_data_fini(fm);
+err_out_iounmap:
 	iounmap(mmio_base);
 err_out_free_host:
 	scsi_host_put(host);
@@ -344,7 +351,6 @@ tifmxx_remove(struct pci_dev *pdev)
 	struct tifmxx_data *fm = (struct tifmxx_data*)host->hostdata;
 	unsigned long f;
 	
-	//! wait for everything to complete
 	write_lock_irqsave(&fm->lock, f);
 
 	writel(0xffffffff, fm->mmio_base + 0x0c);
