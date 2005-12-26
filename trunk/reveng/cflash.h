@@ -3,7 +3,7 @@ struct CFlash
 	void *vtable;            // 0x000 : 11 methods, 7 empty	
 	char *base_addr;         // 0x008 - iomem base address for socket
 	PKINTERRUPT card_int;    // 0x010
-	int SDSwitch;            // 0x018 (need_sw, 0x01A -> var_9 -> LSW)
+	int SDSwitch;            // 0x018 (need_sw, 0x01A -> var_9 -> MSW)
 	int SMEnable;            // 0x01C
 	int SMCISEnable;         // 0x020
 	int InsDelEnable;        // 0x024

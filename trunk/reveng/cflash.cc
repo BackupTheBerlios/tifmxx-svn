@@ -54,7 +54,7 @@ CFlash::vtbl02()
 char
 CFlash::vtbl03(char arg_1, char arg_2)
 {
-	vara_1 = arg_1; vara_0 = arg_2;
+	vara_1 = arg_1; vara_0 = arg_2; //INT_B1, INT_B0
 	char r_val = arg_1;
 
 	if(arg_1 == 0) return 0;

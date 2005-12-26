@@ -118,13 +118,13 @@ CMMCSD::InitializeCard()
 		write16zx(base_addr + 0x4, 0x80);
 		return 0x2e;
 	}
-	else if(muiMediaID == 0x23 && (need_sw & 0x1)) // SD card
+	else if(muiMediaID == 0x23 && (SDSwitch & 0x1)) // SD card
 	{
 		write16zx(base_addr + 0x4, 0x80);
 		muiMediaID = 0x43;
 		return 0x2e;
 	}
-	else if(muiMediaID == 0x13 && (need_sw & 0x2))
+	else if(muiMediaID == 0x13 && (SDSwitch & 0x2))
 	{
 		write16zx(base_addr + 0x4, 0x80);
 		muiMediaID = 0x43;

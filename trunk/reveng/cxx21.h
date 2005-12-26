@@ -1,3 +1,28 @@
+/* From the INF file:
+
+; 0 - default. Switch to SDIO
+; 1 - Switch to SD or SDIO
+; 2 - switch to MMC or SDIO
+; 3 - switch to SD or MMC or SDIO
+HKLM,System\CurrentControlSet\Services\tifm21\Parameters,SDSwitch, 0x10001,0
+
+; 1 - SmartMedia enable
+; 0 - SmartMedia disable
+HKLM,System\CurrentControlSet\Services\tifm21\Parameters,SMEnable, 0x10001,1
+
+; 1 - MS Parallel Mode dedicated socket enable
+; 0 - MS Parallel Mode dedicated socket disable
+HKLM,System\CurrentControlSet\Services\tifm21\Parameters,MSPEnable, 0x10001,1
+
+; 0 - Disable SM CIS check
+; 1 - Enable Sm CIS check, set to 1 by default
+HKLM,System\CurrentControlSet\Services\tifm21\Parameters,SMCISEnable, 0x10001,1
+
+; 0 - Disable Insertion Delay for xD/SM
+; 1 - Enable Delay
+HKLM,System\CurrentControlSet\Services\tifm21\Parameters,InsDelEnable, 0x10001,0
+
+*/
 class Cxx21
 {
 	// alloc: 0x70 bytes
