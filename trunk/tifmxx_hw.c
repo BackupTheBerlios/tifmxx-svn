@@ -51,9 +51,6 @@ tifmxx_interrupt(int irq, void *dev_instance, struct pt_regs *regs)
 	struct tifmxx_data *fm = (struct tifmxx_data*)dev_instance;
 	unsigned int irq_status, cnt, card_irq_status;
 	unsigned long f;
-	irqreturn_t rc = IRQ_NONE;
-
-	read_lock(&fm->lock);
 	
 	irq_status = readl(fm->mmio_base + 0x14);
 	if(irq_status && (~irq_status))
@@ -79,10 +76,9 @@ tifmxx_interrupt(int irq, void *dev_instance, struct pt_regs *regs)
 		}
 		writel(irq_status, fm->mmio_base + 0x14);
 		schedule_work(&fm->isr_bh);
-		rc = IRQ_HANDLED;
+		return IRQ_HANDLED;
 	}
-	read_unlock(&fm->lock);
-  	return rc;
+  	return IRQ_NONE;
 }
 
 static unsigned int
@@ -145,13 +141,9 @@ tifmxx_detect_card(struct tifmxx_data *fm, unsigned int sock_num)
 	}
 	else // remove old one
 	{
-		//! wake up scsi threads, mark socket as empty
 		spin_lock_irqsave(&sock->lock, f);
-		if(!(sock->flags & CARD_REMOVED)) 
-		{
-			sock->flags |= CARD_REMOVED;
-			wake_up_all(&sock->irq_ack);
-		}
+		sock->flags |= CARD_REMOVED;
+		wake_up_all(&sock->irq_ack);
 		spin_unlock_irqrestore(&sock->lock, f);
 	}
 	writel(0x00010100 << sock_num, fm->mmio_base + 0xc);
@@ -167,7 +159,6 @@ tifmxx_isr_bh(void *data)
 
   	FM_DEBUG("Bottom half\n");
 
-	read_lock(&fm->lock);
 	irq_status = fm->irq_status;
 	// insert/remove
 	for(cnt = 0; cnt < fm->max_sockets; cnt++)
@@ -186,7 +177,6 @@ tifmxx_isr_bh(void *data)
 		}
 	}
 	writel(0x80000000, fm->mmio_base + 0x8);
-	read_unlock(&fm->lock);
 }
 
 extern struct scsi_host_template tifmxx_host_template;
@@ -223,44 +213,6 @@ tifmxx_sock_data_init(struct Scsi_Host *fm_host)
 		fm->sockets[2].flags |= MS_SOCKET;
 }
 
-static void
-tifmxx_remove_card(struct tifmxx_data *fm, unsigned int sock_num)
-{
-	unsigned long f;
-	struct tifmxx_sock_data *sock;
-
-	read_lock(&fm->lock);
-	if(sock_num <= fm->max_sockets)
-	{
-		sock = &fm->sockets[sock_num];
-		spin_lock_irqsave(&sock->lock, f);
-		if(sock->flags & CARD_PRESENT)
-		{
-			writel(0xfff8 & readl(sock->sock_addr + 0x4), sock->sock_addr + 0x4);
-			sock->clean_up(sock);
-		}
-		spin_unlock_irqrestore(&sock->lock, f);
-	}
-	read_unlock(&fm->lock);
-}
-
-static inline void
-tifmxx_sock_data_fini(struct tifmxx_data *fm)
-{
-	unsigned int cnt;
-
-	for(cnt = 0; cnt < fm->max_sockets; cnt++)
-	{
-		struct tifmxx_sock_data *sock = &fm->sockets[cnt];
-		if(sock)
-		{	
-			write_lock(&sock->lock);
-			if(sock->clean_up) sock->clean_up(sock);
-			write_unlock(&sock->lock);
-		}
-	}
-}
-
 static int 
 tifmxx_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {	
@@ -294,7 +246,6 @@ tifmxx_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	fm->dev = pdev;	
 	
 	fm->max_sockets = (pdev->device == 0x803B) ? 2 : 4;
-	rwlock_init(&fm->lock);
 	INIT_WORK(&fm->isr_bh, tifmxx_isr_bh, (void*)fm);
 
 	
@@ -349,15 +300,9 @@ tifmxx_remove(struct pci_dev *pdev)
 {
 	struct Scsi_Host *host = pci_get_drvdata(pdev); 
 	struct tifmxx_data *fm = (struct tifmxx_data*)host->hostdata;
-	unsigned long f;
-	
-	write_lock_irqsave(&fm->lock, f);
 
 	writel(0xffffffff, fm->mmio_base + 0x0c);
 	free_irq(fm->dev->irq, fm);
-	tifmxx_sock_data_fini(fm);
-
-	write_unlock_irqrestore(&fm->lock, f);
 	
 	scsi_remove_host(host);	
 	pci_intx(pdev, 0);

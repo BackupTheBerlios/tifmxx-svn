@@ -32,7 +32,6 @@ tifmxx_scsi_queue(struct scsi_cmnd *srb, void (*done)(struct scsi_cmnd*))
 
 	FM_DEBUG("%s called\n", __FUNCTION__);
 
-	read_lock(&fm->lock);
 	sock = (srb->device->id < fm->max_sockets) ? &fm->sockets[srb->device->id] : 0;
 
 	spin_lock_irqsave(&sock->lock, f);
@@ -60,7 +59,6 @@ tifmxx_scsi_queue(struct scsi_cmnd *srb, void (*done)(struct scsi_cmnd*))
 	}
 
 	spin_unlock_irqrestore(&sock->lock, f);
-	read_unlock(&fm->lock);
 	return rc;
 }
 
@@ -86,10 +84,42 @@ tifmxx_scsi_eh_bus_reset(struct scsi_cmnd *srb)
 }
 
 static int 
+tifmxx_scsi_slave_alloc(struct scsi_device *sdev)
+{
+	struct tifmxx_data *fm = (struct tifmxx_data*)sdev->host->hostdata;
+	struct tifmxx_sock_data *sock;
+	
+	FM_DEBUG("slave_alloc called\n");
+	
+	if(sdev->id < fm->max_sockets)
+	{
+		sock = &fm->sockets[sdev->id];
+		if(sock->flags & CARD_PRESENT) sock->init_card(sock); // let the inquiry fail if there are problems
+	}
+
+	return 0;
+}
+
+static int 
 tifmxx_scsi_slave_config(struct scsi_device *sdev)
 {
 	FM_DEBUG("slave_config called\n");
 	return 0;
+}
+
+static void
+tifmxx_scsi_slave_destroy(struct scsi_device *sdev)
+{
+	struct tifmxx_data *fm = (struct tifmxx_data*)sdev->host->hostdata;
+	struct tifmxx_sock_data *sock;
+
+	FM_DEBUG("slave_destroy called\n");
+
+	if(sdev->id < fm->max_sockets)
+	{
+		sock = &fm->sockets[sdev->id];
+		if(sock->flags & CARD_PRESENT) sock->clean_up(sock);
+	}
 }
 
 static int 
@@ -117,7 +147,9 @@ struct scsi_host_template tifmxx_host_template =
 	.eh_abort_handler        = tifmxx_scsi_eh_abort,
 	.eh_device_reset_handler = tifmxx_scsi_eh_device_reset,
 	.eh_bus_reset_handler    = tifmxx_scsi_eh_bus_reset,
+	.slave_alloc             = tifmxx_scsi_slave_alloc,
 	.slave_configure         = tifmxx_scsi_slave_config,	
+	.slave_destroy           = tifmxx_scsi_slave_destroy,
 	.can_queue               = 1,
 	.this_id                 = -1, 
 	.sg_tablesize            = SG_ALL,
@@ -142,27 +174,22 @@ tifmxx_fill_sense_buffer(struct tifmxx_sock_data *sock, int key, int asc, int as
 	sbuff[13] = asq;
 }
 
-static void
+static inline void
 tifmxx_eval_inquiry(struct tifmxx_sock_data *sock)
 {
-	unsigned long f;
-
-	spin_lock_irqsave(&sock->lock, f);
-	if(!(sock->flags & CARD_PRESENT))
+	if((sock->flags & CARD_PRESENT) && (sock->flags & CARD_READY))
+	{
+		//! slave_alloc must handle initialization
+		//! fill inquiry response	
+	}
+	else
 	{
 		// bad target
 		printk(KERN_ERR DRIVER_NAME ": Target %d removed.\n", sock->sock_id);
-		sock->srb->result = DID_ABORT << 16;
+		sock->srb->result = DID_BAD_TARGET << 16;
 		sock->srb->done(sock->srb);
 		sock->srb = 0;
 	}
-	else if(!(sock->flags & CARD_READY))
-	{
-		//! check card info
-		
-	}
-	//! fill inquiry response
-	spin_unlock_irqrestore(&sock->lock, f);
 }
 
 void
@@ -170,25 +197,28 @@ tifmxx_eval_scsi(void *data)
 {
 	struct tifmxx_sock_data *sock = (struct tifmxx_sock_data*)data;
 	unsigned long f;
+	unsigned char s_cmd;
 
-	read_lock(&((struct tifmxx_data*)sock->host->hostdata)->lock);
 	spin_lock_irqsave(&sock->lock, f);
-	switch(*(unsigned char*)sock->srb->cmnd)
+	if(sock->srb)
 	{
-		case INQUIRY:
-			spin_unlock_irqrestore(&sock->lock, f);
-			tifmxx_eval_inquiry(sock);
-			break;
-		case REQUEST_SENSE:
-		case SEND_DIAGNOSTIC:
-		case TEST_UNIT_READY:
-		default:
-			FM_DEBUG("scsi opcode 0x%x not supported\n", *(unsigned char*)sock->srb->cmnd);
-			tifmxx_fill_sense_buffer(sock, ILLEGAL_REQUEST, INVALID_OPCODE, 0);
-			sock->srb->result = (DRIVER_SENSE << 24) | SAM_STAT_CHECK_CONDITION;
-			sock->srb->done(sock->srb);
-			sock->srb = 0;
-			spin_unlock_irqrestore(&sock->lock, f);
+		s_cmd = *(unsigned char*)sock->srb->cmnd;
+	
+		switch(s_cmd)
+		{
+			case INQUIRY:
+				tifmxx_eval_inquiry(sock);
+				break;
+			case REQUEST_SENSE:
+			case SEND_DIAGNOSTIC:
+			case TEST_UNIT_READY:
+			default:
+				FM_DEBUG("scsi opcode 0x%x not supported\n", *(unsigned char*)sock->srb->cmnd);
+				tifmxx_fill_sense_buffer(sock, ILLEGAL_REQUEST, INVALID_OPCODE, 0);
+				sock->srb->result = (DRIVER_SENSE << 24) | SAM_STAT_CHECK_CONDITION;
+				sock->srb->done(sock->srb);
+				sock->srb = 0;
+		}
 	}
-	read_unlock(&((struct tifmxx_data*)sock->host->hostdata)->lock);
+	spin_unlock_irqrestore(&sock->lock, f);
 }

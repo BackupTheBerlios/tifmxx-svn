@@ -62,6 +62,19 @@ struct tifmxx_mmcsd_data
 	unsigned int       r_var_11;
 
 	unsigned int       clk_speed;
+	unsigned int       read_blen;
+	unsigned int       rca;
+	unsigned int       r_var_14;
+};
+
+enum { CMD_DIR = 0x1, CMD_APP = 0x2, CMD_RESP = 0x4, CMD_BLKM = 0x8 };
+struct tifmxx_mmcsd_ecmd
+{
+	unsigned int cmd_index;
+	unsigned int cmd_arg;
+	unsigned int dtx_length;
+	unsigned int resp_type;
+	unsigned int flags;
 };
 
 struct tifmxx_sock_data
@@ -72,7 +85,7 @@ struct tifmxx_sock_data
 
 	struct scsi_cmnd         *srb;        // current command
 
-	unsigned int             sock_id;     //socket number, same as scsi target
+	unsigned int             sock_id;     // socket number, same as scsi target
 
 	struct work_struct       do_scsi_cmd;
 
@@ -82,6 +95,7 @@ struct tifmxx_sock_data
 	wait_queue_head_t        irq_ack; // reveng: event_2 signalled from interrupt, event_1 signalled on
 					  // shutdown/remove, most functions wait on both
 
+	unsigned int             clk_freq;
 	unsigned int             r_var_2;
 	
 	
@@ -95,11 +109,11 @@ struct tifmxx_sock_data
 	void                     (*clean_up)(struct tifmxx_sock_data *sock);
 	void                     (*process_irq)(struct tifmxx_sock_data *sock);
 	void                     (*signal_irq)(struct tifmxx_sock_data *sock, unsigned int card_irq_status);
+	int                      (*init_card)(struct tifmxx_sock_data *sock);
 };
 
 struct tifmxx_data
 {
-	rwlock_t                 lock;
 	struct pci_dev           *dev;	
 	char __iomem             *mmio_base;
 

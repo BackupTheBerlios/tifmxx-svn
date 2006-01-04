@@ -1,7 +1,7 @@
 #include "cflash.h"
 
 CFlash::CFlash(char *_base_addr)
-       :base_addr(_base_addr), var_1(0x01312d00), is_xx12(0)
+       :base_addr(_base_addr), ClkFreq(20000000), is_xx12(0)
 {
 	if(0x8 & read16(base_addr + 0x8))
 	{ // card inserted
@@ -78,7 +78,7 @@ CFlash::RescueRWFail()
 	} while(t2 - t1 < 10000000); // some "performance counter" - how much time to wait?
 	// socket shall be down by now
 
-	var_1 = 0x01312d00;
+	ClkFreq = 20000000;
 	t1 = sys_var_0014[0];
 	do { t2 = sys_var_0014[0]; } while (t2 - t1 < 3000000);
 
@@ -361,7 +361,7 @@ CFlash::sub_0_1FEE0(PRKEVENT c_event, int time_out)
 }
 
 CSocket::CSocket(char *_base_addr)
-	:base_addr(_base_addr), var_1(0x01312d00), is_xx12(0)
+	:base_addr(_base_addr), ClkFreq(20000000), is_xx12(0)
 {
 	if(!(0x8 & read16(base_addr + 0x8)))
 		muiMediaID = 0; // card not inserted
@@ -388,7 +388,7 @@ CSocket::SocketPowerCtrl()
 	} while(t2 - t1 < 10000000); // some "performance counter" - how much time to wait?
 	// socket shall be down by now
 	
-	var_1 = 0x01312d00;
+	ClkFreq = 20000000;
 	if(!(0x8 & (char)read16(base_addr + 0x8)) 
 	{
 		muiMediaID = 0;

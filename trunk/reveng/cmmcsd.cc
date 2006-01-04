@@ -140,16 +140,16 @@ CMMCSD::InitializeCard()
 	
 	ReportMediaModel(); // print some debug info
 
-	if(0 != (r_val = sub_0_1CE40(0x7, dwRCA, 0x2900))) return r_val;
-	if(0 != (r_val = sub_0_1CE40(0x10, wReadBlockLen, 0x2100))) return r_val;
+	if(0 != (r_val = ExecCardCmd(0x7, dwRCA, 0x2900))) return r_val;
+	if(0 != (r_val = ExecCardCmd(0x10, wReadBlockLen, 0x2100))) return r_val;
 
-	write32(base_addr + 0x128, wBlockLen - 1);
+	write32(base_addr + 0x128, wReadBlockLen - 1);
 	if(muiMediaID == 0x23)
 	{
 		write16zx(base_addr + 0x4, 0x100 | read16(base_addr + 0x4));
-		var_1 = 24000000; // 0x16e3600
-		if(0 != (r_val = sub_0_1CE40(0x37, dwRCA, 0x2100))) return r_val;
-		if(0 != (r_val = sub_0_1CE40(0x2a, 0, 0x2100))) return r_val;
+		ClkFreq = 24000000; 
+		if(0 != (r_val = ExecCardCmd(0x37, dwRCA, 0x2100))) return r_val;
+		if(0 != (r_val = ExecCardCmd(0x2a, 0, 0x2100))) return r_val;
 
 		char lvar_x30 = 0;
 		ExecParam lvar_x38 = {0xd, 0, 0x40, 1, 1, 1, 0, 0};
@@ -164,14 +164,14 @@ CMMCSD::InitializeCard()
 
 		if(0x4 & (0xf & lvar_x51))
 		{
-			if(0 != (r_val = sub_0_1CE40(0x37, dwRCA, 0x2100))) return r_val;
-			if(0 != (r_val = sub_0_1CE40(0x6, 0x2, 0x2100))) return r_val;
+			if(0 != (r_val = ExecCardCmd(0x37, dwRCA, 0x2100))) return r_val;
+			if(0 != (r_val = ExecCardCmd(0x6, 0x2, 0x2100))) return r_val;
 			write32(base_addr + 0x110, 0x8800 | mwClkSpeed);
 		}
 		WriteProtected |= (0x200 & read16(base_addr + 0x8)) ? 0x1 : 0; 		
 	} //1F4FC
 	
-	for(short cnt = 0, cnt < 10000, cnt++)
+	for(short cnt = 0; cnt < 10000; cnt++)
 	{
 		if(0 != (r_val = GetState(&lvar_x31, 0))) break;
 		if(lvar_x31 != 0x4) continue;
@@ -215,9 +215,9 @@ x1F65C:
 		write32(base_addr + 0x130, 0x8000);
 		KeSynchronizeExecution(card_int, sub_0_1C100, &byStatus); // wait for ISR connected to card_int?
 		if(*arg_2 == 1) // read single block
-			r_val = sub_0_1CE40(0x11, arg_1 << byReadBlockLen, 0xb100);
+			r_val = ExecCardCmd(0x11, arg_1 << byReadBlockLen, 0xb100);
 		else // read multiple blocks
-			r_val = sub_0_1CE40(0x12, arg_1 << byReadBlockLen, 0xb100);
+			r_val = ExecCardCmd(0x12, arg_1 << byReadBlockLen, 0xb100);
 		
 		if(r_val) return r_val;
 	} //1F72A
@@ -232,7 +232,7 @@ x1F65C:
 
 	if(*arg_2 != 1 || arg_1 == -1)
 	{ // 1F776
-		r_val = sub_0_1CE40(0xc, 0, 0x2900); // stop transmission
+		r_val = ExecCardCmd(0xc, 0, 0x2900); // stop transmission
 		if(r_val)
 		{
 			if(r_val == 0x86) return r_val; // card removed
@@ -253,6 +253,7 @@ x1F65C:
 	return r_val;
 }
 
+// Has errors!!!
 char
 CMMCSD::WriteSectors(int arg_1, short *arg_2, short *arg_3)
 {
@@ -289,9 +290,9 @@ x1F955:
 		write32(base_addr + 0x130, 0x80);
 		KeSynchronizeExecution(card_int, sub_0_1C100, &byStatus); // wait for ISR connected to card_int?
 		if(*arg_2 == 1) // write single block
-			r_val = sub_0_1CE40(0x18, arg_1 << byWriteBlockLen, 0x3100);
+			r_val = ExecCardCmd(0x18, arg_1 << byWriteBlockLen, 0x3100);
 		else // write multiple blocks
-			r_val = sub_0_1CE40(0x19, arg_1 << byWriteBlockLen, 0x3100);
+			r_val = ExecCardCmd(0x19, arg_1 << byWriteBlockLen, 0x3100);
 
 		if(r_val) return r_val;
 	}
@@ -310,7 +311,7 @@ x1F955:
 				if(mdwMMCSD_STATUS == 7) continue;
 				if(cmmcsd_var_14 == 1)
 				{
-					r_val = sub_0_1CE40(0xc, 0, 0x2900);
+					r_val = ExecCardCmd(0xc, 0, 0x2900);
 					break;
 				}
 			}
@@ -395,11 +396,11 @@ CMMCSD::DetectCardType()
 			{ // 1D0F6
 				if(!r_val) 
 				{ // 1D11C
-					r_val = sub_0_1CE40(0x37, 0, 0x2100);
+					r_val = ExecCardCmd(0x37, 0, 0x2100);
 					if(r_val == 0x20)
 					{
 						//MMC card
-						sub_0_1CE40(0, 0, 0);
+						ExecCardCmd(0, 0, 0);
 						muiMediaID = 0x13;
 						return 0;						
 					}
@@ -480,9 +481,9 @@ x1D367:
 	
 	if(!sub_0_1C1F0(0x1f, 0x1f, 0) return 0x2d;
 	//send ALL_SEND_CID
-	if(0 != (r_val = sub_0_1CE40(0x2, 0, 0x1200))) return r_val;
+	if(0 != (r_val = ExecCardCmd(0x2, 0, 0x1200))) return r_val;
 	//send SEND_REL_ADDR
-	if(0 != (r_val = sub_0_1CE40(0x3, 0x20000, 0x1600))) return r_val;
+	if(0 != (r_val = ExecCardCmd(0x3, 0x20000, 0x1600))) return r_val;
 
 	if(muiMediaID == 0x13)
 	{
@@ -585,8 +586,8 @@ CMMCSD::ReadCSDInformation()
 	if(t_TRANS_SPEED & 0x7 <= 3) dwTranSpeed = lvar_x28[t_TRANS_SPEED & 0x3];
 	
 	dwTranSpeed *= lvar_x38[(t_TRANS_SPEED >> 0x3) & 0xf];
-	mwClkSpeed = var_1 / dwTranSpeed;
-	if(mwClkSpeed * dwTranSpeed < var_1) mwClkSpeed ++;
+	mwClkSpeed = ClkFreq / dwTranSpeed;
+	if(mwClkSpeed * dwTranSpeed < ClkFreq) mwClkSpeed ++;
 
 	if(!mwClkSpeed) mwClkSpeed = 1;
 	
@@ -703,7 +704,7 @@ CMMCSD::ReadSerialNumber()
 }
 
 char
-CMMCSD::sub_0_1CE40(char arg_1, int arg_2, short arg_3)
+CMMCSD::ExecCardCmd(char arg_1, int arg_2, short arg_3)
 {
 	char r_val, cnt = 0;
 
@@ -786,7 +787,7 @@ CMMCSD::Execute(ExecParam *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCoun
 		//pParam->bApp                 - 0x00e
                 //pParam->bRESP                - 0x00f
 		//pParam->bBLKM                - 0x010
-		if(pParam->bAPP) sub_0_1CE40(0x37, dwRCA, 0x2100);
+		if(pParam->bAPP) ExecCardCmd(0x37, dwRCA, 0x2100);
 
 		short lvar_2 = 0;
 
@@ -812,7 +813,7 @@ CMMCSD::Execute(ExecParam *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCoun
 			if(pData->uiDataTransferLength)
 				write32(base_addr + 0x128, pData->uiDataTransferLength - 1);
 		}
-		r_val = sub_0_1CE40(pParam->uiCommandIndex, pParam->uiCommandArgument, lvar_2);
+		r_val = ExecCardCmd(pParam->uiCommandIndex, pParam->uiCommandArgument, lvar_2);
 	}
 	// 1EA53
 	if(uiDMAPhysicalAddress)
@@ -823,7 +824,7 @@ CMMCSD::Execute(ExecParam *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCoun
 			{ 
 				if(cmmcsd_var_6->off_x10 != r_val)
 				{
-					if(0 != (r_val = WaitForRBS()) || 0 != (r_val = sub_0_1CE40(0xc, 0, 0x2900)))
+					if(0 != (r_val = WaitForRBS()) || 0 != (r_val = ExecCardCmd(0xc, 0, 0x2900)))
 					{
 						write16zx(base_addr + 0x18, 0xffff);
 						write16zx(base_addr + 0x10, 0x2);

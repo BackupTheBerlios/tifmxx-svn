@@ -45,7 +45,7 @@ struct CMMCSD : public CFlash // mmc, sd
 		int uiResponseType;       // 0x00c
 		char bDIR;                // 0x00d
 		char bApp;                // 0x00e
-                char RESP;                // 0x00f
+                char bRESP;               // 0x00f
 		char bBLKM;               // 0x010
 	};
 
@@ -71,7 +71,7 @@ struct CMMCSD : public CFlash // mmc, sd
 	char GetCHS();
 	char ReadSerialNumber();
 	void ReportMediaModel(); // print some debug info
-	char sub_0_1CE40(char arg_1, int arg_2, short arg_3);
+	char ExecCardCmd(char arg_1, int arg_2, short arg_3);
 	char Execute(ExecParam *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCount, char *pData);
 	char GetState(char *byCardState, char arg_2);
 	char WaitForEOC();
