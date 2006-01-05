@@ -97,6 +97,7 @@ struct tifmxx_sock_data
 
 	unsigned int             clk_freq;
 	unsigned int             r_var_2;
+	unsigned int             cmd_status;
 	
 	
 	union

@@ -357,7 +357,7 @@ CFlash::sub_0_1FEE0(PRKEVENT c_event, int time_out)
 	PRKEVENT event_array[] = {&event_1, c_event};
 	NTSTATUS r_val = KeWaitForMultipleObjects(2, event_array, 1, 0, 0, 0, arg_2, ??);
 	KeClearEvent(c_event);
-	return (r_val == 0x102) ? 0x87 : 0; // wait timeout
+	return (r_val == WAIT_TIMEOUT) ? 0x87 : 0; // wait timeout
 }
 
 CSocket::CSocket(char *_base_addr)

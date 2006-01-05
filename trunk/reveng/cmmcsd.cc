@@ -710,8 +710,8 @@ CMMCSD::ExecCardCmd(char arg_1, int arg_2, short arg_3)
 
 	do
 	{
-		write32(base_addr + 0x10c, arg_2);
-		write32(base_addr + 0x108, arg_2);
+		write32(base_addr + 0x10c, (arg_2 >> 16) & 0xffff);
+		write32(base_addr + 0x108, arg_2 & 0xffff);
 		KeSynchronizeExecution(card_int, sub_0_27DE0, &byStatus);
 		KeClearEvent(cmmcsd_event_1);
 		write32(base_addr + 0x104, (arg_3 & 0xff80) | (arg_1 & 0x3f));
@@ -980,7 +980,7 @@ CMMCSD::WaitForEOC()
 	{
 		if(r_val) break;
 		if(vara_4) return 0x86;
-		if(KeSynchronizeExecution(card_int, sub_0_1C050, &byStatus))
+		if(KeSynchronizeExecution(card_int, sub_0_1C060, &byStatus))
 		{
 			if(byStatus & 0x00004000) r_val = 0x2a; // Status error, may be bit clear
 			if(byStatus & 0x00000080) r_val = 0x20; // timeout error
@@ -990,7 +990,7 @@ CMMCSD::WaitForEOC()
 		{
 			r_val = sub_0_1FEE0(&cmmcsd_event_1, -10000000);
 			if(vara_4) return 0x86;
-			if(KeSynchronizeExecution(card_int, sub_0_1C050, &byStatus))
+			if(KeSynchronizeExecution(card_int, sub_0_1C060, &byStatus))
 			{
 				if(byStatus & 0x00004000) r_val = 0x2a; // Status error, may be bit clear
 				if(byStatus & 0x00000080) r_val = 0x20; // timeout error

@@ -186,7 +186,7 @@ tifmxx_eval_inquiry(struct tifmxx_sock_data *sock)
 	{
 		// bad target
 		printk(KERN_ERR DRIVER_NAME ": Target %d removed.\n", sock->sock_id);
-		sock->srb->result = DID_BAD_TARGET << 16;
+		sock->srb->result = DID_NO_CONNECT << 16;
 		sock->srb->done(sock->srb);
 		sock->srb = 0;
 	}

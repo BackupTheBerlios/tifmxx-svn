@@ -92,7 +92,86 @@ tifmxx_mmcsd_signal_irq(struct tifmxx_sock_data *sock, unsigned int card_irq_sta
 	}
 }
 
-//this function is called from scsi slave_alloc - mmcsd_p is not supposed to disappear
+/* This function deserves to be streamlined a bit */
+static int
+tifmxx_mmcsd_wait_for_eoc(struct tifmxx_sock_data *sock)
+{
+	unsigned long f;
+	int rc = 0;
+	
+	spin_lock_irqsave(&sock->lock, f);
+	if(sock->cmd_status & 0x1)
+	{
+		spin_unlock_irqrestore(&sock->lock, f);
+		return 0;
+	}
+
+	do
+	{
+		if(rc) break;
+		if(sock->flags & CARD_REMOVED)
+		{
+			spin_unlock_irqrestore(&sock->lock, f);
+			return 0x86;
+		}
+
+		if(sock->cmd_status & 0x4000) rc = 0x2a; // ???
+		if(sock->cmd_status & 0x0080) rc = 0x20; // timeout
+		if(sock->cmd_status & 0x0100) rc = 0x21; // crc error
+
+		if(!rc)
+		{
+			spin_unlock_irqrestore(&sock->lock, f);
+
+			if(!wait_event_timeout(sock->irq_ack, (sock->flags & (CARD_EVENT | CARD_REMOVED)),
+					       msecs_to_jiffies(100))) rc = 0x87;
+
+			spin_lock_irqsave(&sock->lock, f);
+			sock->flags &= ~CARD_EVENT;
+			if(sock->flags & CARD_REMOVED)
+			{
+				spin_unlock_irqrestore(&sock->lock, f);
+				return 0x86;
+			}
+
+			if(sock->cmd_status & 0x4000) rc = 0x2a; // ???
+			if(sock->cmd_status & 0x0080) rc = 0x20; // timeout
+			if(sock->cmd_status & 0x0100) rc = 0x21; // crc error
+			if(rc)
+			{
+				spin_unlock_irqrestore(&sock->lock, f);
+				return rc;
+			}
+
+		}
+	}while(!(sock->cmd_status & 0x1));
+	spin_unlock_irqrestore(&sock->lock, f);
+
+	if(rc == 0x87 && (0x1 & readl(sock->sock_addr + 0x114))) return 0;
+	return rc;	
+}
+
+static int
+tifmxx_mmcsd_exec_card_cmd(struct tifmxx_sock_data *sock, unsigned int cmd, unsigned int cmd_arg, 
+			   unsigned int cmd_mask)
+{
+	unsigned long f;
+	int rc, cnt;
+
+	for(cnt = 0; cnt < 3; cnt++)
+	{
+		spin_lock_irqsave(&sock->lock, f);
+		writel((cmd_arg >> 16) & 0xffff, sock->sock_addr + 0x10c);
+		writel(cmd_arg & 0xffff, sock->sock_addr + 0x108);
+		sock->cmd_status = 0;
+		sock->flags &= ~CARD_EVENT;
+		writel((cmd & 0x3f) | (cmd_mask & 0xff80), sock->sock_addr + 0x104);
+		spin_unlock_irqrestore(&sock->lock, f);
+		if(0x20 != (rc = tifmxx_mmcsd_wait_for_eoc(sock))) break;
+	}	
+	return rc;
+}
+
 static int
 tifmxx_mmcsd_init_card(struct tifmxx_sock_data *sock)
 {
@@ -153,8 +232,8 @@ tifmxx_mmcsd_init_card(struct tifmxx_sock_data *sock)
 	spin_unlock_irqrestore(&sock->lock, f);
 
 	if(0 != (rc = tifmxx_mmcsd_read_serial_number(sock))) return rc;	
-	if(0 != (rc = tifmxx_mmcsd_exec_card_cmd(0x0007, l_rca, 0x2900))) return rc;
-	if(0 != (rc = tifmxx_mmcsd_exec_card_cmd(0x0010, l_read_blen, 0x2100))) return rc;
+	if(0 != (rc = tifmxx_mmcsd_exec_card_cmd(sock, 0x0007, l_rca, 0x2900))) return rc;
+	if(0 != (rc = tifmxx_mmcsd_exec_card_cmd(sock, 0x0010, l_read_blen, 0x2100))) return rc;
 
 	spin_lock_irqsave(&sock->lock, f);
 	writel(sock->mmcsd_p->read_blen - 1, sock->sock_addr + 0x128);
@@ -164,8 +243,8 @@ tifmxx_mmcsd_init_card(struct tifmxx_sock_data *sock)
 		writel(0x0100 | readl(sock->sock_addr + 0x4), sock->sock_addr + 0x4);
 		sock->clk_freq = 24000000;
 		spin_unlock_irqrestore(&sock->lock, f);
-		if(0 != (rc = tifmxx_mmcsd_exec_card_cmd(0x0037, l_rca, 0x2100))) return rc;
-		if(0 != (rc = tifmxx_mmcsd_exec_card_cmd(0x002a, 0, 0x2100))) return rc;
+		if(0 != (rc = tifmxx_mmcsd_exec_card_cmd(sock, 0x0037, l_rca, 0x2100))) return rc;
+		if(0 != (rc = tifmxx_mmcsd_exec_card_cmd(sock, 0x002a, 0, 0x2100))) return rc;
 		
 		dma_page_cnt = 0;
 		cmd_rq = ((struct tifmxx_mmcsd_ecmd){0x000d, 0x0000, 0x0040, 0x0001, CMD_DIR | CMD_APP});
@@ -177,8 +256,8 @@ tifmxx_mmcsd_init_card(struct tifmxx_sock_data *sock)
 		if(0 != (rc = tifmxx_mmcsd_execute(&cmd_rq, 0, &dma_page_cnt, cmd_rp_2))) return rc;
 		if(0x4 & (0xf & cmd_rp_2[1]))
 		{
-			if(0 != (rc = tifmxx_mmcsd_exec_card_cmd(0x0037, l_rca, 0x2100))) return rc;
-			if(0 != (rc = tifmxx_mmcsd_exec_card_cmd(0x0006, 0x0002, 0x2100))) return rc;
+			if(0 != (rc = tifmxx_mmcsd_exec_card_cmd(sock, 0x0037, l_rca, 0x2100))) return rc;
+			if(0 != (rc = tifmxx_mmcsd_exec_card_cmd(sock, 0x0006, 0x0002, 0x2100))) return rc;
 			spin_lock_irqsave(&sock->lock, f);
 			sock->flags |= (0x0200 & readl(sock->sock_addr + 0x8)) ? CARD_RO : 0;
 			spin_unlock_irqrestore(&sock->lock, f);
@@ -190,7 +269,7 @@ tifmxx_mmcsd_init_card(struct tifmxx_sock_data *sock)
 	for(cnt = 0; cnt < 10000; cnt++)
         {
 		spin_unlock_irqrestore(&sock->lock, f);
-		rc = GetState(&card_state, 0);
+		rc = tifmxx_mmcsd_get_state(sock, &card_state, 0);
 		spin_lock_irqsave(&sock->lock, f);
 
                 if(rc) break;
