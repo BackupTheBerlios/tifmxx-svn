@@ -76,18 +76,21 @@ CMMCSD::RescueRWFail()
 	return InitializeCard();
 }
 
+// assume all time deltas in 0.1us
 char
 CMMCSD::InitializeCard()
 {
 	write32(base_addr + 0x168, 0x2);
 	mwClkSpeed = 0x3c;
 	write32(base_addr + 0x110, 0xb);
-	long t1, t2; t1 = sys_var_0014[0];
+	long t1, t2; 
 	char r_val = 0x2f;
 	
+	KeQuerySystemTime(&t1);
+
 	do
 	{
-		t2 = sys_var_0014[0];
+		KeQuerySystemTime(&t2);
 		if(0x1 & read32(base_addr + 0x16c))
 		{
 			r_val = 0;
@@ -354,46 +357,43 @@ CMMCSD::DetectCardType()
 {
 	char r_val, cnt_1 = 0;
 
-	do
+	while(1)
 	{
 		write32(base_addr + 0x10c, 0);
 		write32(base_addr + 0x108, 0);
 		KeSynchronizeExecution(card_int, sub_0_27DE0, &byStatus);
-
 		KeClearEvent(cmmcsd_event_1);
 
 		write32(base_addr + 0x104, 0x1305);
-		r_val = WaitForEOC();
-		if(r_val != 0x20)
+		if(0x20 != (r_val = WaitForEOC()))
 		{ // 1D0D2
 			// SDIO card
-			if(!r_val) break;
+			if(r_val) break;
 			muiMediaID = 0x43;
 			return 0;
 		}
 		
-		if(cnt_1 >= 2) break;
+		if(cnt_1 >= 2 || muiMediaID == 3 ) break;
 		cnt_1++;		
-	} while(muiMediaID != 3);
+	}
 
 	int cnt_2 = 3;
 
 	do
 	{ // 1D010:
 		write32(base_addr + 0x104, 0x80);
-		sub_1_FEEE0(cmmcsd_event_1, -1000000); // if return != 0 print message
+		sub_1_FEEE0(&cmmcsd_event_1, -1000000); // if return != 0 print message
 		cnt_1 = 0;
 	
-		do // 1D052
+		while(1)
 		{
 			write32(base_addr + 0x10c, 0);
 			write32(base_addr + 0x108, 0);
 			KeSynchronizeExecution(card_int, sub_0_27DE0, &byStatus);
 			KeClearEvent(cmmcsd_event_1);
 			write32(base_addr + 0x104, 0);
-			r_val = WaitForEOC();
-			if(r_val != 0x20)
-			{ // 1D0F6
+			if(0x20 != (r_val = WaitForEOC()))
+			{
 				if(!r_val) 
 				{ // 1D11C
 					r_val = ExecCardCmd(0x37, 0, 0x2100);
@@ -413,9 +413,9 @@ CMMCSD::DetectCardType()
 				}
 				break;
 			}
-			if(cnt_1 >= 2) break;
+			if(cnt_1 >= 2 || muiMediaID == 3) break;
 			cnt_1++;
-		} while(muiMediaID != 3);
+		}
 
 		cnt_2--;
 	} while(cnt_2);
@@ -426,18 +426,18 @@ CMMCSD::DetectCardType()
 char
 CMMCSD::Standby()
 {
-	long t1, t2; t1 = sys_var_0014[0];
+	long t1, t2; 
 	int lvar_x20 = (muiMediaID == 0x23) ? 0x29 : 0x1;
-	char r_val = 0, cnt_1 = 0, cnt_2 = 0, cnt_3 = 0; //al, bl, r14, r15
-	int t_val;
+	char r_val = 0, cnt_1 = 0, cnt_2 = 0, cnt_3 = 0;
 
+	KeQuerySystemTime(&t1);
 	do
 	{
-		if(r_val || muiMediaID != 0x23)
+		if(cnt_2 && muiMediaID == 0x23)
 		{
 			cnt_1 = 0;
 
-			do	
+			while(1)
 			{
 				write32(base_addr + 0x10c, 0);
 				write32(base_addr + 0x108, 0);
@@ -447,35 +447,31 @@ CMMCSD::Standby()
 				if(0x20 != (r_val = WaitForEOC()))
 				{
 					if(r_val) return r_val;
-					r_val = lvar_x20;
-					goto x1D2C2;
-				}
+					break;
+				}				
+				if(cnt_1 >= 2 || muiMediaID == 3) return r_val;
 				cnt_1 ++;
-				if(cnt_1 >= 2) return r_val;
-			} while(muiMediaID != 3);
-			return r_val;
+			}
 		}
-x1D2C2:
+
 		cnt_2 = 1;
 		cnt_1 = 0;
-		t_val = (r_val & 0x3f) | 0x1300;
-		do	
+
+		while(1)	
 		{
 			write32(base_addr + 0x10c, 0x80fc);
 			write32(base_addr + 0x108, 0);
 			KeSynchronizeExecution(card_int, sub_0_27DE0, &byStatus);
 			KeClearEvent(cmmcsd_event_1);
-			write32(base_addr + 0x104, t_val);
-			if(0x20 != (r_val = WaitForEOC())) goto x1D367;
-			
+			write32(base_addr + 0x104, (lvar_x20 & 0x3f) | 0x1300);
+			if(0x20 != (r_val = WaitForEOC())) break;
+			if(cnt_1 >= 2 || muiMediaID == 3) return cnt_3 ? 0x28 : 0x27;	
 			cnt_1 ++;
-			if(cnt_1 >= 2) break;
-		} while(muiMediaID != 3);
-		return cnt_3 ? 0x28 : 0x27;
-x1D367:
+		};
+
 		cnt_3 = 1;
 		if(r_val) return r_val;
-		t2 = sys_var_0014[0]
+		KeQuerySystemTime(&t2);
 		if(sub_0_1C1F0(0x1f, 0x1f, 0)) break;
 	} while(t2 - t1 <= 10000000);
 	
@@ -673,11 +669,11 @@ CMMCSD::ReadSerialNumber()
 
 	do
 	{
-		write32(base_addr + 0x10c, dwRCA);
-		write32(base_addr + 0x108, dwRCA);
+		write32(base_addr + 0x10c, dwRCA >> 16);
+		write32(base_addr + 0x108, dwRCA & 0xffff);
 		KeSynchronizeExecution(card_int, sub_0_27DE0, &byStatus);
 		KeClearEvent(cmmcsd_event_1);
-		write32(base_addr + 0x104, 0x220);
+		write32(base_addr + 0x104, 0x220a);
 	
 		if(0x20 != (r_val = WaitForEOC()))
 		{ // 1DCF5
@@ -691,16 +687,15 @@ CMMCSD::ReadSerialNumber()
 			} while(cnt_1 < 0x48);
 			mpSerialNumber[9] = '0'; mpSerialNumber[10] = '0'; mpSerialNumber[11] = '0';
 			short lvar_x22 = sub_0_1C1F0(0x37, 0x30, 1); // revision
-			SerialNumber = sub_0_1C1F0(0x2f, 0x18, 1); 
+			SerialNumber = sub_0_1C1F0(0x2f, 0x18, 1);  // PSN must start at 0x10 - bug?
 			sprintf(&mpSerialNumber[12], "%04X%04X", lvar_x22, SerialNumber);
 			mpSerialNumber[20] = 0;
 			return 0;
 		}
-		if(cnt >= 2) break;
+		
 		cnt ++;
-	} while(muiMediaID != 3);
+	} while(muiMediaID != 3 || cnt < 3);
 	return r_val;
-	
 }
 
 char
@@ -1043,8 +1038,9 @@ CMMCSD::WaitForBRS()
 	return r_val;
 }
 
+// case with bit field spanning 3 reads is unhandled
 int 
-CMMCSD::sub_0_1C1F0(char bf_end, char bf_start, char op)
+CMMCSD::sub_0_1C1F0(char bf_end, char bf_start, char reg)
 {
 	if(bf_end < bf_start || bf_end > 0x7f || bf_end > bf_start + 0x20) return 0;
 	

@@ -76,7 +76,7 @@ struct CMMCSD : public CFlash // mmc, sd
 	char GetState(char *byCardState, char arg_2);
 	char WaitForEOC();
 	char WaitForBRS();
-	int sub_0_1C1F0(char bf_end, char bf_start, char op); //access CSD/CID bit-fields
+	int sub_0_1C1F0(char bf_end, char bf_start, char reg); //access CSD/CID bit-fields
 	short sub_0_1E1B0(char arg_1, char arg_2);
 	char WaitForCard();
 	char WaitForAF();

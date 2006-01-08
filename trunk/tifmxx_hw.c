@@ -82,25 +82,42 @@ tifmxx_interrupt(int irq, void *dev_instance, struct pt_regs *regs)
 }
 
 static unsigned int
-tifmxx_sock_power_cycle(char __iomem *sock_addr, unsigned int sock_flags)
+tifmxx_sock_cycle_power(char __iomem *sock_addr, unsigned int sock_flags)
 {
 	unsigned int p_reg;
+	u64 t;
 
 	writel(0x0e00, sock_addr + 0x4);
-	msleep_interruptible(10);
+	
+	t=get_jiffies_64();
+	while(get_jiffies_64() - t < msecs_to_jiffies(1000))
+	{
+		if(!(0x80 & readl(sock_addr + 0x8))) break;
+		msleep(10);
+	}
+	
 	p_reg = readl(sock_addr + 0x8);
 	if(!(0x8 & p_reg)) return 0;
+
+
 	if(sock_flags & XX12_SOCKET)
 		writel((p_reg & 0x7) | 0x0c00, sock_addr + 0x4);
 	else
 	{
 		// SmartMedia cards need extra 40 msec
-		if(1 == ((readl(sock_addr + 0x8) >> 4) & 7)) msleep_interruptible(40); 
+		if(1 == ((readl(sock_addr + 0x8) >> 4) & 7)) msleep(40); 
 		writel(readl(sock_addr + 0x4) | 0x0040, sock_addr + 0x4);
-		msleep_interruptible(10);
+		msleep(10);
 		writel((p_reg & 0x7) | 0x0c40, sock_addr + 0x4);
 	}
-	msleep_interruptible(10); // socket is supposed to go up
+
+	t=get_jiffies_64();
+	while(get_jiffies_64() - t < msecs_to_jiffies(1000))
+	{
+		if(0x80 & readl(sock_addr + 0x8)) break;
+		msleep(10);
+	}
+	
 	if(!(sock_flags & XX12_SOCKET)) writel(readl(sock_addr + 0x4) & 0xffbf, sock_addr + 0x4);
 
 	writel(0x0007, sock_addr + 0x28);
@@ -123,7 +140,7 @@ tifmxx_detect_card(struct tifmxx_data *fm, unsigned int sock_num)
 
 	if(!(sock->flags & CARD_PRESENT)) // detect and insert new card
 	{
-		media_id = tifmxx_sock_power_cycle(sock_addr, sock_flags);
+		media_id = tifmxx_sock_cycle_power(sock_addr, sock_flags);
 		switch(media_id)
 		{
 			case 1:

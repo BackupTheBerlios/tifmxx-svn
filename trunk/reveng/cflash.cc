@@ -69,18 +69,19 @@ CFlash::RescueRWFail()
 {
 	write16zx(base_addr + 4, 0x0e00);
 
-	long t1, t2; t1 = sys_var_0014[0];
+	long t1, t2; 
 
+	KeQuerySystemTime(&t1);
 	do
 	{
-		t2 = sys_var_0014[0];
+		KeQuerySystemTime(&t2);
 		if(!(0x80 & read16(base_addr + 0x8))) break;  // check this
 	} while(t2 - t1 < 10000000); // some "performance counter" - how much time to wait?
 	// socket shall be down by now
 
 	ClkFreq = 20000000;
-	t1 = sys_var_0014[0];
-	do { t2 = sys_var_0014[0]; } while (t2 - t1 < 3000000);
+	KeQuerySystemTime(&t1);
+	do { KeQuerySystemTime(&t2); } while (t2 - t1 < 3000000);
 
 	char uiVoltage = (char)read16(base_addr + 0x8) & 0x7;
 	if(!is_xx12)
@@ -96,12 +97,12 @@ CFlash::RescueRWFail()
 
 	if(!(0x80 & read16(base_addr + 0x8)))
 	{
-		t1 = sys_var_0014[0];
+		KeQuerySystemTime(&t1);
 		
 		while(!(0x80 & read16(base_addr + 0x8)))
 		{
 			if(t2 - t1 > 10000000) break;
-			t2 = sys_var_0014[0];
+			KeQuerySystemTime(&t2);
 			if(0x80 & read16(base_addr + 0x8)) break;
 		}				
 	}
@@ -379,13 +380,14 @@ CSocket::SocketPowerCtrl()
 {
 	write16zx(base_addr + 0x4, 0x0e00); // reset socket
 	
-	long t1, t2; t1 = sys_var_0014[0];
+	long t1, t2; 
 
+	KeQuerySystemTime(&t1);
 	do
 	{
-		t2 = sys_var_0014[0];
+		KeQuerySystemTime(&t2);
 		if(!(0x80 & read16(base_addr + 0x8))) break;  // check this
-	} while(t2 - t1 < 10000000); // some "performance counter" - how much time to wait?
+	} while(t2 - t1 < 10000000); // win32 version uses KeQuerySystemTime with 0.1us units
 	// socket shall be down by now
 	
 	ClkFreq = 20000000;
@@ -409,9 +411,10 @@ CSocket::SocketPowerCtrl()
 		write16zx(base_addr +0x4, (short)uiVoltage | 0x0c00);
 
 	// socket is re-enabled
+	KeQuerySystemTime(&t1);
 	do
 	{
-		t2 = sys_var_0014[0];
+		KeQuerySystemTime(&t2);
 		if(0x80 & read16(base_addr + 0x8)) break; 
 	} while(t2 - t1 < 10000000);
 	// socket shall be powered by now

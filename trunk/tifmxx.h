@@ -65,6 +65,13 @@ struct tifmxx_mmcsd_data
 	unsigned int       read_blen;
 	unsigned int       rca;
 	unsigned int       r_var_14;
+
+	unsigned char      mid;
+	unsigned short     oid;
+	char               pnm[7];
+	unsigned char      rev;
+	unsigned int       psn;	
+
 };
 
 enum { CMD_DIR = 0x1, CMD_APP = 0x2, CMD_RESP = 0x4, CMD_BLKM = 0x8 };
