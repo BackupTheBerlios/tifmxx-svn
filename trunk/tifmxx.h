@@ -61,8 +61,6 @@ struct tifmxx_mmcsd_data
 	unsigned int       r_var_10;
 	unsigned int       r_var_11;
 
-	unsigned int       clk_speed;
-	unsigned int       read_blen;
 	unsigned int       rca;
 	unsigned int       r_var_14;
 
@@ -71,7 +69,15 @@ struct tifmxx_mmcsd_data
 	char               pnm[7];
 	unsigned char      rev;
 	unsigned int       psn;	
+	
+	unsigned int       clk_speed; /* clocks per bit */
+	unsigned int       read_block_len;
+	unsigned int       write_block_len;
+	unsigned int       read_time_out;
+	unsigned int       write_time_out;
 
+	size_t             size;
+	size_t             blocks;
 };
 
 enum { CMD_DIR = 0x1, CMD_APP = 0x2, CMD_RESP = 0x4, CMD_BLKM = 0x8 };
@@ -131,6 +137,12 @@ struct tifmxx_data
 	
 	struct work_struct       isr_bh;
 };
+
+unsigned int tifmxx_get_media_id(struct tifmxx_sock_data *sock);
+void tifmxx_set_media_id(struct tifmxx_sock_data *sock, unsigned int media_id);
+void tifmxx_set_flag(struct tifmxx_sock_data *sock, unsigned int flag_mask);
+void tifmxx_clear_flag(struct tifmxx_sock_data *sock, unsigned int flag_mask);
+int tifmxx_test_flag(struct tifmxx_sock_data *sock, unsigned int flag_mask);
 
 void tifmxx_mmcsd_init(struct tifmxx_sock_data *sock);
 void tifmxx_eval_scsi(void *data);

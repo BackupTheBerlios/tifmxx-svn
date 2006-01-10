@@ -45,6 +45,60 @@ static struct pci_device_id tifmxx_pci_tbl [] =
   	{ }
 };
 
+unsigned int
+tifmxx_get_media_id(struct tifmxx_sock_data *sock)
+{
+	unsigned int rc;
+	unsigned long f;
+
+	spin_lock_irqsave(&sock->lock, f);
+	rc = sock->media_id;
+	spin_unlock_irqrestore(&sock->lock, f);
+	return rc;
+}
+
+void
+tifmxx_set_media_id(struct tifmxx_sock_data *sock, unsigned int media_id)
+{
+	unsigned long f;
+
+	spin_lock_irqsave(&sock->lock, f);
+	sock->media_id = media_id;
+	spin_unlock_irqrestore(&sock->lock, f);
+}
+
+void
+tifmxx_set_flag(struct tifmxx_sock_data *sock, unsigned int flag_mask)
+{
+	unsigned long f;
+
+	spin_lock_irqsave(&sock->lock, f);
+	sock->flags |= flag_mask;
+	spin_unlock_irqrestore(&sock->lock, f);
+}
+
+void
+tifmxx_clear_flag(struct tifmxx_sock_data *sock, unsigned int flag_mask)
+{
+	unsigned long f;
+
+	spin_lock_irqsave(&sock->lock, f);
+	sock->flags &= ~flag_mask;
+	spin_unlock_irqrestore(&sock->lock, f);
+}
+
+int
+tifmxx_test_flag(struct tifmxx_sock_data *sock, unsigned int flag_mask)
+{
+	int rc;
+	unsigned long f;
+
+	spin_lock_irqsave(&sock->lock, f);
+	rc = (sock->flags & flag_mask) ? 1 : 0;
+	spin_unlock_irqrestore(&sock->lock, f);
+	return rc;
+}
+
 static irqreturn_t 
 tifmxx_interrupt(int irq, void *dev_instance, struct pt_regs *regs)
 {

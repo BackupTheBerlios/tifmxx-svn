@@ -497,72 +497,60 @@ CMMCSD::Standby()
 char
 CMMCSD::ReadCSDInformation()
 {
-	char r_val, cnt_1 = 0;
-
-	do
-	{
-		write32(base_addr + 0x10c, dwRCA);
-		write32(base_addr + 0x108, dwRCA);
-		KeSynchronizeExecution(card_int, sub_0_27DE0, &byStatus);
-		KeClearEvent(cmmcsd_event_1);
-		write32(base_addr + 0x104, 0x2209);
-		r_val = WaitForEOC();
-		if(r_val != 0x20) break;
-		if(cnt_1 >= 2) break;
-		cnt_1++;
-	} while(muiMediaID !=3);
-	
-	if(r_val != 0x21)
-	{ // 1DC02
-		if(r_val) return r_val;
-		goto x1D8BC;
-	}
-	
-	if(muiMediaID != 0x13) return r_val;
-
-	cnt_1 = 0; char cnt_2 = 0; // bil, sil
+	char r_val, cnt_1 = 0, cnt_2 = 0, match;
 	short pRespBuffer[8]; // rsp + 0x48
 
 	do
 	{
-		pRespBuffer[cnt_2] = sub_0_1C1F0(cnt_1 + 0xf, cnt_1, 0x1);
-		cnt_2++; cnt_1 += 0x10;
-	} while(cnt_1 <= 0x70);
-	
-	cnt_1 = 0;
-
-	do
-	{
-		write32(base_addr + 0x10c, dwRCA);
-		write32(base_addr + 0x108, dwRCA);
+		write32(base_addr + 0x10c, dwRCA >> 16);
+		write32(base_addr + 0x108, dwRCA & 0xffff);
 		KeSynchronizeExecution(card_int, sub_0_27DE0, &byStatus);
 		KeClearEvent(cmmcsd_event_1);
 		write32(base_addr + 0x104, 0x2209);
-		r_val = WaitForEOC();
-		if(r_val != 0x20) break;
-		if(cnt_1 >= 2) break;
-		cnt_1++;
-	} while(muiMediaID !=3);
-
+		if(0x20 != (r_val = WaitForEOC())) break;
+	} while(cnt_1 < 3 || muiMediaID !=3);
+	
 	if(r_val == 0x21)
 	{
-		cnt_1 = 0; char cnt_2 = 0; short t_val = 1;
+		cnt_1 = 0; cnt_2 = 0;
+		if(muiMediaID != 0x13) return r_val;
 		do
 		{
-			if(t_val)
-			{
-				t_val = sub_0_1C1F0(cnt_1 + 0xf, cnt_1, 1);
-				t_val = (pRespBuffer[cnt_2] == t_val) ? 1 : 0;
-			}
-			cnt_1 += 0x10; cnt_2 ++;
-		} while(cnt_1 <= 0x70);
-	
-		if(!t_val) // CRC workaround responses don't match error
-			return r_val;
+			pRespBuffer[cnt_2] = sub_0_1C1F0(cnt_1 + 0xf, cnt_1, 1);
+			cnt_1 += 16;
+			cnt_2++;
+		}while(cnt_1 <= 0x70);
+		
+		cnt_1 = 0;
+		
+		do
+		{
+			write32(base_addr + 0x10c, dwRCA >> 16);
+			write32(base_addr + 0x108, dwRCA & 0xffff);
+			KeSynchronizeExecution(card_int, sub_0_27DE0, &byStatus);
+			KeClearEvent(cmmcsd_event_1);
+			write32(base_addr + 0x104, 0x2209);
+			if(0x20 != (r_val = WaitForEOC())) break;
+		} while(cnt_1 <3 || muiMediaID !=3);
 
-		// CRC workaround, responses match no error
+		if(r_val == 0x21)
+		{
+			cnt_1 = 0; cnt_2 = 0; match = 1;
+			do
+			{
+				if(!match || pRespBuffer[cnt_2] != sub_0_1C1F0(cnt_1 + 0xf, cnt_1, 1))
+					match = 0;
+				else match = 1;
+				cnt_1 += 16;
+				cnt_2++;
+			}while(cnt_1 <= 0x70);
+			if(!match) return r_val;
+		}
+		else if(r_val) return r_val;
 	}
-	else if(r_val) return r_val;
+	else if(r_val) return rval;
+
+	
 
 	int lvar_x28[] = {10000, 100000, 1000000, 10000000};	
 
@@ -711,9 +699,8 @@ CMMCSD::ExecCardCmd(char arg_1, int arg_2, short arg_3)
 		KeClearEvent(cmmcsd_event_1);
 		write32(base_addr + 0x104, (arg_3 & 0xff80) | (arg_1 & 0x3f));
 		if(0x20 != (r_val = WaitForEOC())) break;
-		if(cnt >= 2) break;
 		cnt ++;		
-	} while(muiMediaID != 3);
+	} while(cnt < 3 || muiMediaID != 3);
 
 	return r_val;
 }
