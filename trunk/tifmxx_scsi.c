@@ -177,7 +177,7 @@ tifmxx_fill_sense_buffer(struct tifmxx_sock_data *sock, int key, int asc, int as
 static inline void
 tifmxx_eval_inquiry(struct tifmxx_sock_data *sock)
 {
-	if((sock->flags & CARD_PRESENT) && (sock->flags & CARD_READY))
+	if((sock->flags & CARD_PRESENT) && (sock->flags & CARD_ACTIVE))
 	{
 		//! slave_alloc must handle initialization
 		//! fill inquiry response	

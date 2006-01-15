@@ -30,10 +30,10 @@ struct CMMCSD : public CFlash // mmc, sd
 	char R2W_FACTOR;         // 0x119
 	short ReadTimeOut;       // 0x11A
 	short WriteTimeOut;      // 0x11C
-	long cmmcsd_var_6;       // 0x120
+	ExecParam *pCurrentParam;              // 0x120 (cmmcsd_var_6)
 	short muiExecute_DMAPagesProcessed;    // 0x128 (cmmcsd_var_7)
-	short cmmcsd_var_8;	 // 0x12A
-	char cmmcsd_var_14;      // 0x12C
+	short muiExecute_DMAPagesTotal;	       // 0x12A (cmmcsd_var_8)
+	char Ready;              // 0x12C (cmmcsd_var_14)
 	char mbCRSImplemented;   // 0x12D
 	char cmmcsd_var_9;	 // 0x12E
 
@@ -44,7 +44,7 @@ struct CMMCSD : public CFlash // mmc, sd
 		int uiDataTransferLength; // 0x008
 		int uiResponseType;       // 0x00c
 		char bDIR;                // 0x00d
-		char bApp;                // 0x00e
+		char bAPP;                // 0x00e
                 char bRESP;               // 0x00f
 		char bBLKM;               // 0x010
 	};

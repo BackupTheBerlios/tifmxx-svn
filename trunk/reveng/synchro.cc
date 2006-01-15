@@ -21,3 +21,10 @@ sub_0_1C060(int *arg_1)
     if(*arg_1 & 0x0100) return true; // crc error
     return false;
 }
+
+BOOLEAN
+sub_0_1C100(int *arg_1)
+{
+    *arg_1 &= 0xfffffff7;
+    return 1;
+}

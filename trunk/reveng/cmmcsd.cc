@@ -2,8 +2,8 @@
 
 CMMCSD::CMMCSD(char *_base_addr)
        :CFlash(_base_addr), wBlockLen(0x200), cmmcsd_var_2(0), 
-	cmmcsd_var_1(0), cmmcsd_var_4(0), muiMediaID(3), cmmcsd_var_5(0),
-	cmmcsd_var_6(0), cmmcsd_var_7(0), cmmcsd_var_8(0), cmmcsd_var_9(0)
+	cmmcsd_var_1(0), cmmcsd_var_4(0), muiMediaID(3), byStatus(0),
+	pCurrentParam(0), cmmcsd_var_7(0), muiExecute_DMAPagesTotal(0), cmmcsd_var_9(0)
 {
 	KeInitializeEvent(cmmcsd_event_1, 0, 0);
 	write32(base_addr + 0x118, 0);
@@ -33,7 +33,7 @@ CMMCSD::vtbl02()
 
 		if(cmmcsd_var_10 & 0x4) cmmcsd_var_2 = 1;
 
-		cmmcsd_var_5 = cmmcsd_var_11;
+		byStatus = cmmcsd_var_11;
 		KeSetEvent(cmmcsd_event_1, 0, 0);
 		vara_0 = 0;
 	}
@@ -48,7 +48,7 @@ CMMCSD::vtbl03(char arg_1, char arg_2)
 	if(arg_2 != 0)
 	{
 		cmmcsd_var_10 = read32(base_addr + 0x114);
-		cmmcsd_var_11 = cmmcsd_var_5 | cmmcsd_var_10;
+		cmmcsd_var_11 = byStatus | cmmcsd_var_10;
 		write32(base_addr + 0x114, cmmcsd_var_10);
 	}
 
@@ -508,7 +508,7 @@ CMMCSD::ReadCSDInformation()
 		KeClearEvent(cmmcsd_event_1);
 		write32(base_addr + 0x104, 0x2209);
 		if(0x20 != (r_val = WaitForEOC())) break;
-	} while(cnt_1 < 3 || muiMediaID !=3);
+	} while(cnt_1 < 3 && muiMediaID !=3);
 	
 	if(r_val == 0x21)
 	{
@@ -531,7 +531,7 @@ CMMCSD::ReadCSDInformation()
 			KeClearEvent(cmmcsd_event_1);
 			write32(base_addr + 0x104, 0x2209);
 			if(0x20 != (r_val = WaitForEOC())) break;
-		} while(cnt_1 <3 || muiMediaID !=3);
+		} while(cnt_1 < 3 && muiMediaID !=3);
 
 		if(r_val == 0x21)
 		{
@@ -682,7 +682,7 @@ CMMCSD::ReadSerialNumber()
 		}
 		
 		cnt ++;
-	} while(muiMediaID != 3 || cnt < 3);
+	} while(muiMediaID != 3 && cnt < 3);
 	return r_val;
 }
 
@@ -700,7 +700,7 @@ CMMCSD::ExecCardCmd(char arg_1, int arg_2, short arg_3)
 		write32(base_addr + 0x104, (arg_3 & 0xff80) | (arg_1 & 0x3f));
 		if(0x20 != (r_val = WaitForEOC())) break;
 		cnt ++;		
-	} while(cnt < 3 || muiMediaID != 3);
+	} while(cnt < 3 && muiMediaID != 3);
 
 	return r_val;
 }
@@ -712,10 +712,10 @@ CMMCSD::Execute(ExecParam *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCoun
 
 	if(pParam)
 	{
-		cmmcsd_var_6 = pParam;
+		pCurrentParam = pParam;
 		muiExecute_DMAPagesProcessed = 0;
 		//muiExecute_DMAPages total: 
-		cmmcsd_var_8 = pParam->uiDataTransferLength << 9;		
+		muiExecute_DMAPagesTotal= pParam->uiDataTransferLength >> 9;		
 	}
 	
 	short lvar_1 = 0;
@@ -743,7 +743,7 @@ CMMCSD::Execute(ExecParam *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCoun
 					write16zx(base_addr + 0x130, 0x80);
 				}
 				// set block length
-				write32(base_addr + 0x12c, cmmcsd_var_8 - 1);
+				write32(base_addr + 0x12c, muiExecute_DMAPagesTotal - 1);
 				write32(base_addr + 0x128, wReadBlockLen - 1);
 				KeSynchronizeExecution(card_int, sub_0_1C100, &byStatus);				
 			}
@@ -769,42 +769,42 @@ CMMCSD::Execute(ExecParam *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCoun
 		//pParam->bApp                 - 0x00e
                 //pParam->bRESP                - 0x00f
 		//pParam->bBLKM                - 0x010
-		if(pParam->bAPP) ExecCardCmd(0x37, dwRCA, 0x2100);
+		if(pParam->bAPP) ExecCardCmd(0x37, dwRCA, 0x2100); // send SD escape for extended command
 
 		short lvar_2 = 0;
 
 		switch(pParam->uiResponseType - 1)
 		{
-			case 0: lvar_2 = 0x100; break;
-			case 1: lvar_2 = 0x200; break;
-			case 2: lvar_2 = 0x300; break;
-			case 3: lvar_2 = 0x100; break;
-			case 4: lvar_2 = 0x900; break;
-			case 5: lvar_2 = 0x600; break;
-			case 6: lvar_2 = 0x300; break;
+			case 0: lvar_2 = 0x100; break; // 1E94C
+			case 1: lvar_2 = 0x200; break; // 1E958
+			case 2: lvar_2 = 0x300; break; // 1E964
+			case 3: lvar_2 = 0x100; break; // 1E94C
+			case 4: lvar_2 = 0x900; break; // 1E952
+			case 5: lvar_2 = 0x600; break; // 1E95E
+			case 6: lvar_2 = 0x300; break; // 1E964
 		}
 		// 1E96D
 		if(pParam->uiCommandIndex == 0x3 && !pParam->bApp) lvar_2 = 0x600;
 		if(pParam->uiCommandIndex == 0x7 && !pParam->bApp) lvar_2 = 0x900;
 		lvar_2 |= sub_0_1E1B0(pParam->uiCommandIndex, pParam->bApp);
-		if(pParam->bDIR && 0x3000 != (lvar_2 & 0x3000)) lvar_2 != 0x8000;
+		if(pParam->bDIR && 0x3000 == (lvar_2 & 0x3000)) lvar_2 |= 0x8000;
 		// 1E9D6
 		if(pData)
 		{
 			write32(base_addr + 0x12c, 0);
-			if(pData->uiDataTransferLength)
-				write32(base_addr + 0x128, pData->uiDataTransferLength - 1);
+			if(pParam->uiDataTransferLength)
+				write32(base_addr + 0x128, pParam->uiDataTransferLength - 1);
 		}
 		r_val = ExecCardCmd(pParam->uiCommandIndex, pParam->uiCommandArgument, lvar_2);
 	}
 	// 1EA53
 	if(uiDMAPhysicalAddress)
 	{
-		if(muiExecute_DMAPagesProcessed >= cmmcsd_var_8)
+		if(muiExecute_DMAPagesProcessed >= muiExecute_DMAPagesTotal)
 		{
 			if(!r_val)
 			{ 
-				if(cmmcsd_var_6->off_x10 != r_val)
+				if(pCurrentParam->bBLKM != 0)
 				{
 					if(0 != (r_val = WaitForRBS()) || 0 != (r_val = ExecCardCmd(0xc, 0, 0x2900)))
 					{
@@ -814,7 +814,7 @@ CMMCSD::Execute(ExecParam *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCoun
 					}			
 				}
 				// 1EB2D
-				if(!cmmcsd_var_6->off_x0d) r_val = WaitForCard();
+				if(!pCurrentParam->bDIR) r_val = WaitForCard();
 			}
 		}
 		// 1EB56
@@ -829,7 +829,7 @@ CMMCSD::Execute(ExecParam *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCoun
 		{
 			do
 			{
-				if(0 != (r_val = sub_0_1FEE0(&event_2, -10000000))) || r_val != vara_4)
+				if(0 != (r_val = sub_0_1FEE0(&event_2, -10000000))) || vara_4)
 				{
 					write16zx(base_addr + 0x18, 0xffff);
 					write16zx(base_addr + 0x10, 0x2);
@@ -844,27 +844,27 @@ CMMCSD::Execute(ExecParam *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCoun
 	}
 	// non DMA transfer
 	if(!pData || r_val) return r_val;
-	lvar_1 = cmmcsd_var_6->off_x08;
-	if(cmmcsd_var_6->off_x0f)
+	lvar_1 = pCurrentParam->uiDataTransferLength;
+	if(pCurrentParam->bRESP)
 	{
-		if(cmmcsd_var_6->off_x0c != 2 && cmmcsd_var_6->off_x08 != 0) lvar_1 --;
+		if(pCurrentParam->uiResponseType != 2 && pCurrentParam->uiDataTransferLength != 0) lvar_1 --;
 		
 		if(lvar_1)
 		{
 			char lvar_3 = (lvar_1 << 3) - 1;			
 			do
 			{
-				*pData = sub_0_1C1F0(lvar_3, lvar_3 - 7, (cmmcsd_var_6->off_x0c == 2));
+				*pData = sub_0_1C1F0(lvar_3, lvar_3 - 7, (pCurrentParam->uiResponseType == 2));
 				lvar_3 -= 8; pData ++; lvar_1 --;
 			} while(lvar_1);
 		}
-		if(cmmcsd_var_6->off_x0c != 2 && cmmcsd_var_6->off_x08 != 0) *pData = 0;
+		if(pCurrentParam->uiResponseType != 2 && pCurrentParam->uiDataTransferLength != 0) *pData = 0;
 		return r_val;
 	}
 	else
 	{ // 1ED32 direct byte access to card
 		short lvar_4;
-		if(cmmcsd_var_6->off_x0d)
+		if(pCurrentParam->bDIR)
 		{
 			if(lvar_1)
 			{			
@@ -899,7 +899,7 @@ CMMCSD::Execute(ExecParam *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCoun
 					write32(base_addr + 0x124, lvar_4);					
 				} while(lvar_1);
 			}
-			if(!cmmcsd_var_6->off_x0e)
+			if(!pCurrentParam->bAPP)
 			{
 				if(0 != (r_val = WaitForCard())) return r_val;
 			}
@@ -913,22 +913,21 @@ CMMCSD::Execute(ExecParam *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCoun
 char 
 CMMCSD::GetState(char *byCardState, char arg_2)
 {
-	char r_val, cnt_1 = 0;
+	char r_val, cnt = 0;
 	long l_interval;
 
 	do
 	{
-		write32(base_addr + 0x10c, dwRCA);
-		write32(base_addr + 0x108, dwRCA);
+		write32(base_addr + 0x10c, dwRCA >> 16);
+		write32(base_addr + 0x108, dwRCA & 0xffff);
 		KeSynchronizeExecution(card_int, sub_0_27DE0, &byStatus);
 		KeClearEvent(cmmcsd_event_1);
 		write32(base_addr + 0x104, 0x210d);
 		if(0x20 != (r_val = WaitForEOC())) break;
-		if(cnt_1 >= 2) break;
-		cnt_1 ++;		
-	} while(muiMediaID != 3);
+		cnt ++;		
+	} while(muiMediaID != 3 && cnt < 3);
 	*byCardState = sub_0_1C1F0(0xc, 0x9, 0);
-	cmmcsd_var_14 = sub_0_1C1F0(0x8, 0x8, 0);
+	Ready = sub_0_1C1F0(0x8, 0x8, 0);
 	if(arg_2)
 	{
 		// print thingy
@@ -942,7 +941,7 @@ CMMCSD::GetState(char *byCardState, char arg_2)
 			return r_val;
 		}
 	}
-	if(cmmcsd_var_14) 
+	if(!Ready) 
 	{
 		l_interval = -500;
 		KeDelayExecutionThread(0, 0, l_interval);
@@ -1077,10 +1076,14 @@ CMMCSD::sub_0_1E1B0(char arg_1, char arg_2)
 			      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x3000, 0x3000, 0x3000, 0x3000, 0x3000,
 			      0x3000, 0x2000, 0, 0x3000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
-	short lvar_x80[64] = {0, 0, 0x1000, 0x1000, 0, 0, 0, 0x2000, 0, 0x2000, 0x2000, 0, 0x2000, 0x2000, 0, 0x2000,
-			      0x2000, 0x3000, 0x3000, 0, 0, 0, 0, 0, 0x3000, 0x3000, 0, 0x3000, 0x2000, 0x2000, 0x3000, 0,
-			      0x2000, 0x2000, 0, 0, 0, 0, 0x2000, 0, 0, 0, 0x3000, 0, 0, 0, 0, 0,
-			      0, 0, 0, 0, 0, 0, 0, 0x2000, 0x3000, 0, 0, 0, 0, 0, 0, 0};
+	short lvar_x80[64] = {0, 0, 0x1000, 0x1000, 0, 0, 0, 0x2000,
+			      0, 0x2000, 0x2000, 0, 0x2000, 0x2000, 0, 0x2000,
+			      0x2000, 0x3000, 0x3000, 0, 0, 0, 0, 0,
+			      0x3000, 0x3000, 0, 0x3000, 0x2000, 0x2000, 0x3000, 0,
+			      0x2000, 0x2000, 0, 0, 0, 0, 0x2000, 0,
+			      0, 0, 0x3000, 0, 0, 0, 0, 0,
+			      0, 0, 0, 0, 0, 0, 0, 0x2000,
+			      0x3000, 0, 0, 0, 0, 0, 0, 0};
 
 	return (arg_2 ? lvar_x00[arg_1] : lvar_x80[arg_1]);
 }

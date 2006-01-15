@@ -24,10 +24,11 @@
  *      CARD_PRESENT -> assume that card is present
  *      CARD_RO      -> card is read-only
  *      CARD_BUSY    -> vara_6 variable from reveng
- *      CARD_READY   -> vara_2 variable from reveng, set after card initialization success
+ *      CARD_ACTIVE  -> vara_2 variable from reveng, set after card initialization success
  *      CARD_REMOVED -> vara_4 variable from reveng, set by detection routine on card removal, condition for event_1
  *      SOCK_EVENT   -> socket event (event_2)
  *      CARD_EVENT   -> card needs attention (to replace cmmcsd_event_1)
+ *      CARD_READY   -> card ready to accept command (cmmcsd_var_14)
  * -- Flags above 0x8000 are carried over on card insertion/removal
  *      MS_SOCKET    -> better Sony MS support on this socket
  *      XX12_SOCKET  -> xx12 devices have slightly different controls
@@ -39,10 +40,10 @@
  *      ALLOW_SMDLY  -> enable SM/xD insertion delay
  */
 
-enum { INT_B0 = 0x1, INT_B1 = 0x2, CARD_PRESENT = 0x4, CARD_RO = 0x8, CARD_BUSY = 0x40, CARD_READY = 0x80,
-       CARD_REMOVED = 0x100, SOCK_EVENT = 0x200, CARD_EVENT = 0x400, MS_SOCKET = 0x10000, XX12_SOCKET = 0x20000, 
-       ALLOW_SD = 0x40000, ALLOW_MMC = 0x80000, ALLOW_MSP = 0x100000, ALLOW_SM = 0x200000, ALLOW_SMCIS = 0x400000, 
-       ALLOW_SMDLY = 0x800000 };
+enum { INT_B0 = 0x1, INT_B1 = 0x2, CARD_PRESENT = 0x4, CARD_RO = 0x8, CARD_BUSY = 0x40, CARD_ACTIVE = 0x80,
+       CARD_REMOVED = 0x100, SOCK_EVENT = 0x200, CARD_EVENT = 0x400, CARD_READY = 0x800, MS_SOCKET = 0x10000, 
+       XX12_SOCKET = 0x20000, ALLOW_SD = 0x40000, ALLOW_MMC = 0x80000, ALLOW_MSP = 0x100000, ALLOW_SM = 0x200000,
+       ALLOW_SMCIS = 0x400000, ALLOW_SMDLY = 0x800000 };
 
 struct tifmxx_data;
 
@@ -54,33 +55,8 @@ struct tifmxx_ms_data
 {
 };
 
-struct tifmxx_mmcsd_data
-{
-	unsigned int       r_var_2;
-	unsigned int       r_var_5;
-	unsigned int       r_var_10;
-	unsigned int       r_var_11;
-
-	unsigned int       rca;
-	unsigned int       r_var_14;
-
-	unsigned char      mid;
-	unsigned short     oid;
-	char               pnm[7];
-	unsigned char      rev;
-	unsigned int       psn;	
-	
-	unsigned int       clk_speed; /* clocks per bit */
-	unsigned int       read_block_len;
-	unsigned int       write_block_len;
-	unsigned int       read_time_out;
-	unsigned int       write_time_out;
-
-	size_t             size;
-	size_t             blocks;
-};
-
 enum { CMD_DIR = 0x1, CMD_APP = 0x2, CMD_RESP = 0x4, CMD_BLKM = 0x8 };
+
 struct tifmxx_mmcsd_ecmd
 {
 	unsigned int cmd_index;
@@ -88,6 +64,35 @@ struct tifmxx_mmcsd_ecmd
 	unsigned int dtx_length;
 	unsigned int resp_type;
 	unsigned int flags;
+};
+
+struct tifmxx_mmcsd_data
+{
+	unsigned int             r_var_2;
+	unsigned int             r_var_10;
+	unsigned int             r_var_11;
+	unsigned int             cmd_status;
+
+	unsigned int             rca;
+
+	unsigned char            mid;
+	unsigned short           oid;
+	char                     pnm[7];
+	unsigned char            rev;
+	unsigned int             psn;	
+	
+	unsigned int             clk_speed; /* clocks per bit */
+	unsigned int             read_block_len;
+	unsigned int             write_block_len;
+	unsigned int             read_time_out;
+	unsigned int             write_time_out;
+
+	size_t                   size;
+	size_t                   blocks;
+
+	struct tifmxx_mmcsd_ecmd *active_cmd;
+	unsigned int             dma_pages_processed;
+	unsigned int             dma_pages_total;
 };
 
 struct tifmxx_sock_data
@@ -109,9 +114,7 @@ struct tifmxx_sock_data
 					  // shutdown/remove, most functions wait on both
 
 	unsigned int             clk_freq;
-	unsigned int             r_var_2;
-	unsigned int             cmd_status;
-	
+	unsigned int             sock_status; // r_var_2
 	
 	union
 	{
