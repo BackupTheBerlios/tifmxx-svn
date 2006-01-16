@@ -884,7 +884,7 @@ CMMCSD::Execute(ExecParam *pParam, int uiDMAPhysicalAddress, char *uiDMAPageCoun
 		else
 		{ // 1EDD1
 			write32(base_addr + 0x118, 0x14 | read32(base_addr + 0x118));
-			cmmcsd_var_2 = 1;
+			mbCardBusy = 1;
 			if(lvar_1)
 			{
 				do

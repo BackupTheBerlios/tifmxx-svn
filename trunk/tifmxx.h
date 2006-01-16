@@ -55,6 +55,11 @@ struct tifmxx_ms_data
 {
 };
 
+/* Command flags:
+ * CMD_DIR -> write = 0 / read = 1 
+ * CMD_APP -> normal command = 0 / SD escaped command = 1
+ */
+
 enum { CMD_DIR = 0x1, CMD_APP = 0x2, CMD_RESP = 0x4, CMD_BLKM = 0x8 };
 
 struct tifmxx_mmcsd_ecmd
@@ -63,7 +68,7 @@ struct tifmxx_mmcsd_ecmd
 	unsigned int cmd_arg;
 	unsigned int dtx_length;
 	unsigned int resp_type;
-	unsigned int flags;
+	unsigned int flags; 
 };
 
 struct tifmxx_mmcsd_data

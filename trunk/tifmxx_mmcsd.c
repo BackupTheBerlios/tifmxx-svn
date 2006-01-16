@@ -452,8 +452,7 @@ tifmxx_mmcsd_execute(struct tifmxx_sock_data *sock, struct tifmxx_mmcsd_ecmd *cm
                      int *dma_page_cnt, char *data)
 {
 	int rc = 0;
-	unsigned int t_var = 0;
-	unsigned int cmd_mask;
+	unsigned int cmd_mask = 0, l_dtx_length = 0, l_resp_type = 0, l_cmd_flags = 0, t_val = 0, cnt = 0;
 	const unsigned int resp_type_mask[] = {0x0100, 0x0200, 0x0300, 0x0100, 0x0900, 0x0600, 0x0300};
 	unsigned long f;
 	
@@ -496,7 +495,7 @@ tifmxx_mmcsd_execute(struct tifmxx_sock_data *sock, struct tifmxx_mmcsd_ecmd *cm
 				else
 				{
 					writel(0x0080, sock->sock_addr + 0x130);
-					t_var = 0x8000;
+					cmd_mask = 0x8000;
 				}
 
 				writel(sock->mmcsd_p->dma_pages_total - 1, sock->sock_addr + 0x12c);
@@ -505,7 +504,7 @@ tifmxx_mmcsd_execute(struct tifmxx_sock_data *sock, struct tifmxx_mmcsd_ecmd *cm
 			}
 
 			writel(dma_phys_addr, sock->sock_addr + 0xc);
-			writel((readl(sock->sock_addr + 0x10) & 0x80) | ((*dma_page_cnt) << 8) | 0x1 | t_var,
+			writel((readl(sock->sock_addr + 0x10) & 0x80) | ((*dma_page_cnt) << 8) | 0x1 | cmd_mask,
 			       sock->sock_addr + 0x10);
 		}
 	}
@@ -596,9 +595,64 @@ tifmxx_mmcsd_execute(struct tifmxx_sock_data *sock, struct tifmxx_mmcsd_ecmd *cm
 	}
 	
 	if(!data || rc) return rc;
-#error "Not yet finished!"
+	/* Non DMA transfer here */
+	spin_lock_irqsave(&sock->lock, f);
+	l_dtx_length = sock->mmcsd_p->active_cmd->dtx_length;
+	l_resp_type = sock->mmcsd_p->active_cmd->resp_type;
+	l_cmd_flags = sock->mmcsd_p->active_cmd->flags;
+	spin_unlock_irqrestore(&sock->lock, f);
 
-	
+	if(l_cmd_flags & CMD_RESP)
+	{
+		if(l_resp_type != 2 && l_dtx_length) l_dtx_length--;
+
+		for(cnt = 0; cnt < l_dtx_length; cnt++)
+			data[cnt] = tifmxx_mmcsd_extract_info_bitfld(sock, ((l_dtx_length - cnt) << 8) - 1,
+								     ((l_dtx_length - cnt) << 8) - 8,
+								     l_resp_type == 2);
+		if(l_resp_type != 2 && l_dtx_length) data[l_dtx_length] = 0;
+	}
+	else
+	{
+		if(l_cmd_flags & CMD_DIR)
+		{
+			for(cnt = 0; cnt < l_dtx_length; cnt += 2)
+			{
+				tifmxx_mmcsd_wait_for_af(sock);
+				spin_lock_irqsave(&sock->lock, f);
+				t_val = readl(sock->sock_addr + 0x124);
+				spin_unlock_irqrestore(&sock->lock, f);
+				data[cnt] = t_val & 0xff;
+				if((cnt + 1) >= l_dtx_length) break;
+				data[cnt + 1] = (t_val >> 8) & 0xff;			
+			}
+		}
+		else
+		{
+			spin_lock_irqsave(&sock->lock, f);
+			writel(readl(sock->sock_addr + 0x118) | 0x14, sock->sock_addr + 0x118);
+			sock->mmcsd_p->r_var_2 = 1;
+			spin_unlock_irqrestore(&sock->lock, f);
+			for(cnt = 0; cnt < l_dtx_length; cnt += 2)
+			{
+				t_val = data[cnt];
+				if((cnt + 1) < l_dtx_length) t_val |= data[cnt + 1] << 8;
+				tifmxx_mmcsd_wait_for_ae(sock);
+				spin_lock_irqsave(&sock->lock, f);
+				writel(t_val, sock->sock_addr + 0x124);
+				spin_unlock_irqrestore(&sock->lock, f);
+			}
+
+			if(!(l_cmd_flags & CMD_APP) && 0 != (rc = tifmxx_mmcsd_wait_for_card(sock))) return rc;
+			
+		}
+
+		spin_lock_irqsave(&sock->lock, f);
+		writel(readl(sock->sock_addr + 0x118) & 0xfffff3ff, sock->sock_addr + 0x118);
+		spin_unlock_irqrestore(&sock->lock, f);
+	}
+
+	return rc;	
 }
 
 static int
