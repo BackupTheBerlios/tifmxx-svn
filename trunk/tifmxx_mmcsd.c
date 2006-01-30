@@ -159,6 +159,7 @@ tifmxx_mmcsd_wait_for_eoc(struct tifmxx_sock_data *sock)
 
 			if(!wait_event_timeout(sock->irq_ack, tifmxx_test_flag(sock, CARD_EVENT | CARD_REMOVED),
 					       msecs_to_jiffies(100))) rc = 0x87;
+			tifmxx_clear_flag(sock, CARD_EVENT);
 
 			spin_lock_irqsave(&sock->lock, f);
 			sock->flags &= ~CARD_EVENT;
@@ -421,6 +422,81 @@ tifmxx_mmcsd_detect_card_type(struct tifmxx_sock_data *sock)
 		}
 		
 	}
+}
+
+static int
+tifmxx_mmcsd_wait_for_card(struct tifmxx_sock_data *sock)
+{
+	int rc = 0;
+	unsigned long f;
+
+	spin_lock_irqsave(&sock->lock, f);
+	if(sock->mmcsd_p->r_var_2)
+	{
+		do
+		{
+			if(rc) break;
+			if(sock->flags & CARD_REMOVED) { rc = 0x86; break; }
+			spin_unlock_irqrestore(&sock->lock, f);
+			if(!wait_event_timeout(sock->irq_ack, tifmxx_test_flag(sock, CARD_EVENT | CARD_REMOVED),
+					       msecs_to_jiffies(1000))) rc = 0x87;
+			tifmxx_clear_flag(sock, CARD_EVENT);
+			spin_lock_irqsave(&sock->lock, f);
+			
+		}while(sock->mmcsd_p->r_var_2);
+		if(rc == 0x87) rc = 0;
+	}
+
+	if(!rc)
+	{
+		writel(readl(sock->sock_addr + 0x118) & 0xffffffeb, sock->sock_addr + 0x118);		
+	}
+	spin_unlock_irqrestore(&sock->lock, f);
+	return rc;
+}
+
+static int
+tifmxx_mmcsd_wait_for_brs(struct tifmxx_sock_data *sock)
+{
+	int rc = 0;
+	unsigned long f;
+
+	spin_lock_irqsave(&sock->lock, f);
+	if(!sock->mmcsd_p->cmd_status & 0x8)
+	{
+		do
+		{
+			if(rc) break;
+			if(sock->flags & CARD_REMOVED) { rc = 0x86; break; }
+
+			if(sock->mmcsd_p->cmd_status & 0x4000) rc = 0x2a; // ???
+			if(sock->mmcsd_p->cmd_status & 0x0080) rc = 0x20; // timeout
+			if(sock->mmcsd_p->cmd_status & 0x0100) rc = 0x21; // crc
+			
+			if(!rc)
+			{
+				spin_unlock_irqrestore(&sock->lock, f);
+				if(!wait_event_timeout(sock->irq_ack, tifmxx_test_flag(sock, CARD_EVENT | CARD_REMOVED),
+						       msecs_to_jiffies(2000))) rc = 0x87;
+				tifmxx_clear_flag(sock, CARD_EVENT);
+				spin_lock_irqsave(&sock->lock, f);
+				if(sock->flags & CARD_REMOVED) { rc = 0x86; break; }
+
+				if(sock->mmcsd_p->cmd_status & 0x4000) rc = 0x2a; // ???
+				if(sock->mmcsd_p->cmd_status & 0x0080) rc = 0x20; // timeout
+				if(sock->mmcsd_p->cmd_status & 0x0100) rc = 0x21; // crc
+				if(rc) break;		
+				
+			}
+		}while(!sock->mmcsd_p->cmd_status & 0x8);
+
+		if(rc == 0x87)
+		{
+			if(0x8 & readl(sock->sock_addr + 0x114)) rc = 0;
+		}
+	}
+	spin_unlock_irqrestore(&sock->lock, f);
+	return rc;
 }
 
 inline unsigned int

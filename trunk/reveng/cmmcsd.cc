@@ -997,7 +997,7 @@ CMMCSD::WaitForBRS()
 	{
 		if(r_val) break;
 		if(vara_4) return 0x86;
-		if(KeSynchronizeExecution(card_int, sub_0_1C0D0, &byStatus))
+		if(KeSynchronizeExecution(card_int, sub_0_1C060, &byStatus))
 		{
 			if(byStatus & 0x00004000) r_val = 0x2a; // Status error, may be bit clear
 			if(byStatus & 0x00000080) r_val = 0x20; // timeout error
@@ -1008,7 +1008,7 @@ CMMCSD::WaitForBRS()
 		{
 			r_val = sub_0_1FEE0(&cmmcsd_event_1, -20000000);
 			if(vara_4) return 0x86;
-			if(KeSynchronizeExecution(card_int, sub_0_1C0D0, &byStatus))
+			if(KeSynchronizeExecution(card_int, sub_0_1C060, &byStatus))
 			{
 				if(byStatus & 0x00004000) r_val = 0x2a; // Status error, may be bit clear
 				if(byStatus & 0x00000080) r_val = 0x20; // timeout error
