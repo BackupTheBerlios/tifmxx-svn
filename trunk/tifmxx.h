@@ -29,6 +29,7 @@
  *      SOCK_EVENT   -> socket event (event_2)
  *      CARD_EVENT   -> card needs attention (to replace cmmcsd_event_1)
  *      CARD_READY   -> card ready to accept command (cmmcsd_var_14)
+ *      FLAG_A5      -> vara_5, probably marks unfinished io
  * -- Flags above 0x8000 are carried over on card insertion/removal
  *      MS_SOCKET    -> better Sony MS support on this socket
  *      XX12_SOCKET  -> xx12 devices have slightly different controls
@@ -40,10 +41,10 @@
  *      ALLOW_SMDLY  -> enable SM/xD insertion delay
  */
 
-enum { INT_B0 = 0x1, INT_B1 = 0x2, CARD_PRESENT = 0x4, CARD_RO = 0x8, CARD_BUSY = 0x40, CARD_ACTIVE = 0x80,
-       CARD_REMOVED = 0x100, SOCK_EVENT = 0x200, CARD_EVENT = 0x400, CARD_READY = 0x800, MS_SOCKET = 0x10000, 
-       XX12_SOCKET = 0x20000, ALLOW_SD = 0x40000, ALLOW_MMC = 0x80000, ALLOW_MSP = 0x100000, ALLOW_SM = 0x200000,
-       ALLOW_SMCIS = 0x400000, ALLOW_SMDLY = 0x800000 };
+enum { INT_B0 = 0x1, INT_B1 = 0x2, CARD_PRESENT = 0x4, CARD_RO = 0x8, CARD_BUSY = 0x10, CARD_ACTIVE = 0x20,
+       CARD_REMOVED = 0x40, SOCK_EVENT = 0x80, CARD_EVENT = 0x100, CARD_READY = 0x200, FLAG_A5 = 0x400,
+       MS_SOCKET = 0x10000, XX12_SOCKET = 0x20000, ALLOW_SD = 0x40000, ALLOW_MMC = 0x80000, ALLOW_MSP = 0x100000,
+       ALLOW_SM = 0x200000, ALLOW_SMCIS = 0x400000, ALLOW_SMDLY = 0x800000 };
 
 struct tifmxx_data;
 
@@ -120,6 +121,10 @@ struct tifmxx_sock_data
 
 	unsigned int             clk_freq;
 	unsigned int             sock_status; // r_var_2
+
+	int                      lba_start; // r_var_5 
+	int                      total_sector_count; // r_var_3
+	int                      res_sector_count; // r_var_10
 	
 	union
 	{
@@ -132,6 +137,11 @@ struct tifmxx_sock_data
 	void                     (*process_irq)(struct tifmxx_sock_data *sock);
 	void                     (*signal_irq)(struct tifmxx_sock_data *sock, unsigned int card_irq_status);
 	int                      (*init_card)(struct tifmxx_sock_data *sock);
+	int                      (*close_write)(struct tifmxx_sock_data *sock);
+	int                      (*read_sect)(struct tifmxx_sock_data *sock, long lba, int* sector_count,
+					      int* dma_page_count, int resume);
+	int                      (*write_sect)(struct tifmxx_sock_data *sock, long lba, int* sector_count,
+					       int* dma_page_count, int resume);
 };
 
 struct tifmxx_data

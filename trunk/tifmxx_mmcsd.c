@@ -404,7 +404,9 @@ tifmxx_mmcsd_detect_card_type(struct tifmxx_sock_data *sock)
 		writel(0x0080, sock->sock_addr + 0x104);
 		spin_unlock_irqrestore(&sock->lock, f);
 
-		wait_event_timeout(sock->irq_ack, (sock->flags & (CARD_EVENT | CARD_REMOVED)), msecs_to_jiffies(100));
+		wait_event_timeout(sock->irq_ack, tifmxx_test_flag(sock, CARD_EVENT | CARD_REMOVED),
+				   msecs_to_jiffies(100));
+		tifmxx_clear_flag(sock, CARD_EVENT);
 
 		if(0 == (rc = tifmxx_mmcsd_exec_card_cmd(sock, 0, 0)))
 		{
@@ -440,8 +442,8 @@ tifmxx_mmcsd_wait_for_card(struct tifmxx_sock_data *sock)
 			spin_unlock_irqrestore(&sock->lock, f);
 			if(!wait_event_timeout(sock->irq_ack, tifmxx_test_flag(sock, CARD_EVENT | CARD_REMOVED),
 					       msecs_to_jiffies(1000))) rc = 0x87;
-			tifmxx_clear_flag(sock, CARD_EVENT);
 			spin_lock_irqsave(&sock->lock, f);
+			sock->flags &= ~CARD_EVENT;
 			
 		}while(sock->mmcsd_p->r_var_2);
 		if(rc == 0x87) rc = 0;
@@ -478,8 +480,8 @@ tifmxx_mmcsd_wait_for_brs(struct tifmxx_sock_data *sock)
 				spin_unlock_irqrestore(&sock->lock, f);
 				if(!wait_event_timeout(sock->irq_ack, tifmxx_test_flag(sock, CARD_EVENT | CARD_REMOVED),
 						       msecs_to_jiffies(2000))) rc = 0x87;
-				tifmxx_clear_flag(sock, CARD_EVENT);
 				spin_lock_irqsave(&sock->lock, f);
+				sock->flags &= ~CARD_EVENT;
 				if(sock->flags & CARD_REMOVED) { rc = 0x86; break; }
 
 				if(sock->mmcsd_p->cmd_status & 0x4000) rc = 0x2a; // ???
@@ -494,6 +496,74 @@ tifmxx_mmcsd_wait_for_brs(struct tifmxx_sock_data *sock)
 		{
 			if(0x8 & readl(sock->sock_addr + 0x114)) rc = 0;
 		}
+	}
+	spin_unlock_irqrestore(&sock->lock, f);
+	return rc;
+}
+
+static int
+tifmxx_mmcsd_wait_for_ae(struct tifmxx_sock_data *sock)
+{
+	int rc = 0;
+	unsigned long f;
+
+	spin_lock_irqsave(&sock->lock, f);
+	if(!sock->mmcsd_p->cmd_status & 0x800)
+	{
+		do
+		{
+			if(rc) break;
+			if(sock->flags & CARD_REMOVED) { rc = 0x86; break; }
+
+			if(sock->mmcsd_p->cmd_status & 0x4000) rc = 0x2a; // ???
+			if(sock->mmcsd_p->cmd_status & 0x0080) rc = 0x20; // timeout
+			if(sock->mmcsd_p->cmd_status & 0x0100) rc = 0x21; // crc
+			
+			if(!rc)
+			{
+				spin_unlock_irqrestore(&sock->lock, f);
+				if(!wait_event_timeout(sock->irq_ack, tifmxx_test_flag(sock, CARD_EVENT | CARD_REMOVED),
+						       msecs_to_jiffies(1))) rc = 0x87;
+				spin_lock_irqsave(&sock->lock, f);
+				sock->flags &= ~CARD_EVENT;
+			}
+		}while(!sock->mmcsd_p->cmd_status & 0x800);
+
+		if(rc == 0x87) rc = 0;		
+	}
+	spin_unlock_irqrestore(&sock->lock, f);
+	return rc;
+}
+
+static int
+tifmxx_mmcsd_wait_for_af(struct tifmxx_sock_data *sock)
+{
+	int rc = 0;
+	unsigned long f;
+
+	spin_lock_irqsave(&sock->lock, f);
+	if(!sock->mmcsd_p->cmd_status & 0x400)
+	{
+		do
+		{
+			if(rc) break;
+			if(sock->flags & CARD_REMOVED) { rc = 0x86; break; }
+
+			if(sock->mmcsd_p->cmd_status & 0x4000) rc = 0x2a; // ???
+			if(sock->mmcsd_p->cmd_status & 0x0080) rc = 0x20; // timeout
+			if(sock->mmcsd_p->cmd_status & 0x0100) rc = 0x21; // crc
+			
+			if(!rc)
+			{
+				spin_unlock_irqrestore(&sock->lock, f);
+				if(!wait_event_timeout(sock->irq_ack, tifmxx_test_flag(sock, CARD_EVENT | CARD_REMOVED),
+						       msecs_to_jiffies(1))) rc = 0x87;
+				spin_lock_irqsave(&sock->lock, f);
+				sock->flags &= ~CARD_EVENT;
+			}
+		}while(!sock->mmcsd_p->cmd_status & 0x400);
+
+		if(rc == 0x87) rc = 0;		
 	}
 	spin_unlock_irqrestore(&sock->lock, f);
 	return rc;
@@ -565,7 +635,7 @@ tifmxx_mmcsd_execute(struct tifmxx_sock_data *sock, struct tifmxx_mmcsd_ecmd *cm
 				writel(0xffff, sock->sock_addr + 0x18);
 				writel(0x0001, sock->sock_addr + 0x24);
 				writel(0x0005, sock->sock_addr + 0x14);
-				//vara_5 = 0; <- enable if needed
+				sock->flags &= ~FLAG_A5;
 				if(cmd->flags & CMD_DIR)
 					writel(0x8000, sock->sock_addr + 0x130);
 				else
@@ -847,8 +917,14 @@ tifmxx_mmcsd_init_card(struct tifmxx_sock_data *sock)
         return rc;
 }
 
+static int
+tifmxx_mmcsd_close_write(struct tifmxx_sock_data* sock)
+{
+	return 0;
+}
+
 void
-tifmxx_mmcsd_init(struct tifmxx_sock_data *sock)
+tifmxx_mmcsd_init(struct tifmxx_sock_data* sock)
 {
 	unsigned long f;
 
@@ -863,6 +939,9 @@ tifmxx_mmcsd_init(struct tifmxx_sock_data *sock)
 			sock->process_irq = tifmxx_mmcsd_process_irq;
 			sock->signal_irq = tifmxx_mmcsd_signal_irq;
 			sock->init_card = tifmxx_mmcsd_init_card;
+			sock->close_write = tifmxx_mmcsd_close_write;
+			sock->read_sect = tifmxx_mmcsd_read_sect;
+			sock->write_sect = tifmxx_mmcsd_write_sect;
 			
 			writel(0, sock->sock_addr + 0x118);
 			sock->flags &= 0xffff0000; // kill volatile flags

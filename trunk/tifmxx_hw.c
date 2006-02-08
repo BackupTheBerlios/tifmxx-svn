@@ -99,6 +99,104 @@ tifmxx_test_flag(struct tifmxx_sock_data *sock, unsigned int flag_mask)
 	return rc;
 }
 
+int
+tifmxx_sock_read(struct tifmxx_sock_data *sock, int lba_start, int* sector_count, long dma_addr, 
+		 int* dma_page_count)
+{
+	int rc;
+	unsigned long f;
+	int resume = 0;
+	int old_res_sector_count;
+
+	spin_lock_irqsave(&sock->lock, f);
+	if(sock->flags & CARD_BUSY) rc = 0xc3;
+	else
+	{
+		sock->flags |= CARD_BUSY;
+		if(lba_start != -1)
+		{
+			sock->lba_start = lba_start;
+			sock->total_sector_count = *sector_count;
+		}
+
+		if(*dma_page_count < 64)
+		{
+			do
+			{
+				if(lba_start != -1) sock->res_sector_count = *sector_count;
+				else resume = 1;
+				
+				if(sock->res_sector_count < *dma_page_count)
+					*dma_page_count = sock->res_sector_count;
+				
+				if(0 != (rc = sock->close_write(sock)))
+				{
+					writel(0xffff, sock->sock_addr + 0x18);
+					writel(0x0002, sock->sock_addr + 0x10);
+					sock->flags &= ~CARD_BUSY;
+					spin_unlock_irqrestore(&sock->lock, f);
+					return rc;
+				}
+				
+				if(sock->res_sector_count == 0 || *dma_page_count == 0)
+				{
+					sock->flags &= ~CARD_BUSY;
+					spin_unlock_irqrestore(&sock->lock, f);
+					return rc;
+				}
+
+				if(lba_start != -1)
+				{
+					writel(0xffff, sock->sock_addr + 0x18);
+					writel(0x0001, sock->sock_addr + 0x24);
+					writel(0x0005, sock->sock_addr + 0x14);
+					sock->flags &= ~FLAG_A5;
+				}
+				
+				writel(dma_addr, sock->sock_addr + 0xc);
+				writel((*dma_page_count << 8) | 0x0001, sock->sock_addr + 0x10);
+				
+				old_res_sector_count = sock->res_sector_count; //lvar_xc8
+				
+				while(1)
+				{
+					int res_sector_count = sock->res_sector_count;
+					if(sock->res_sector_count == 0 || *dma_page_count == 0)
+					{//206a1
+#error Incomplete!
+					}
+
+					spin_unlock_irqrestore(&sock->lock, f);
+					rc = sock->read_sect(sock, lba_start, &sock->res_sector_count, 
+							     dma_page_count, resume);
+					spin_lock_irqsave(&sock->lock, f);
+					if(!rc && (sock->flags & FLAG_A5)) rc = 0xc2;
+					if(rc == 0x68) break;
+					else if(rc)
+					{
+						writel(0xffff, sock->sock_addr + 0x18);
+						writel(0x0002, sock->sock_addr + 0x10);
+						sock->flags &= ~CARD_BUSY;
+						spin_unlock_irqrestore(&sock->lock, f);
+						return rc;
+					}
+					
+					if(lba_start != -1)
+						lba_start += res_sector_count - sock->res_sector_count;
+					resume = 1;
+				}
+				//204aa
+#error Incomplete!
+
+			}while(*dma_page_count < 64);
+#error Incomplete!
+		}
+		else rc = 0xc0;
+	}
+	spin_unlock_irqrestore(&sock->lock, f);
+	return rc;
+}
+
 static irqreturn_t 
 tifmxx_interrupt(int irq, void *dev_instance, struct pt_regs *regs)
 {
