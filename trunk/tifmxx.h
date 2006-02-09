@@ -125,6 +125,7 @@ struct tifmxx_sock_data
 	int                      lba_start; // r_var_5 
 	int                      total_sector_count; // r_var_3
 	int                      res_sector_count; // r_var_10
+	int                      cur_sector; // r_var_4
 	
 	union
 	{
@@ -138,9 +139,9 @@ struct tifmxx_sock_data
 	void                     (*signal_irq)(struct tifmxx_sock_data *sock, unsigned int card_irq_status);
 	int                      (*init_card)(struct tifmxx_sock_data *sock);
 	int                      (*close_write)(struct tifmxx_sock_data *sock);
-	int                      (*read_sect)(struct tifmxx_sock_data *sock, long lba, int* sector_count,
+	int                      (*read_sect)(struct tifmxx_sock_data *sock, int lba_start, int* sector_count,
 					      int* dma_page_count, int resume);
-	int                      (*write_sect)(struct tifmxx_sock_data *sock, long lba, int* sector_count,
+	int                      (*write_sect)(struct tifmxx_sock_data *sock, int lba_start, int* sector_count,
 					       int* dma_page_count, int resume);
 };
 

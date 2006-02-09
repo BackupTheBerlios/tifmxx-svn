@@ -100,13 +100,17 @@ tifmxx_test_flag(struct tifmxx_sock_data *sock, unsigned int flag_mask)
 }
 
 int
-tifmxx_sock_read(struct tifmxx_sock_data *sock, int lba_start, int* sector_count, long dma_addr, 
+tifmxx_sock_read(struct tifmxx_sock_data *sock, int lba_start, int* sector_count, int dma_addr, 
 		 int* dma_page_count)
 {
 	int rc;
 	unsigned long f;
 	int resume = 0;
-	int old_res_sector_count;
+	int res_sector_count_r;
+	int sector_count_r = *sector_count;
+	int lba_start_r = lba_start;
+	int dma_addr_r = dma_addr;
+	int dma_page_count_r = *dma_page_count;
 
 	spin_lock_irqsave(&sock->lock, f);
 	if(sock->flags & CARD_BUSY) rc = 0xc3;
@@ -156,14 +160,37 @@ tifmxx_sock_read(struct tifmxx_sock_data *sock, int lba_start, int* sector_count
 				writel(dma_addr, sock->sock_addr + 0xc);
 				writel((*dma_page_count << 8) | 0x0001, sock->sock_addr + 0x10);
 				
-				old_res_sector_count = sock->res_sector_count; //lvar_xc8
+				res_sector_count_r = sock->res_sector_count;
 				
 				while(1)
 				{
 					int res_sector_count = sock->res_sector_count;
 					if(sock->res_sector_count == 0 || *dma_page_count == 0)
-					{//206a1
-#error Incomplete!
+					{
+						if(!(sock->sock_status & 0x1))
+						{
+							do
+							{
+								spin_unlock_irqrestore(&sock->lock, f);
+								wait_event_timeout(sock->irq_ack, 
+										   tifmxx_test_flag(sock, 
+											SOCK_EVENT | CARD_REMOVED), 
+										   msecs_to_jiffies(100));
+								spin_lock_irqsave(&sock->lock, f);
+								sock->flags &= ~SOCK_EVENT;
+								if(sock->flags & CARD_REMOVED)
+								{
+									sock->flags &= ~CARD_BUSY;
+									spin_unlock_irqrestore(&sock->lock, f);
+									return 0x86;
+									
+								}
+							}while(!(sock->sock_status & 0x1));
+						}
+						//20740
+						sock->sock_status = 0;
+						spin_unlock_irqrestore(&sock->lock, f);
+						return 0;
 					}
 
 					spin_unlock_irqrestore(&sock->lock, f);
@@ -185,13 +212,22 @@ tifmxx_sock_read(struct tifmxx_sock_data *sock, int lba_start, int* sector_count
 						lba_start += res_sector_count - sock->res_sector_count;
 					resume = 1;
 				}
-				//204aa
-#error Incomplete!
 
+				*sector_count = sector_count_r;
+				*dma_page_count = dma_page_count_r;
+				dma_addr = dma_addr_r;
+				lba_start = lba_start_r;
+				sock->res_sector_count = res_sector_count_r;
+				sock->cur_sector = sock->total_sector_count - res_sector_count_r + sock->lba_start;
+
+				writel(0x0002 ,sock->sock_addr + 0x10);
+				writel(0xffff ,sock->sock_addr + 0x18);
+				writel(0x0001 ,sock->sock_addr + 0x24);
+				writel(0x0005 ,sock->sock_addr + 0x14);
+				sock->flags &= ~(CARD_BUSY | FLAG_A5);
 			}while(*dma_page_count < 64);
-#error Incomplete!
 		}
-		else rc = 0xc0;
+		rc = 0xc0;
 	}
 	spin_unlock_irqrestore(&sock->lock, f);
 	return rc;

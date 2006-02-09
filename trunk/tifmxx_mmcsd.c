@@ -923,6 +923,57 @@ tifmxx_mmcsd_close_write(struct tifmxx_sock_data* sock)
 	return 0;
 }
 
+static int
+tifmxx_mmcsd_read_sect(struct tifmxx_sock_data *sock, int lba_start, int* sector_count, int* dma_page_count, 
+		       int resume)
+{
+	unsigned long f;
+	int rc = 0, cnt;
+	unsigned int card_state;
+	
+	spin_lock_irqsave(sock->lock, f);
+	if(lba_start != -1)
+	{
+		if(lba_start >= sock->mmcsd_p->blocks)
+		{
+			spin_unlock_irqrestore(sock->lock, f);
+			return 0x82;
+		}
+		
+		if(*sector_count == 0)
+		{
+			spin_unlock_irqrestore(sock->lock, f);
+			return 0;
+		}
+
+		if(*sector_count > 2048)
+		{
+			spin_unlock_irqrestore(sock->lock, f);
+			return 0x2b;
+		}
+
+		spin_unlock_irqrestore(sock->lock, f);
+		for(cnt = 0; cnt < 10000; cnt++)
+		{
+			if(0 != (rc = tifmxx_mmcsd_get_state(sock, &card_state))) break;
+			if(card_state != 0x4) continue;
+			if(tifmxx_test_flag(sock, CARD_READY)) break;
+		}
+		if(card_state != 0x4 || rc || !tifmxx_test_flag(sock, CARD_READY))
+		{
+			if(rc == 0x86) return rc;
+			if(0 != (rc = sock->init_card(sock))) return rc;
+		}
+		spin_lock_irqsave(sock->lock, f);
+		//1f65c
+#error Incomplete!
+	}
+	//1f72a
+
+	spin_unlock_irqrestore(sock->lock, f);
+	return rc;
+}
+
 void
 tifmxx_mmcsd_init(struct tifmxx_sock_data* sock)
 {
