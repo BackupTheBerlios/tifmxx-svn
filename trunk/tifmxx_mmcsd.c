@@ -279,7 +279,9 @@ tifmxx_mmcsd_read_csd(struct tifmxx_sock_data *sock)
 	sock->mmcsd_p->read_time_out = ((l_csd[7] & 0xff) + (l_csd[6] >> 0x8)) * 0xa;
 	sock->mmcsd_p->write_time_out = sock->mmcsd_p->read_time_out * ((l_csd[1] >> 0xa) & 0x7);
 	sock->mmcsd_p->read_block_len = 1 << (l_csd[5] & 0xf);
+	sock->mmcsd_p->log_read_block_len = l_csd[5] & 0xf;
 	sock->mmcsd_p->write_block_len = 1 << ((l_csd[1] >> 6) & 0xf);
+	sock->mmcsd_p->log_write_block_len = (l_csd[1] >> 6) & 0xf;
 	trans_speed = 10000;
 	if((l_csd[6] & 0x7) < 4) trans_speed = rate_exp[l_csd[6] & 0x7];
 	trans_speed *= rate_mantissa[(l_csd[6] >> 0x3) & 0xf];
@@ -930,6 +932,7 @@ tifmxx_mmcsd_read_sect(struct tifmxx_sock_data *sock, int lba_start, int* sector
 	unsigned long f;
 	int rc = 0, cnt;
 	unsigned int card_state;
+	int lba_offset;
 	
 	spin_lock_irqsave(sock->lock, f);
 	if(lba_start != -1)
@@ -952,7 +955,10 @@ tifmxx_mmcsd_read_sect(struct tifmxx_sock_data *sock, int lba_start, int* sector
 			return 0x2b;
 		}
 
+		lba_offset = lba_start << sock->mmcsd_p->log_read_block_len;
+
 		spin_unlock_irqrestore(sock->lock, f);
+
 		for(cnt = 0; cnt < 10000; cnt++)
 		{
 			if(0 != (rc = tifmxx_mmcsd_get_state(sock, &card_state))) break;
@@ -964,11 +970,54 @@ tifmxx_mmcsd_read_sect(struct tifmxx_sock_data *sock, int lba_start, int* sector
 			if(rc == 0x86) return rc;
 			if(0 != (rc = sock->init_card(sock))) return rc;
 		}
+
 		spin_lock_irqsave(sock->lock, f);
-		//1f65c
-#error Incomplete!
+
+		writel(*sector_count - 1, sock->sock_addr + 0x12c);
+		writel(sock->mmcsd_p->read_block_len - 1, sock->sock_addr + 0x128);
+		writel(0x8000, sock->sock_addr + 0x130);
+		sock->mmcsd_p->cmd_status &= 0xfffffff7;
+
+		spin_unlock_irqrestore(sock->lock, f);
+
+		rc = (*sector_count == 1) ? tifmxx_mmcsd_exec_card_cmd(sock, 0xb111, lba_offset)
+					  : tifmxx_mmcsd_exec_card_cmd(sock, 0xb112, lba_offset);
+		if(rc) return rc;
+
+		spin_lock_irqsave(sock->lock, f);
 	}
-	//1f72a
+
+	if(*sector_count > *dma_page_count)
+	{
+		*sector_count -= *dma_page_count;
+		*dma_page_count = 0;
+	}
+	else
+	{
+		spin_unlock_irqrestore(sock->lock, f);
+
+		if(0 != (rc = tifmxx_mmcsd_wait_for_brs(sock))) return rc;
+		
+		spin_lock_irqsave(sock->lock, f);
+
+		if(*sector_count != 1 || lba_start == -1)
+		{
+			spin_unlock_irqrestore(sock->lock, f);
+
+			rc = tifmxx_mmcsd_exec_card_cmd(sock, 0x290c, 0); // stop transmission
+			if(rc == 0x86) return rc; // card removed
+
+			
+			if(rc && !tifmxx_test_flag(sock, R_INIT))
+			{
+				if(0 != (rc = sock->init_card(sock))) return rc;
+			}
+
+			spin_lock_irqsave(sock->lock, f);	
+		}
+		*dma_page_count -= *sector_count;
+		*dma_page_count = 0;
+	}
 
 	spin_unlock_irqrestore(sock->lock, f);
 	return rc;

@@ -30,6 +30,7 @@
  *      CARD_EVENT   -> card needs attention (to replace cmmcsd_event_1)
  *      CARD_READY   -> card ready to accept command (cmmcsd_var_14)
  *      FLAG_A5      -> vara_5, probably marks unfinished io
+ *      R_INIT       -> cmmcsd_var_9, card was re-inited after read error
  * -- Flags above 0x8000 are carried over on card insertion/removal
  *      MS_SOCKET    -> better Sony MS support on this socket
  *      XX12_SOCKET  -> xx12 devices have slightly different controls
@@ -43,8 +44,8 @@
 
 enum { INT_B0 = 0x1, INT_B1 = 0x2, CARD_PRESENT = 0x4, CARD_RO = 0x8, CARD_BUSY = 0x10, CARD_ACTIVE = 0x20,
        CARD_REMOVED = 0x40, SOCK_EVENT = 0x80, CARD_EVENT = 0x100, CARD_READY = 0x200, FLAG_A5 = 0x400,
-       MS_SOCKET = 0x10000, XX12_SOCKET = 0x20000, ALLOW_SD = 0x40000, ALLOW_MMC = 0x80000, ALLOW_MSP = 0x100000,
-       ALLOW_SM = 0x200000, ALLOW_SMCIS = 0x400000, ALLOW_SMDLY = 0x800000 };
+       R_INIT = 0x800, MS_SOCKET = 0x10000, XX12_SOCKET = 0x20000, ALLOW_SD = 0x40000, ALLOW_MMC = 0x80000, 
+       ALLOW_MSP = 0x100000, ALLOW_SM = 0x200000, ALLOW_SMCIS = 0x400000, ALLOW_SMDLY = 0x800000 };
 
 struct tifmxx_data;
 
@@ -89,7 +90,9 @@ struct tifmxx_mmcsd_data
 	
 	unsigned int             clk_speed; /* clocks per bit */
 	unsigned int             read_block_len;
+	unsigned int             log_read_block_len;
 	unsigned int             write_block_len;
+	unsigned int             log_write_block_len;
 	unsigned int             read_time_out;
 	unsigned int             write_time_out;
 

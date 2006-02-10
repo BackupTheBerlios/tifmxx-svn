@@ -187,7 +187,6 @@ tifmxx_sock_read(struct tifmxx_sock_data *sock, int lba_start, int* sector_count
 								}
 							}while(!(sock->sock_status & 0x1));
 						}
-						//20740
 						sock->sock_status = 0;
 						spin_unlock_irqrestore(&sock->lock, f);
 						return 0;
@@ -231,6 +230,13 @@ tifmxx_sock_read(struct tifmxx_sock_data *sock, int lba_start, int* sector_count
 	}
 	spin_unlock_irqrestore(&sock->lock, f);
 	return rc;
+}
+
+int
+tifmxx_sock_write(struct tifmxx_sock_data *sock, int lba_start, int* sector_count, int dma_addr, 
+		  int* dma_page_count)
+{
+#error Incomplete!
 }
 
 static irqreturn_t 
