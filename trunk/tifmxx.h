@@ -125,10 +125,14 @@ struct tifmxx_sock_data
 	unsigned int             clk_freq;
 	unsigned int             sock_status; // r_var_2
 
-	int                      lba_start; // r_var_5 
-	int                      total_sector_count; // r_var_3
-	int                      res_sector_count; // r_var_10
-	int                      cur_sector; // r_var_4
+	int                      lba_read_start; // r_var_5 
+	int                      lba_write_start; // r_var_x90
+	int                      total_read_sector_count; // r_var_3
+	int                      res_read_sector_count; // r_var_10
+	int                      total_write_sector_count; // r_var_x84
+	int                      res_write_sector_count; // r_var_x82	
+	int                      cur_read_sector; // r_var_4
+	int                      last_write_sector; // r_var_7
 	
 	union
 	{

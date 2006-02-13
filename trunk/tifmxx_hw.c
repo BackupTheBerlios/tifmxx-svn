@@ -113,130 +113,259 @@ tifmxx_sock_read(struct tifmxx_sock_data *sock, int lba_start, int* sector_count
 	int dma_page_count_r = *dma_page_count;
 
 	spin_lock_irqsave(&sock->lock, f);
-	if(sock->flags & CARD_BUSY) rc = 0xc3;
-	else
+	if(sock->flags & CARD_BUSY) 
 	{
-		sock->flags |= CARD_BUSY;
-		if(lba_start != -1)
-		{
-			sock->lba_start = lba_start;
-			sock->total_sector_count = *sector_count;
-		}
+		spin_unlock_irqrestore(&sock->lock, f);
+		return 0xc3;
+	}
+	
+	sock->flags |= CARD_BUSY;
+	if(lba_start != -1)
+	{
+		sock->lba_read_start = lba_start;
+		sock->total_read_sector_count = *sector_count;
+	}
 
-		if(*dma_page_count < 64)
+	if(*dma_page_count < 64)
+	{
+		do
 		{
-			do
+			if(lba_start != -1) sock->res_read_sector_count = *sector_count;
+			else resume = 1;
+			
+			if(sock->res_read_sector_count < *dma_page_count)
+				*dma_page_count = sock->res_read_sector_count;
+				
+			if(0 != (rc = sock->close_write(sock)))
 			{
-				if(lba_start != -1) sock->res_sector_count = *sector_count;
-				else resume = 1;
+				writel(0xffff, sock->sock_addr + 0x18);
+				writel(0x0002, sock->sock_addr + 0x10);
+				sock->flags &= ~CARD_BUSY;
+				spin_unlock_irqrestore(&sock->lock, f);
+				return rc;
+			}
+
+			if(sock->res_read_sector_count == 0 || *dma_page_count == 0)
+			{
+				sock->flags &= ~CARD_BUSY;
+				spin_unlock_irqrestore(&sock->lock, f);
+				return rc;
+			}
+
+			if(lba_start != -1)
+			{
+				writel(0xffff, sock->sock_addr + 0x18);
+				writel(0x0001, sock->sock_addr + 0x24);
+				writel(0x0005, sock->sock_addr + 0x14);
+				sock->flags &= ~FLAG_A5;
+			}
+
+			writel(dma_addr, sock->sock_addr + 0xc);
+			writel((*dma_page_count << 8) | 0x0001, sock->sock_addr + 0x10);
+
+			res_sector_count_r = sock->res_read_sector_count;
 				
-				if(sock->res_sector_count < *dma_page_count)
-					*dma_page_count = sock->res_sector_count;
+			while(1)
+			{
+				int res_sector_count = sock->res_read_sector_count;
+				if(sock->res_read_sector_count == 0 || *dma_page_count == 0)
+				{
+					if(!(sock->sock_status & 0x1))
+					{
+						do
+						{
+							spin_unlock_irqrestore(&sock->lock, f);
+
+							wait_event_timeout(sock->irq_ack, 
+									   tifmxx_test_flag(sock, SOCK_EVENT | 
+												  CARD_REMOVED), 
+									   msecs_to_jiffies(100));
+							spin_lock_irqsave(&sock->lock, f);
+
+							sock->flags &= ~SOCK_EVENT;
+
+							if(sock->flags & CARD_REMOVED)
+							{
+								sock->flags &= ~CARD_BUSY;
+								spin_unlock_irqrestore(&sock->lock, f);
+								return 0x86;		
+							}
+						}while(!(sock->sock_status & 0x1));
+					}
+					sock->sock_status = 0;
+					spin_unlock_irqrestore(&sock->lock, f);
+					return 0;
+				}
+
+				spin_unlock_irqrestore(&sock->lock, f);
 				
-				if(0 != (rc = sock->close_write(sock)))
+				rc = sock->read_sect(sock, lba_start, &sock->res_read_sector_count, dma_page_count,
+						     resume);
+
+				spin_lock_irqsave(&sock->lock, f);
+
+				if(!rc && (sock->flags & FLAG_A5)) rc = 0xc2;
+				if(rc == 0x68) break;
+				else if(rc)
 				{
 					writel(0xffff, sock->sock_addr + 0x18);
 					writel(0x0002, sock->sock_addr + 0x10);
 					sock->flags &= ~CARD_BUSY;
-					spin_unlock_irqrestore(&sock->lock, f);
-					return rc;
-				}
-				
-				if(sock->res_sector_count == 0 || *dma_page_count == 0)
-				{
-					sock->flags &= ~CARD_BUSY;
-					spin_unlock_irqrestore(&sock->lock, f);
-					return rc;
-				}
-
-				if(lba_start != -1)
-				{
-					writel(0xffff, sock->sock_addr + 0x18);
-					writel(0x0001, sock->sock_addr + 0x24);
-					writel(0x0005, sock->sock_addr + 0x14);
-					sock->flags &= ~FLAG_A5;
-				}
-				
-				writel(dma_addr, sock->sock_addr + 0xc);
-				writel((*dma_page_count << 8) | 0x0001, sock->sock_addr + 0x10);
-				
-				res_sector_count_r = sock->res_sector_count;
-				
-				while(1)
-				{
-					int res_sector_count = sock->res_sector_count;
-					if(sock->res_sector_count == 0 || *dma_page_count == 0)
-					{
-						if(!(sock->sock_status & 0x1))
-						{
-							do
-							{
-								spin_unlock_irqrestore(&sock->lock, f);
-								wait_event_timeout(sock->irq_ack, 
-										   tifmxx_test_flag(sock, 
-											SOCK_EVENT | CARD_REMOVED), 
-										   msecs_to_jiffies(100));
-								spin_lock_irqsave(&sock->lock, f);
-								sock->flags &= ~SOCK_EVENT;
-								if(sock->flags & CARD_REMOVED)
-								{
-									sock->flags &= ~CARD_BUSY;
-									spin_unlock_irqrestore(&sock->lock, f);
-									return 0x86;
-									
-								}
-							}while(!(sock->sock_status & 0x1));
-						}
-						sock->sock_status = 0;
-						spin_unlock_irqrestore(&sock->lock, f);
-						return 0;
-					}
 
 					spin_unlock_irqrestore(&sock->lock, f);
-					rc = sock->read_sect(sock, lba_start, &sock->res_sector_count, 
-							     dma_page_count, resume);
-					spin_lock_irqsave(&sock->lock, f);
-					if(!rc && (sock->flags & FLAG_A5)) rc = 0xc2;
-					if(rc == 0x68) break;
-					else if(rc)
-					{
-						writel(0xffff, sock->sock_addr + 0x18);
-						writel(0x0002, sock->sock_addr + 0x10);
-						sock->flags &= ~CARD_BUSY;
-						spin_unlock_irqrestore(&sock->lock, f);
-						return rc;
-					}
+
+					return rc;
+				}
 					
-					if(lba_start != -1)
-						lba_start += res_sector_count - sock->res_sector_count;
-					resume = 1;
-				}
+				if(lba_start != -1) lba_start += res_sector_count - sock->res_read_sector_count;
+				resume = 1;
+			}
 
-				*sector_count = sector_count_r;
-				*dma_page_count = dma_page_count_r;
-				dma_addr = dma_addr_r;
-				lba_start = lba_start_r;
-				sock->res_sector_count = res_sector_count_r;
-				sock->cur_sector = sock->total_sector_count - res_sector_count_r + sock->lba_start;
+			*sector_count = sector_count_r;
+			*dma_page_count = dma_page_count_r;
+			dma_addr = dma_addr_r;
+			lba_start = lba_start_r;
+			sock->res_read_sector_count = res_sector_count_r;
+			sock->cur_read_sector = sock->total_read_sector_count - res_sector_count_r +
+						sock->lba_read_start;
 
-				writel(0x0002 ,sock->sock_addr + 0x10);
-				writel(0xffff ,sock->sock_addr + 0x18);
-				writel(0x0001 ,sock->sock_addr + 0x24);
-				writel(0x0005 ,sock->sock_addr + 0x14);
-				sock->flags &= ~(CARD_BUSY | FLAG_A5);
-			}while(*dma_page_count < 64);
-		}
-		rc = 0xc0;
+			writel(0x0002 ,sock->sock_addr + 0x10);
+			writel(0xffff ,sock->sock_addr + 0x18);
+			writel(0x0001 ,sock->sock_addr + 0x24);
+			writel(0x0005 ,sock->sock_addr + 0x14);
+			sock->flags &= ~(CARD_BUSY | FLAG_A5);
+		}while(*dma_page_count < 64);
 	}
 	spin_unlock_irqrestore(&sock->lock, f);
-	return rc;
+	return 0xc0;
 }
 
 int
 tifmxx_sock_write(struct tifmxx_sock_data *sock, int lba_start, int* sector_count, int dma_addr, 
 		  int* dma_page_count)
 {
-#error Incomplete!
+	unsigned long f;
+	int rc = 0, resume = 0;
+
+	spin_lock_irqsave(&sock->lock, f);
+	if(sock->flags & CARD_BUSY)
+	{
+		spin_unlock_irqrestore(&sock->lock, f);
+		return 0xc3;
+	}
+
+	if(sock->flags & CARD_RO)
+	{
+		spin_unlock_irqrestore(&sock->lock, f);
+		return 0xc1;
+	}
+	
+	if(*dma_page_count > 63)
+	{
+		spin_unlock_irqrestore(&sock->lock, f);
+		return 0xc0;
+	}
+
+	sock->flags |= CARD_BUSY;
+
+	if(lba_start != -1)
+	{
+		sock->lba_write_start = lba_start;
+		sock->total_write_sector_count = sock->res_write_sector_count = *sector_count;
+	}
+	else resume = 1;
+
+	if(sock->res_write_sector_count < *dma_page_count) *dma_page_count = sock->res_write_sector_count;
+	
+	if(sock->res_write_sector_count == 0 || *dma_page_count == 0)
+	{
+		sock->flags &= ~CARD_BUSY;
+		spin_unlock_irqrestore(&sock->lock, f);
+		return 0;
+	}
+	
+	if(lba_start != -1)
+	{
+		// non - consecutive write or any new write on xD/SM
+		if((sock->last_write_sector + 1) != lba_start || 1 == sock->media_id || 4 == sock->media_id)
+		{
+			spin_unlock_irqrestore(&sock->lock, f);
+			rc = sock->close_write(sock);
+			spin_lock_irqsave(&sock->lock, f);
+			sock->flags |= CARD_BUSY;
+		}
+
+		if(rc)
+		{
+			writel(0xffff, sock->sock_addr + 0x18);
+			writel(0x0002, sock->sock_addr + 0x10);
+			sock->flags &= ~CARD_BUSY;
+			spin_unlock_irqrestore(&sock->lock, f);
+			return rc;
+		}
+
+		sock->last_write_sector = *sector_count + lba_start - 1;
+		writel(0xffff, sock->sock_addr + 0x18);
+		writel(0x0001, sock->sock_addr + 0x24);
+		writel(0x0005, sock->sock_addr + 0x14);
+		sock->flags &= ~FLAG_A5;		
+	}
+	//x209a5
+	writel(dma_addr, sock->sock_addr + 0xc);
+	writel(0x8001 | (*dma_page_count << 8), sock->sock_addr + 0x10);
+	//! nullify r_var_x94 and r_var_xa4 - not needed for mmc/sd
+	if(sock->res_write_sector_count)
+	{
+		int res_sector_count;
+		do
+		{
+			if(*dma_page_count == 0) break;
+			res_sector_count = sock->res_write_sector_count;
+			
+			spin_unlock_irqrestore(&sock->lock, f);
+			rc = sock->write_sect(sock, lba_start, &sock->res_write_sector_count, dma_page_count,
+					      resume);
+			spin_lock_irqsave(&sock->lock, f);
+			if(!rc && (sock->flags & FLAG_A5)) rc = 0xc2;
+			if(rc)
+			{
+				writel(0xffff, sock->sock_addr + 0x18);
+				writel(0x0002, sock->sock_addr + 0x10);
+				if(rc == 0x82) rc = 0;
+				sock->flags &= ~CARD_BUSY;
+				spin_unlock_irqrestore(&sock->lock, f);
+				return rc;
+			}
+			if(lba_start != -1) lba_start += res_sector_count - sock->res_write_sector_count;
+			
+			resume = 1;
+		}while(sock->res_write_sector_count);
+	}
+	
+	if(!(sock->sock_status & 0x1))
+	{
+		do
+		{
+			spin_unlock_irqrestore(&sock->lock, f);
+
+			wait_event_timeout(sock->irq_ack, tifmxx_test_flag(sock, SOCK_EVENT | CARD_REMOVED),
+					   msecs_to_jiffies(100));
+			spin_lock_irqsave(&sock->lock, f);
+
+			sock->flags &= ~SOCK_EVENT;
+			if(sock->flags & CARD_REMOVED)
+			{
+				sock->flags &= ~CARD_BUSY;
+				spin_unlock_irqrestore(&sock->lock, f);
+				return 0x86;		
+			}
+		}while(!(sock->sock_status & 0x1));
+	}
+
+	sock->flags &= ~CARD_BUSY;
+	sock->sock_status = 0;
+	spin_unlock_irqrestore(&sock->lock, f);
+	return 0;
 }
 
 static irqreturn_t 

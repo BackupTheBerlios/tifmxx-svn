@@ -1023,6 +1023,130 @@ tifmxx_mmcsd_read_sect(struct tifmxx_sock_data *sock, int lba_start, int* sector
 	return rc;
 }
 
+static int
+tifmxx_mmcsd_write_sect(struct tifmxx_sock_data *sock, int lba_start, int* sector_count, int* dma_page_count, 
+			int resume)
+{
+	unsigned long f;
+	int rc = 0, cnt;
+	unsigned int card_state;
+	int lba_offset;
+	
+	spin_lock_irqsave(sock->lock, f);
+	if((sock->flags & CARD_RO) || (0x0200 & readl(sock->sock_addr + 0x8)))
+	{
+		spin_unlock_irqrestore(sock->lock, f);
+		return 0xc1; // card is write protected
+	}
+
+	if(lba_start != -1)
+	{
+		if(lba_start >= sock->mmcsd_p->blocks) rc = 0x82;
+		else if(*sector_count > 2048) rc = 0x2b;
+		
+		if(rc || *sector_count == 0)
+		{
+			spin_unlock_irqrestore(sock->lock, f);
+			return rc;
+		}
+		
+		lba_offset = lba_start << sock->mmcsd_p->log_write_block_len;
+
+		spin_unlock_irqrestore(sock->lock, f);
+
+		for(cnt = 0; cnt < 10000; cnt++)
+		{
+			if(0 != (rc = tifmxx_mmcsd_get_state(sock, &card_state))) break;
+			if(card_state != 0x4) continue;
+			if(tifmxx_test_flag(sock, CARD_READY)) break;
+		}
+		if(card_state != 0x4 || rc || !tifmxx_test_flag(sock, CARD_READY))
+		{
+			if(rc == 0x86) return rc;
+			if(0 != (rc = sock->init_card(sock))) return rc;
+		}
+
+		if(tifmxx_get_media_id(sock) == 0x23)
+		{
+			cnt = 0;
+			do
+			{
+				rc = tifmxx_mmcsd_exec_card_cmd(sock, 0x2137, tifmxx_mmcsd_get_rca(sock));
+				cnt++;
+				if(cnt > 2) break;
+			}while(rc == 0x25);
+
+			if(!rc) rc = tifmxx_mmcsd_exec_card_cmd(sock, 0x2117, *sector_count);
+		}
+
+		spin_lock_irqsave(sock->lock, f);
+
+		writel(*sector_count - 1, sock->sock_addr + 0x12c);
+		writel(sock->mmcsd_p->write_block_len - 1, sock->sock_addr + 0x128);
+		writel(0x0080, sock->sock_addr + 0x130);
+		sock->mmcsd_p->cmd_status &= 0xfffffff7;
+
+		spin_unlock_irqrestore(sock->lock, f);
+
+		rc = (*sector_count == 1) ? tifmxx_mmcsd_exec_card_cmd(sock, 0x3118, lba_offset)
+					  : tifmxx_mmcsd_exec_card_cmd(sock, 0x3119, lba_offset);
+		if(rc) return rc;
+
+		spin_lock_irqsave(sock->lock, f);
+	}
+	//x1fa18
+	spin_unlock_irqrestore(sock->lock, f);
+	if(*sector_count <= *dma_page_count)
+	{
+		
+		if(0 != (rc = tifmxx_mmcsd_wait_for_brs(sock))) return rc;
+		
+		if(*sector_count == 1 || lba_start == -1)
+		{
+			for(cnt = 0; cnt < 10000; cnt++)
+			{
+				if(0 != (rc = tifmxx_mmcsd_get_state(sock, &card_state))) break;
+				if(card_state == 0x7) continue;
+				if(tifmxx_test_flag(sock, CARD_READY))
+				{
+					rc = tifmxx_mmcsd_exec_card_cmd(sock, 0x290c, 0);
+					break;
+				}
+			}
+
+			if(rc) return rc;
+		}
+		//x1fb51
+		for(cnt = 0; cnt < 10000; cnt++)
+		{
+			if(0 != (rc = tifmxx_mmcsd_get_state(sock, &card_state))) break;
+			if(card_state != 0x4) continue;
+			if(tifmxx_test_flag(sock, CARD_READY)) break;
+		}
+
+		if(card_state != 0x4 || rc || !tifmxx_test_flag(sock, CARD_READY))
+		{
+			if(rc == 0x86) return rc;
+			if(0 != (rc = sock->init_card(sock))) return rc;
+		}	
+		
+		//x1fbd4
+		*dma_page_count -= *sector_count;
+		*sector_count = 0;
+	}
+	else
+	{
+		*sector_count -= *dma_page_count;
+		*dma_page_count = 0;
+	}
+
+	spin_lock_irqsave(sock->lock, f);
+	sock->mmcsd_p->cmd_status = 0;
+	spin_unlock_irqrestore(sock->lock, f);
+
+	return rc;
+}
+
 void
 tifmxx_mmcsd_init(struct tifmxx_sock_data* sock)
 {

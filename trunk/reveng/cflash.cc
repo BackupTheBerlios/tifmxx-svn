@@ -319,8 +319,8 @@ void
 CFlash::InitializeWriteBlocks()
 {
 	var_xa4 = 0;
-	sub_0_2ECE0(&var_x94, 0, 2 * ((mwSize < 0x10) ? 8 : 4)); // or another way round?
-	// sub_0_2ECE0 - library function, used by <operator new> and such
+	sub_0_2ECE0(&var_x94, 0, 2 * ((mwSize < 16) ? 8 : 4));
+	// sub_0_2ECE0 - memset
 }
 
 struct tigd* 

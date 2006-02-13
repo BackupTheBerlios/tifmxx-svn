@@ -34,8 +34,7 @@ struct CFlash
 	int muiSMReadSector;     // 0x088 (var_4)
 	int var_5;               // 0x08C
 	int var_x90;             // 0x090
-	int var_x94;             // 0x094
-
+	char var_x94[16];        // 0x094
 	char var_xa4;	         // 0x0A4
 	int var_xa8;             // 0x0A8
 	int var_xb0;             // 0x0B0
