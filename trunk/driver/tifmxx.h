@@ -6,10 +6,19 @@
 #include <linux/workqueue.h>
 #include <linux/wait.h>
 #include <linux/delay.h>
+#include <linux/pci.h>
 #include <linux/mmc/host.h>
 
 #define DRIVER_NAME "tifmxx"
 #define DRIVER_VERSION "0.2"
+
+#define CONFIG_MMC_DEBUG 1
+#ifdef CONFIG_MMC_DEBUG
+#define DBG(f, x...) \
+        printk(KERN_DEBUG DRIVER_NAME " [%s()]: " f, __func__,## x)
+#else
+#define DBG(f, x...) do { } while (0)
+#endif
 
 /* Host registers (relative to pci base address): */
 enum { 
@@ -81,15 +90,14 @@ enum { MS_SOCKET = 0x1, XX12_SOCKET = 0x2, ALLOW_SD = 0x4,
  */
 
 enum { INT_B0 = 0x1, INT_B1 = 0x2, CARD_RO = 0x4, CARD_BUSY = 0x8, 
-       CARD_ACTIVE = 0x10, CARD_REMOVED = 0x20, SOCK_EVENT = 0x40, 
-       MMCSD_EVENT = 0x80, MMCSD_READY = 0x100, FLAG_A5 = 0x200, R_INIT = 0x400 };
+       CARD_ACTIVE = 0x10, CARD_EJECTED = 0x20, SOCK_EVENT = 0x40, 
+       FLAG_A5 = 0x80, MMCSD_EVENT = 0x100, MMCSD_READY = 0x200, 
+       R_INIT = 0x400, FLAG_V2 = 0x800 };
 
-struct ms_host /* Placeholder for MemoryStick device struct */
-{
+struct ms_host {/* Placeholder for MemoryStick device struct */
 };
 
-struct xd_host /* Placeholder for xD/SM device struct */
-{
+struct xd_host {/* Placeholder for xD/SM device struct */
 };
 
 struct tifmxx_socket
@@ -101,16 +109,25 @@ struct tifmxx_socket
 	unsigned int       flags;
 	unsigned int       fixed_flags;
 
+	unsigned int       dma_fifo_status; // CFlash::var_2
+
 	union
 	{
-		struct     mmc_host* mmc_p;
-		struct     ms_host* ms_p;
-		struct     xd_host* xd_p;
+		struct mmc_host* mmc_p;
+		struct ms_host*  ms_p;
+		struct xd_host*  xd_p;
 	};
 
 	void               (*eject)(struct tifmxx_socket*);
 	void               (*signal_int)(struct tifmxx_socket*, unsigned int);
 	void               (*process_int)(struct tifmxx_socket*);
+};
+
+struct tifmxx_mmcsd_private {
+	struct tifmxx_socket* sock;
+	unsigned int          mmcsd_status; // cmmcsd_var_10
+	unsigned int          next_cmd_status; // cmmcsd_var_11
+	unsigned int          cmd_status; // cmmcsd_var_5, byStatus
 };
 
 struct tifmxx_host

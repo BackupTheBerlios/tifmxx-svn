@@ -1,5 +1,5 @@
 obj-m	    += tifmxx.o
-tifmxx-objs += tifmxx_hw.o
+tifmxx-objs += tifmxx_hw.o tifmxx_mmcsd.o
 
 KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 PWD       := $(shell pwd)

@@ -24,18 +24,9 @@
 #include <linux/config.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/pci.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include "tifmxx.h"
-
-#define CONFIG_MMC_DEBUG 1
-#ifdef CONFIG_MMC_DEBUG
-#define DBG(f, x...) \
-        printk(KERN_DEBUG DRIVER_NAME " [%s()]: " f, __func__,## x)
-#else
-#define DBG(f, x...) do { } while (0)
-#endif
 
 unsigned int sd_switch = 0;
 
@@ -90,7 +81,47 @@ static struct kobj_type tifmxx_socket_kobj_type = {
 
 static unsigned int tifmxx_sock_cycle_power(struct tifmxx_socket* sock)
 {
-#error Not implemented!
+	unsigned int p_reg;
+	u64 t;
+
+	writel(0xe00, sock->sock_addr + SOCK_CONTROL);
+
+	// wait for card to chut down
+	t = get_jiffies_64();
+	while(get_jiffies_64() - t < msecs_to_jiffies(1000)) {
+		if(!(0x80 & readl(sock->sock_addr + SOCK_PRESENT_STATE))) break;
+		msleep(10);
+	}
+
+	p_reg = readl(sock->sock_addr + SOCK_PRESENT_STATE);
+	if(!(8 & p_reg)) return 0;
+
+	if(sock->fixed_flags & XX12_SOCKET)
+		writel(0xc00 | (p_reg & 7), sock->sock_addr + SOCK_CONTROL);
+	else {
+		 // SmartMedia cards need extra 40 msec
+		if(1 == ((readl(sock->sock_addr + SOCK_PRESENT_STATE) >> 4) & 7)) 
+			msleep(40);
+		writel(0x40 | readl(sock->sock_addr + SOCK_CONTROL), 
+		       sock->sock_addr + SOCK_CONTROL);
+		msleep(10);
+		writel(0xc40 | (p_reg & 0x7), sock->sock_addr + SOCK_CONTROL);
+	}
+
+	// wait for card to power up
+	t = get_jiffies_64();
+	while(get_jiffies_64() - t < msecs_to_jiffies(1000)) {
+		if(0x80 & readl(sock->sock_addr + SOCK_PRESENT_STATE)) break;
+		msleep(10);
+	}
+
+	if(!(sock->fixed_flags & XX12_SOCKET))
+		writel(0xffbf & readl(sock->sock_addr + SOCK_CONTROL),
+		       sock->sock_addr + SOCK_CONTROL);
+
+	writel(7, sock->sock_addr + SOCK_FIFO_PAGE_SIZE);
+	writel(1, sock->sock_addr + SOCK_FIFO_CONTROL);
+	return 7 & (readl(sock->sock_addr + SOCK_PRESENT_STATE) >> 4);
 }
 
 static void tifmxx_isr_bh(void *data)
