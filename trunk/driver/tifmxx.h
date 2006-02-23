@@ -100,27 +100,28 @@ struct ms_host {/* Placeholder for MemoryStick device struct */
 struct xd_host {/* Placeholder for xD/SM device struct */
 };
 
+struct tifmxx_host;
+
 struct tifmxx_socket
 {
-	struct kobject     kobj;
-	spinlock_t         lock;
-	wait_queue_head_t  hw_wq;
-	char* __iomem      sock_addr;
-	unsigned int       flags;
-	unsigned int       fixed_flags;
+	struct kobject      kobj;
+	spinlock_t          lock;
+	wait_queue_head_t   hw_wq;
+	struct tifmxx_host* host;
+	unsigned int        id;
 
-	unsigned int       dma_fifo_status; // CFlash::var_2
+	char* __iomem       sock_addr;
 
-	union
-	{
-		struct mmc_host* mmc_p;
-		struct ms_host*  ms_p;
-		struct xd_host*  xd_p;
-	};
+	unsigned int        flags;
+	unsigned int        fixed_flags;
 
-	void               (*eject)(struct tifmxx_socket*);
-	void               (*signal_int)(struct tifmxx_socket*, unsigned int);
-	void               (*process_int)(struct tifmxx_socket*);
+	unsigned int        dma_fifo_status; // CFlash::var_2
+
+	struct device       c_dev;
+
+	void                (*eject)(struct tifmxx_socket*);
+	void                (*signal_int)(struct tifmxx_socket*, unsigned int);
+	void                (*process_int)(struct tifmxx_socket*);
 };
 
 struct tifmxx_mmcsd_private {
@@ -133,8 +134,8 @@ struct tifmxx_mmcsd_private {
 struct tifmxx_host
 {
 	struct kobject           kobj;
-        struct pci_dev           *dev;
-        char __iomem             *mmio_base;
+        struct pci_dev*          dev;
+        char* __iomem            mmio_base;
 
         unsigned int             int_status;
         unsigned int             num_sockets;
@@ -142,6 +143,7 @@ struct tifmxx_host
 
         struct work_struct       isr_bh;
 };
+
 
 void tifmxx_mmcsd_insert(struct tifmxx_socket* sock);
 

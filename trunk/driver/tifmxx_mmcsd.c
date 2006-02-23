@@ -34,7 +34,7 @@ void tifmxx_mmcsd_set_ios(struct mmc_host *host, struct mmc_ios *ios)
 
 int tifmxx_mmcsd_get_ro(struct mmc_host *host)
 {
-#error "To be continued"
+	return 1;
 }
 
 static struct mmc_host_ops tifmxx_mmcsd_ops = {
@@ -51,13 +51,15 @@ void tifmxx_mmcsd_eject(struct tifmxx_socket* sock)
 
 	sock->flags |=	CARD_EJECTED;
 	wake_up_all(&sock->hw_wq);
-	mmc_remove_host(sock->mmc_p);
-	mmc_free_host(sock->mmc_p);
+	mmc_remove_host(sock->c_dev.platform_data);
+	mmc_free_host(sock->c_dev.platform_data);
+	device_unregister(&sock->c_dev);
+	memset(&sock->c_dev, 0, sizeof(struct device));
 }
 
 void tifmxx_mmcsd_signal_int(struct tifmxx_socket* sock, unsigned int sock_int_status)
 {
-	struct tifmxx_mmcsd_private* sock_data = mmc_priv(sock->mmc_p);
+	struct tifmxx_mmcsd_private* sock_data = mmc_priv(sock->c_dev.platform_data);
 
 	sock->flags &= ~(INT_B0 | INT_B1); sock->flags |= sock_int_status;
 	
@@ -75,7 +77,7 @@ void tifmxx_mmcsd_signal_int(struct tifmxx_socket* sock, unsigned int sock_int_s
 
 void tifmxx_mmcsd_process_int(struct tifmxx_socket* sock)
 {
-	struct tifmxx_mmcsd_private* sock_data = mmc_priv(sock->mmc_p);
+	struct tifmxx_mmcsd_private* sock_data = mmc_priv(sock->c_dev.platform_data);
 
 	if(!(sock->flags & INT_B1)) {
 		if(sock->dma_fifo_status & 0x4) sock->flags |= CARD_BUSY; 
@@ -103,32 +105,49 @@ void tifmxx_mmcsd_process_int(struct tifmxx_socket* sock)
 	}
 }
 
+void dummy_release(struct device* dev)
+{
+}
+
 void tifmxx_mmcsd_insert(struct tifmxx_socket* sock)
 {
-	struct tifmxx_mmcsd_private* mmc_data;
+	extern struct bus_type tifmxx_bus_type;
+	sock->c_dev.parent = &sock->host->dev->dev;
+	snprintf(sock->c_dev.bus_id, BUS_ID_SIZE, "tifm%d", sock->id);
+	sock->c_dev.bus = &tifmxx_bus_type;
+	sock->c_dev.release = dummy_release;
+	
+	if(!device_register(&sock->c_dev)) {
+		struct tifmxx_mmcsd_private* mmc_data;
+		struct mmc_host* mmc_h;
 
-	sock->mmc_p = mmc_alloc_host(sizeof(struct tifmxx_mmcsd_private), 0);
-	if(sock->mmc_p) {
-		sock->mmc_p->ops = &tifmxx_mmcsd_ops;
-		sock->mmc_p->ocr_avail = MMC_VDD_32_33|MMC_VDD_33_34;
-		sock->mmc_p->caps = MMC_CAP_4_BIT_DATA;
-		sock->mmc_p->max_hw_segs = 1;
-		sock->mmc_p->max_phys_segs = 1;
-		sock->mmc_p->max_sectors = 0x3f;
-		sock->mmc_p->max_seg_size = sock->mmc_p->max_sectors << 9;
-		sock->mmc_p->f_max = 80000000;
-		sock->mmc_p->f_min = 10000;
+		sock->c_dev.platform_data = mmc_alloc_host(sizeof(struct tifmxx_mmcsd_private),
+							   &sock->c_dev);
 
-		mmc_data = mmc_priv(sock->mmc_p);
-		mmc_data->sock = sock;
-		sock->eject = tifmxx_mmcsd_eject;
-		sock->signal_int = tifmxx_mmcsd_signal_int;
-		sock->process_int = tifmxx_mmcsd_process_int;
+		mmc_h = sock->c_dev.platform_data;
+		if(mmc_h) {
+			mmc_h->ops = &tifmxx_mmcsd_ops;
+			mmc_h->ocr_avail = MMC_VDD_32_33|MMC_VDD_33_34;
+			mmc_h->caps = MMC_CAP_4_BIT_DATA;
+			mmc_h->max_hw_segs = 1;
+			mmc_h->max_phys_segs = 1;
+			mmc_h->max_sectors = 0x3f;
+			mmc_h->max_seg_size = mmc_h->max_sectors << 9;
+			mmc_h->f_max = 80000000;
+			mmc_h->f_min = 10000;
 
-		sock->flags = 0;
+			mmc_data = mmc_priv(mmc_h);
+			mmc_data->sock = sock;
+			sock->eject = tifmxx_mmcsd_eject;
+			sock->signal_int = tifmxx_mmcsd_signal_int;
+			sock->process_int = tifmxx_mmcsd_process_int;
 
-		mmc_add_host(sock->mmc_p);
-		return;
+			sock->flags = 0;
+
+			mmc_add_host(mmc_h);
+			return;
+		}
+		else device_unregister(&sock->c_dev);
 	}
 	// otherwise do nothing - may be problems will go away by themselves
 }

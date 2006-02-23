@@ -44,6 +44,10 @@ static struct pci_device_id tifmxx_pci_tbl [] =
         { }
 };
 
+struct bus_type tifmxx_bus_type = {
+	.name = "ti-flashmedia"
+};
+
 static void tifmxx_free_host(struct kobject* kobj)
 {
 	struct tifmxx_host* fm_host = container_of(kobj, struct tifmxx_host, kobj);
@@ -246,6 +250,8 @@ static int tifmxx_init_sockets(struct tifmxx_host* fm_host)
 		sock->kobj.ktype = &tifmxx_socket_kobj_type;
 		spin_lock_init(&sock->lock);
 		init_waitqueue_head(&sock->hw_wq);
+		sock->host = fm_host;
+		sock->id = cnt;
 		sock->sock_addr = fm_host->mmio_base + (((unsigned long)cnt + 1) << 10);
 		sock->fixed_flags |= (fm_host->num_sockets == 2) ? XX12_SOCKET : 0;
 		sock->fixed_flags |= (sd_switch & 1) ? ALLOW_SD : 0;
@@ -280,8 +286,12 @@ static int __devinit tifmxx_probe(struct pci_dev* pdev,
 
         pci_set_master(pdev);
 
-        rc = pci_request_regions(pdev, DRIVER_NAME);
-        if (rc) { pci_dev_busy = 1; goto err_out; }
+        if((rc = pci_request_regions(pdev, DRIVER_NAME))) {
+        	pci_dev_busy = 1;
+		goto err_out; 
+	}
+
+	if((rc = bus_register(&tifmxx_bus_type))) goto err_out_bus;
 
         pci_intx(pdev, 1);
 
@@ -330,6 +340,8 @@ err_out_free_host:
 err_out_int:
         pci_intx(pdev, 0);
         pci_release_regions(pdev);
+err_out_bus:
+	bus_unregister(&tifmxx_bus_type);
 err_out:
         if (!pci_dev_busy) pci_disable_device(pdev);
         return rc;
@@ -345,6 +357,7 @@ static void __devexit tifmxx_remove(struct pci_dev* pdev)
 	pci_intx(pdev, 0);
 	kobject_put(&fm_host->kobj);
 
+	bus_unregister(&tifmxx_bus_type);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
 }
