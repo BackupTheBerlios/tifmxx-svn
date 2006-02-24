@@ -59,7 +59,7 @@ enum {
 	SOCK_MS_SYSTEM                 = 0x190,
 	SOCK_FIFO_ACCESS               = 0x200 };
 
-/* Fixed socket flags:
+/* Socket capabilities:
  *      MS_SOCKET    -> better Sony MS support on this socket
  *      XX12_SOCKET  -> xx12 devices have slightly different controls
  *      ALLOW_SD     -> use SD in addition to SDIO
@@ -69,9 +69,6 @@ enum {
  *      ALLOW_SMCIS  -> enable SM CIS check
  *      ALLOW_SMDLY  -> enable SM/xD insertion delay
  */
-enum { MS_SOCKET = 0x1, XX12_SOCKET = 0x2, ALLOW_SD = 0x4,
-       ALLOW_MMC = 0x8, ALLOW_MSP = 0x10, ALLOW_SM = 0x20, 
-       ALLOW_SMCIS = 0x40, ALLOW_SMDLY = 0x80 };
 
 /* Volatile socket flags: 
  *      INT_B0       -> lower nibble card bit from interrupt status (mmio_base + 0x14), vara_0
@@ -89,62 +86,11 @@ enum { MS_SOCKET = 0x1, XX12_SOCKET = 0x2, ALLOW_SD = 0x4,
  *      FLAG_V2      -> cmmcsd_var_2, bit 3 of socket register 0x114 was set and INT_B0 signalled
  */
 
-enum { INT_B0 = 0x1, INT_B1 = 0x2, CARD_RO = 0x4, CARD_BUSY = 0x8, 
-       CARD_ACTIVE = 0x10, CARD_EJECTED = 0x20, SOCK_EVENT = 0x40, 
-       FLAG_A5 = 0x80, MMCSD_EVENT = 0x100, MMCSD_READY = 0x200, 
-       R_INIT = 0x400, FLAG_V2 = 0x800 };
+struct tifm_driver {
+	struct module        *owner;
+	const char           *name;
 
-struct ms_host {/* Placeholder for MemoryStick device struct */
+	struct device_driver driver;
 };
-
-struct xd_host {/* Placeholder for xD/SM device struct */
-};
-
-struct tifmxx_host;
-
-struct tifmxx_socket
-{
-	struct kobject      kobj;
-	spinlock_t          lock;
-	wait_queue_head_t   hw_wq;
-	struct tifmxx_host* host;
-	unsigned int        id;
-
-	char* __iomem       sock_addr;
-
-	unsigned int        flags;
-	unsigned int        fixed_flags;
-
-	unsigned int        dma_fifo_status; // CFlash::var_2
-
-	struct device       c_dev;
-
-	void                (*eject)(struct tifmxx_socket*);
-	void                (*signal_int)(struct tifmxx_socket*, unsigned int);
-	void                (*process_int)(struct tifmxx_socket*);
-};
-
-struct tifmxx_mmcsd_private {
-	struct tifmxx_socket* sock;
-	unsigned int          mmcsd_status; // cmmcsd_var_10
-	unsigned int          next_cmd_status; // cmmcsd_var_11
-	unsigned int          cmd_status; // cmmcsd_var_5, byStatus
-};
-
-struct tifmxx_host
-{
-	struct kobject           kobj;
-        struct pci_dev*          dev;
-        char* __iomem            mmio_base;
-
-        unsigned int             int_status;
-        unsigned int             num_sockets;
-        struct tifmxx_socket**   sockets;
-
-        struct work_struct       isr_bh;
-};
-
-
-void tifmxx_mmcsd_insert(struct tifmxx_socket* sock);
 
 #endif
