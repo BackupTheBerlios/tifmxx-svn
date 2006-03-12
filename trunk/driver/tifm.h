@@ -9,11 +9,7 @@
 #include <linux/pci.h>
 #include <linux/mmc/host.h>
 
-#define DRIVER_NAME "tifmxx"
-#define DRIVER_VERSION "0.2"
-
-#define CONFIG_MMC_DEBUG 1
-#ifdef CONFIG_MMC_DEBUG
+#ifdef CONFIG_TIFM_DEBUG
 #define DBG(f, x...) \
         printk(KERN_DEBUG DRIVER_NAME " [%s()]: " f, __func__,## x)
 #else
@@ -59,38 +55,39 @@ enum {
 	SOCK_MS_SYSTEM                 = 0x190,
 	SOCK_FIFO_ACCESS               = 0x200 };
 
-/* Socket capabilities:
- *      MS_SOCKET    -> better Sony MS support on this socket
- *      XX12_SOCKET  -> xx12 devices have slightly different controls
- *      ALLOW_SD     -> use SD in addition to SDIO
- *      ALLOW_MMC    -> use MMC in addition to SDIO
- *      ALLOW_MSP    -> enable use of MS parallel mode on dedicated socket
- *      ALLOW_SM     -> enable SM use
- *      ALLOW_SMCIS  -> enable SM CIS check
- *      ALLOW_SMDLY  -> enable SM/xD insertion delay
- */
-
-/* Volatile socket flags: 
- *      INT_B0       -> lower nibble card bit from interrupt status (mmio_base + 0x14), vara_0
- *      INT_B1       -> higher nibble card bit from interrupt status (mmio_base + 0x14), vara_1
- *      CARD_RO      -> card is read-only
- *      CARD_BUSY    -> vara_6 variable from reveng
- *      CARD_ACTIVE  -> vara_2 variable from reveng, set after card initialization success
- *      CARD_EJECTED -> vara_4 variable from reveng, set by finalizer, condition for event_1
- *      SOCK_EVENT   -> socket event (event_2)
- *      FLAG_A5      -> vara_5, probably marks unfinished io
- * These flags are probably cmmcsd specific:
- *      MMCSD_EVENT  -> card needs attention (to replace cmmcsd_event_1)
- *      MMCSD_READY  -> card ready to accept command (cmmcsd_var_14)
- *      R_INIT       -> cmmcsd_var_9, card was re-initialized after read error
- *      FLAG_V2      -> cmmcsd_var_2, bit 3 of socket register 0x114 was set and INT_B0 signalled
- */
+typedef enum {FM_NULL = 0, FM_SM = 0x01, FM_MS = 0x02, FM_SD = 0x03} tifm_device_id;
 
 struct tifm_driver {
-	struct module        *owner;
-	const char           *name;
-
-	struct device_driver driver;
+	char                 *name;
+	tifm_device_id       *id_table;	
+	struct device_driver drv;
 };
+
+struct tifm_dev {
+	char __iomem    *addr;
+	spinlock_t      lock;
+
+	void            (*process_irq)(struct tifm_dev *sock);
+	void            (*signal_irq)(struct tifm_dev *sock, unsigned int sock_irq_status);
+
+	struct device dev;
+};
+
+struct tifm_adapter {
+	char __iomem        *addr;
+	unsigned int        irq_status;
+	spinlock_t          lock;
+	unsigned int        id;
+	unsigned int        max_sockets;
+	struct tifm_dev     *sockets[4];
+	struct work_struct  isr_bh;
+	struct class_device cdev;
+	struct device       *dev;
+};
+
+struct tifm_adapter* tifm_alloc_adapter(void);
+void tifm_free_adapter(struct tifm_adapter *fm);
+int tifm_add_adapter(struct tifm_adapter *fm);
+void tifm_remove_adapter(struct tifm_adapter *fm);
 
 #endif

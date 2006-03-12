@@ -27,11 +27,12 @@
 #include <linux/init.h>
 #include <linux/spinlock.h>
 #include <linux/errno.h>
-#include <linux/rwsem.h>
+#include <linux/idr.h>
 
 #include "tifm.h"
 
-static DECLARE_RWSEM(tifm_all_devices_rwsem);
+static DEFINE_IDR(tifm_adapter_idr);
+static DEFINE_SPINLOCK(tifm_adapter_lock);
 
 static int tifm_device_match(struct device *dev, struct device_driver *drv)
 {
@@ -54,7 +55,7 @@ static int tifm_resume(struct device *dev)
 	return 0;
 }
 
-struct bus_type tifm_bus_type = {
+static struct bus_type tifm_bus_type = {
 	.name    = "tifm",
 	.match   = tifm_device_match,
 	.hotplug = tifm_hotplug,
@@ -62,78 +63,78 @@ struct bus_type tifm_bus_type = {
 	.resume  = tifm_resume
 };
 
-static int tifm_probe_interface(struct device *dev)
+static void tifm_free(struct class_device *cdev)
 {
-	printk("Error from here!\n");
-	return -ENODEV;
+	struct tifm_adapter *fm = container_of(cdev, struct tifm_adapter, cdev);
+	kfree(fm);
 }
 
-static int tifm_unbind_interface(struct device *dev)
+static struct class tifm_adapter_class = {
+	.name    = "tifm_adapter",
+	.release = tifm_free
+};
+
+struct tifm_adapter* tifm_alloc_adapter(void)
 {
-	return 0;
+	struct tifm_adapter *fm = kzalloc(sizeof(struct tifm_adapter), GFP_KERNEL);
+
+	if(fm) {
+		fm->cdev.class = &tifm_adapter_class; 
+		spin_lock_init(&fm->lock);
+		class_device_initialize(&fm->cdev);
+	}
+	return fm;
 }
+EXPORT_SYMBOL(tifm_alloc_adapter);
 
-int tifm_register(struct tifm_driver *new_driver)
+void tifm_free_adapter(struct tifm_adapter *fm)
 {
-	int rc = 0;
+	class_device_put(&fm->cdev);
+}
+EXPORT_SYMBOL(tifm_free_adapter);
 
-	new_driver->driver.name = (char *)new_driver->name;
-	new_driver->driver.bus = &tifm_bus_type;
-	new_driver->driver.probe = tifm_probe_interface;
-	new_driver->driver.remove = tifm_unbind_interface;
-	new_driver->driver.owner = new_driver->owner;
+int tifm_add_adapter(struct tifm_adapter *fm)
+{
+	int rc;
+	if(!idr_pre_get(&tifm_adapter_idr, GFP_KERNEL)) return -ENOMEM;
 
-	down_write(&tifm_all_devices_rwsem);
-	rc = driver_register(&new_driver->driver);
-	up_write(&tifm_all_devices_rwsem);
-	
+	spin_lock(&tifm_adapter_lock);
+	rc = idr_get_new(&tifm_adapter_idr, fm, &fm->id);
+	spin_unlock(&tifm_adapter_lock);
+	if(!rc) {
+		snprintf(fm->cdev.class_id, BUS_ID_SIZE, "tifm%d", fm->id);
+		rc = class_device_add(&fm->cdev);
+	}
 	return rc;
 }
+EXPORT_SYMBOL(tifm_add_adapter);
 
-void tifm_unregister(struct tifm_driver *driver)
+void tifm_remove_adapter(struct tifm_adapter *fm)
 {
-	down_write(&tifm_all_devices_rwsem);
-	driver_unregister(&driver->driver);
-	up_write(&tifm_all_devices_rwsem);
-}
+	class_device_del(&fm->cdev);
 
-static struct class *tifm_host_class;
-
-static int tifm_host_init(void)
-{
-	
-	tifm_host_class = class_create(THIS_MODULE, "tifm_host");
-	if(IS_ERR(tifm_host_class)) return PTR_ERR(tifm_host_class);
-	return 0;
+	spin_lock(&tifm_adapter_lock);
+	idr_remove(&tifm_adapter_idr, fm->id);
+	spin_unlock(&tifm_adapter_lock);
 }
+EXPORT_SYMBOL(tifm_remove_adapter);
 
-static void tifm_host_cleanup(void)
-{
-	class_destroy(tifm_host_class);
-}
 
 static int __init tifm_init(void)
 {
-	int rc = 0;
+	int rc = bus_register(&tifm_bus_type);
 
-	if((rc = bus_register(&tifm_bus_type))) goto err_out;
-	
-	if((rc = tifm_host_init())) goto err_bus_unregister;
+	if(!rc) {
+		rc = class_register(&tifm_adapter_class);
+		if(rc) bus_unregister(&tifm_bus_type);
+	}
 
-//	if((rc = tifm_register())) goto err_host_cleanup;
-	return 0;
-
-//err_host_cleanup:
-//	tifm_host_cleanup();
-err_bus_unregister:
-	bus_unregister(&tifm_bus_type);
-err_out:
 	return rc;
 }
 
 static void __exit tifm_exit(void)
 {
-	tifm_host_cleanup();
+	class_unregister(&tifm_adapter_class);
 	bus_unregister(&tifm_bus_type);
 }
 
