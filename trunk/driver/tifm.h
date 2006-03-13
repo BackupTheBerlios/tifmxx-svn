@@ -9,6 +9,7 @@
 #include <linux/pci.h>
 #include <linux/mmc/host.h>
 
+#define CONFIG_TIFM_DEBUG 1
 #ifdef CONFIG_TIFM_DEBUG
 #define DBG(f, x...) \
         printk(KERN_DEBUG DRIVER_NAME " [%s()]: " f, __func__,## x)

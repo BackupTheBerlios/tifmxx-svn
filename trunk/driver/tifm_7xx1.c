@@ -33,8 +33,71 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id, struct pt_regs *regs)
 	return IRQ_NONE;
 }
 
+static tifm_device_id tifm_7xx1_toggle_sock_power(char *sock_addr, int is_x2)
+{
+	unsigned int s_state;
+	unsigned long long t;
+
+	writel(0x0e00, sock_addr + SOCK_CONTROL);
+
+	t = get_jiffies_64();
+	while(get_jiffies_64() - t < msecs_to_jiffies(1000)) {
+		if(!(0x0080 & readl(sock_addr + SOCK_PRESENT_STATE))) break;
+		msleep(10);
+	}
+
+	s_state = readl(sock_addr + SOCK_PRESENT_STATE);
+	if(!(0x0008 & s_state)) return FM_NULL;
+
+	if(is_x2) {
+		writel((s_state & 7) | 0x0c00, sock_addr + SOCK_CONTROL);
+	} else {
+		// SmartMedia cards need extra 40 msec
+		if(1 == ((readl(sock_addr + SOCK_PRESENT_STATE) >> 4) & 7)) msleep(40);
+		writel(readl(sock_addr + 0x4) | 0x0040, sock_addr + SOCK_CONTROL);
+		msleep(10);
+		writel((s_state & 0x7) | 0x0c40, sock_addr + SOCK_CONTROL);
+	}
+	
+	t = get_jiffies_64();
+	while(get_jiffies_64() - t < msecs_to_jiffies(1000)) {
+		if((0x0080 & readl(sock_addr + SOCK_PRESENT_STATE))) break;
+		msleep(10);
+	}
+
+	if(!is_x2) writel(readl(sock_addr + SOCK_CONTROL) & 0xffbf, sock_addr + SOCK_CONTROL);
+
+	writel(0x0007, sock_addr + SOCK_FIFO_PAGE_SIZE);
+	writel(0x0001, sock_addr + SOCK_FIFO_CONTROL);
+
+	return (readl(sock_addr + SOCK_PRESENT_STATE) >> 4) & 7;
+}
+
+inline static char* tifm_7xx1_sock_addr(char *base_addr, unsigned int sock)
+{
+	return base_addr + (((unsigned long)sock + 1) << 10);
+}
+ 
 static void tifm_7xx1_detect_card(struct tifm_adapter *fm, unsigned int sock)
 {
+	unsigned long f;
+	tifm_device_id media_id;
+
+	spin_lock_irqsave(&fm->lock, f);
+	if(!fm->sockets[sock]) { // check for new card in socket
+		spin_unlock_irqrestore(&fm->lock, f);
+		media_id = tifm_7xx1_toggle_sock_power(tifm_7xx1_sock_addr(fm->addr, sock), 
+						       fm->max_sockets == 2);
+		spin_lock_irqsave(&fm->lock, f);
+		if(media_id) {
+			DBG("Adding media %d to socket %d\n", media_id, sock);
+		}
+	} else { // remove existing one
+		DBG("Removing card from socket %d\n", sock);
+	}
+	spin_unlock_irqrestore(&fm->lock, f);
+	writel(0x00010100 << sock, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
+	writel(0x00010100 << sock, fm->addr + FM_SET_INTERRUPT_ENABLE);
 }
 
 static void tifm_7xx1_bh(void *dev_id)
