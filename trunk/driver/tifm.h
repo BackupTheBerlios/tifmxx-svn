@@ -58,20 +58,24 @@ enum {
 
 typedef enum {FM_NULL = 0, FM_SM = 0x01, FM_MS = 0x02, FM_SD = 0x03} tifm_device_id;
 
-struct tifm_driver {
-	char                 *name;
-	tifm_device_id       *id_table;	
-	struct device_driver drv;
-};
-
+struct tifm_driver;
 struct tifm_dev {
 	char __iomem    *addr;
 	spinlock_t      lock;
+	tifm_device_id  media_id;
 
 	void            (*process_irq)(struct tifm_dev *sock);
 	void            (*signal_irq)(struct tifm_dev *sock, unsigned int sock_irq_status);
 
-	struct device dev;
+	struct tifm_driver *drv;
+	struct device      dev;
+};
+
+struct tifm_driver {
+	tifm_device_id       *id_table;	
+	int                  (*probe)(struct tifm_dev *dev);
+	void                 (*remove)(struct tifm_dev *dev);
+	struct device_driver driver;
 };
 
 struct tifm_adapter {
@@ -90,5 +94,12 @@ struct tifm_adapter* tifm_alloc_adapter(void);
 void tifm_free_adapter(struct tifm_adapter *fm);
 int tifm_add_adapter(struct tifm_adapter *fm);
 void tifm_remove_adapter(struct tifm_adapter *fm);
+struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm);
+int tifm_register_driver(struct tifm_driver *drv);
+void tifm_unregister_driver(struct tifm_driver *drv);
+
+struct tifm_device_id {
+	__u32 media_id;
+};
 
 #endif

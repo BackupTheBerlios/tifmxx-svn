@@ -31,12 +31,30 @@
 
 #include "tifm.h"
 
+#define DRIVER_NAME "tifm_core"
+#define DRIVER_VERSION "0.2"
+
 static DEFINE_IDR(tifm_adapter_idr);
 static DEFINE_SPINLOCK(tifm_adapter_lock);
 
-static int tifm_device_match(struct device *dev, struct device_driver *drv)
+static tifm_device_id* tifm_device_match(tifm_device_id *ids, struct tifm_dev *dev)
 {
+	while(*ids) {
+		if(dev->media_id == *ids) return ids;
+		ids++;
+	}
 	return 0;
+}
+
+static int tifm_match(struct device *dev, struct device_driver *drv)
+{
+	struct tifm_dev *fm_dev = container_of(dev, struct tifm_dev, dev);
+	struct tifm_driver *fm_drv = container_of(drv, struct tifm_driver, driver);
+
+	DBG("match called for drv %s\n", drv->name);
+	if(!fm_drv->id_table) return -EINVAL;
+	if(tifm_device_match(fm_drv->id_table, fm_dev)) return 1;
+	return -ENODEV;
 }
 
 static int tifm_hotplug(struct device *dev, char **envp, int num_envp, 
@@ -57,7 +75,7 @@ static int tifm_resume(struct device *dev)
 
 static struct bus_type tifm_bus_type = {
 	.name    = "tifm",
-	.match   = tifm_device_match,
+	.match   = tifm_match,
 	.hotplug = tifm_hotplug,
 	.suspend = tifm_suspend,
 	.resume  = tifm_resume
@@ -120,6 +138,79 @@ void tifm_remove_adapter(struct tifm_adapter *fm)
 EXPORT_SYMBOL(tifm_remove_adapter);
 
 
+static void tifm_free_device(struct device *dev)
+{
+	struct tifm_dev *fm_dev = container_of(dev, struct tifm_dev, dev);
+	kfree(fm_dev);
+}
+
+
+struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm)
+{
+	struct tifm_dev *dev = kzalloc(sizeof(struct tifm_dev), GFP_KERNEL);
+	
+	if(dev) {
+		spin_lock_init(&dev->lock);
+		dev->dev.parent = fm->dev;
+		dev->dev.bus = &tifm_bus_type;
+		//dev->dev.dma_mask = fm->dev->dma_mask;
+		dev->dev.release = tifm_free_device;
+	}
+	return dev;
+}
+EXPORT_SYMBOL(tifm_alloc_device);
+
+static int tifm_device_probe(struct device *dev)
+{
+	struct tifm_driver *drv = container_of(dev->driver, struct tifm_driver, driver);
+	struct tifm_dev *fm_dev = container_of(dev, struct tifm_dev, dev);
+	int rc = 0;
+	const tifm_device_id *id;
+
+	get_device(dev);
+	if(!fm_dev->drv && drv->probe && drv->id_table) {
+		rc = -ENODEV;
+		id = tifm_device_match(drv->id_table, fm_dev);
+		if(id) rc = drv->probe(fm_dev);
+		if(rc >= 0) {
+			rc = 0;
+			fm_dev->drv = drv;
+		}
+	}
+	if(rc) put_device(dev);
+	return rc;
+}
+
+static int tifm_device_remove(struct device *dev)
+{
+	struct tifm_dev *fm_dev = container_of(dev, struct tifm_dev, dev);
+	struct tifm_driver *drv = fm_dev->drv;
+
+	if(drv) {
+		if(drv->remove) drv->remove(fm_dev);
+		fm_dev->drv = 0;
+	}
+
+	put_device(dev);
+	return 0;
+}
+
+int tifm_register_driver(struct tifm_driver *drv)
+{
+	drv->driver.bus = &tifm_bus_type;
+	drv->driver.probe = tifm_device_probe;
+	drv->driver.remove = tifm_device_remove;
+	
+	return driver_register(&drv->driver);
+}
+EXPORT_SYMBOL(tifm_register_driver);
+
+void tifm_unregister_driver(struct tifm_driver *drv)
+{
+	driver_unregister(&drv->driver);
+}
+EXPORT_SYMBOL(tifm_unregister_driver);
+
 static int __init tifm_init(void)
 {
 	int rc = bus_register(&tifm_bus_type);
@@ -142,3 +233,7 @@ subsys_initcall(tifm_init);
 module_exit(tifm_exit);
 
 MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Alex Dubov");
+MODULE_DESCRIPTION("TI FlashMedia core driver");
+MODULE_LICENSE("GPL");
+MODULE_VERSION(DRIVER_VERSION);
