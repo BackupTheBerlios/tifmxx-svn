@@ -22,19 +22,127 @@
  */
 
 #include "tifm.h"
+#include <linux/mmc/protocol.h>
+#include <linux/mmc/host.h>
 
 #define DRIVER_NAME "tifm_sd"
 #define DRIVER_VERSION "0.2"
 
+enum { CARD_EVENT = 0x0001, FIFO_EVENT = 0x0002, CARD_BUSY = 0x0004,
+       CARD_ACTIVE = 0x0008, EJECT_EVENT = 0x0010, FLAG_V2 = 0x0020 };
+
+static void tifm_sd_eject(struct tifm_dev *sock)
+{
+	struct tifm_sd *card = tifm_get_drvdata(sock);
+
+	card->flags |= EJECT_EVENT;
+	wake_up_all(&card->event);
+}
+
+/* Called from interrupt handler */
+static void tifm_sd_signal_irq(struct tifm_dev *sock, unsigned int sock_irq_status)
+{
+	struct tifm_sd *card = tifm_get_drvdata(sock);
+	unsigned int card_status;
+
+	card->flags &= ~(CARD_EVENT | FIFO_EVENT); 
+	card->flags |= sock_irq_status;
+
+        if(card->flags & FIFO_EVENT)
+        {
+                card->fifo_status = readl(sock->addr + SOCK_DMA_FIFO_STATUS);
+                writel(card->fifo_status, sock->addr + SOCK_DMA_FIFO_STATUS);
+
+		if(card->fifo_status & 0x4) card->flags |= CARD_BUSY;
+		else wake_up_all(&card->event);
+
+		card->flags &= ~CARD_ACTIVE;
+        }
+
+        if(card->flags & CARD_EVENT)
+        {
+                card_status = readl(sock->addr + SOCK_MMCSD_STATUS);
+                writel(card_status, sock->addr + SOCK_MMCSD_STATUS);
+		card->status |= card_status;
+
+		if(card_status & 0x8) {
+			writel(0x0014 | readl(sock->addr + SOCK_MMCSD_INT_ENABLE),
+			       sock->addr + SOCK_MMCSD_INT_ENABLE);
+			card->flags |= FLAG_V2;
+		}
+
+		if(card_status & 0x0010) card->flags &= ~FLAG_V2;
+		if(card_status & 0x0004) card->flags |= FLAG_V2;
+		wake_up_all(&card->event);
+        }
+}
+
+static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
+{
+}
+
+static void tifm_sd_ios(struct mmc_host *mmc, struct mmc_ios *ios)
+{
+}
+
+static int tifm_sd_ro(struct mmc_host *mmc)
+{
+	return 1;
+}
+
+static struct mmc_host_ops tifm_sd_ops = {
+	.request = tifm_sd_request,
+	.set_ios = tifm_sd_ios,
+	.get_ro  = tifm_sd_ro
+};
+
 static int tifm_sd_probe(struct tifm_dev *dev)
 {
+	struct mmc_host *mmc;
+	struct tifm_sd *card;
+
 	DBG("called\n");
-	return -ENODEV;
+	mmc = mmc_alloc_host(sizeof(struct tifm_sd), &dev->dev);
+	if(!mmc) return -ENOMEM;
+
+	card = mmc_priv(mmc);
+	card->dev = dev;
+	init_waitqueue_head(&card->event);
+
+	dev->eject = tifm_sd_eject;
+	dev->signal_irq = tifm_sd_signal_irq;
+	
+	mmc->ops = &tifm_sd_ops;
+	mmc->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
+	mmc->caps = MMC_CAP_4_BIT_DATA;
+	mmc->f_min = 0;
+	mmc->f_max = 0;
+	mmc->max_hw_segs = 1;
+	mmc->max_phys_segs = 1;
+	mmc->max_sectors = 0x3f;
+	mmc->max_seg_size = mmc->max_sectors << 9;
+
+	tifm_set_drvdata(dev, mmc);
+	mmc_add_host(mmc);	
+
+	return 0;
 }
 
 static void tifm_sd_remove(struct tifm_dev *dev)
 {
+	struct mmc_host *mmc = tifm_get_drvdata(dev);
+
 	DBG("called\n");
+
+	tifm_sd_eject(dev);
+
+	mmc_remove_host(mmc);
+
+	dev->eject = 0;
+	dev->signal_irq = 0;
+	tifm_set_drvdata(dev, 0);
+	
+	mmc_free_host(mmc);
 }
 
 static tifm_device_id tifm_sd_id_tbl[] = {

@@ -7,7 +7,6 @@
 #include <linux/wait.h>
 #include <linux/delay.h>
 #include <linux/pci.h>
-#include <linux/mmc/host.h>
 
 #define CONFIG_TIFM_DEBUG 1
 #ifdef CONFIG_TIFM_DEBUG
@@ -64,7 +63,7 @@ struct tifm_dev {
 	spinlock_t      lock;
 	tifm_device_id  media_id;
 
-	void            (*process_irq)(struct tifm_dev *sock);
+	void            (*eject)(struct tifm_dev *sock);
 	void            (*signal_irq)(struct tifm_dev *sock, unsigned int sock_irq_status);
 
 	struct tifm_driver *drv;
@@ -90,6 +89,16 @@ struct tifm_adapter {
 	struct device       *dev;
 };
 
+struct tifm_sd {
+	struct tifm_dev     *dev;
+
+	wait_queue_head_t   event;
+	unsigned int        flags;
+	unsigned int        status;
+	unsigned int        fifo_status;
+
+};
+
 struct tifm_adapter* tifm_alloc_adapter(void);
 void tifm_free_adapter(struct tifm_adapter *fm);
 int tifm_add_adapter(struct tifm_adapter *fm);
@@ -97,6 +106,16 @@ void tifm_remove_adapter(struct tifm_adapter *fm);
 struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm);
 int tifm_register_driver(struct tifm_driver *drv);
 void tifm_unregister_driver(struct tifm_driver *drv);
+
+static inline void* tifm_get_drvdata(struct tifm_dev *dev)
+{
+        return dev_get_drvdata(&dev->dev);
+}
+
+static inline void tifm_set_drvdata(struct tifm_dev *dev, void *data)
+{
+	dev_set_drvdata(&dev->dev, data);
+}
 
 struct tifm_device_id {
 	__u32 media_id;

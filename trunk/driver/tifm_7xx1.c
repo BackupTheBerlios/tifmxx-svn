@@ -1,4 +1,5 @@
 #include "tifm.h"
+#include <linux/interrupt.h>
 
 #define DRIVER_NAME "tifm_7xx1"
 #define DRIVER_VERSION "0.2"
@@ -105,6 +106,7 @@ static void tifm_7xx1_detect_card(struct tifm_adapter *fm, unsigned int sock)
 		}
 	} else { // remove existing one
 		DBG("Removing card from socket %d\n", sock);
+		if(fm->sockets[sock]->eject) fm->sockets[sock]->eject(fm->sockets[sock]);
 		device_unregister(&fm->sockets[sock]->dev);
 		fm->sockets[sock] = 0;
 	}
@@ -117,12 +119,6 @@ static void tifm_7xx1_bh(void *dev_id)
 {
 	struct tifm_adapter *fm = (struct tifm_adapter*)dev_id;
 	unsigned int irq_status = fm->irq_status, cnt;
-	unsigned long f;
-
-	spin_lock_irqsave(&fm->lock, f);
-	for(cnt = 0; cnt <  fm->max_sockets; cnt++)
-		if(fm->sockets[cnt] && fm->sockets[cnt]->process_irq) fm->sockets[cnt]->process_irq(fm->sockets[cnt]);
-	spin_unlock_irqrestore(&fm->lock, f);
 	
 	for(cnt = 0; cnt <  fm->max_sockets; cnt++)
 		if(irq_status & (1 << cnt)) tifm_7xx1_detect_card(fm, cnt);
@@ -219,7 +215,6 @@ static struct pci_device_id tifm_7xx1_pci_tbl [] = {
 
 static struct pci_driver tifm_7xx1_driver = {
 	.name = DRIVER_NAME,
-	.owner = THIS_MODULE,
 	.id_table = tifm_7xx1_pci_tbl,
 	.probe = tifm_7xx1_probe,
 	.remove = tifm_7xx1_remove,

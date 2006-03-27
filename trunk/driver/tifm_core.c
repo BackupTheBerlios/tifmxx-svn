@@ -57,8 +57,8 @@ static int tifm_match(struct device *dev, struct device_driver *drv)
 	return -ENODEV;
 }
 
-static int tifm_hotplug(struct device *dev, char **envp, int num_envp, 
-                        char *buffer, int buffer_size)
+static int tifm_uevent(struct device *dev, char **envp, int num_envp,
+		       char *buffer, int buffer_size)
 {
 	return -ENODEV;
 }
@@ -76,7 +76,7 @@ static int tifm_resume(struct device *dev)
 static struct bus_type tifm_bus_type = {
 	.name    = "tifm",
 	.match   = tifm_match,
-	.hotplug = tifm_hotplug,
+	.uevent  = tifm_uevent,
 	.suspend = tifm_suspend,
 	.resume  = tifm_resume
 };
@@ -153,7 +153,7 @@ struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm)
 		spin_lock_init(&dev->lock);
 		dev->dev.parent = fm->dev;
 		dev->dev.bus = &tifm_bus_type;
-		//dev->dev.dma_mask = fm->dev->dma_mask;
+		dev->dev.dma_mask = fm->dev->dma_mask;
 		dev->dev.release = tifm_free_device;
 	}
 	return dev;
