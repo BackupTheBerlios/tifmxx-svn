@@ -63,7 +63,6 @@ struct tifm_dev {
 	spinlock_t      lock;
 	tifm_device_id  media_id;
 
-	void            (*eject)(struct tifm_dev *sock);
 	void            (*signal_irq)(struct tifm_dev *sock, unsigned int sock_irq_status);
 
 	struct tifm_driver *drv;
@@ -89,6 +88,8 @@ struct tifm_adapter {
 	struct device       *dev;
 };
 
+typedef enum { SD_INV = 0, SD_MMC = 1, SD_SD = 2, SD_IO = 3 } sd_type_id;
+
 struct tifm_sd {
 	struct tifm_dev     *dev;
 
@@ -96,6 +97,7 @@ struct tifm_sd {
 	unsigned int        flags;
 	unsigned int        status;
 	unsigned int        fifo_status;
+	sd_type_id          media_type;
 
 };
 

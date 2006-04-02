@@ -106,7 +106,6 @@ static void tifm_7xx1_detect_card(struct tifm_adapter *fm, unsigned int sock)
 		}
 	} else { // remove existing one
 		DBG("Removing card from socket %d\n", sock);
-		if(fm->sockets[sock]->eject) fm->sockets[sock]->eject(fm->sockets[sock]);
 		device_unregister(&fm->sockets[sock]->dev);
 		fm->sockets[sock] = 0;
 	}
