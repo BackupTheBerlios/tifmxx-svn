@@ -4,6 +4,23 @@
 #define DRIVER_NAME "tifm_7xx1"
 #define DRIVER_VERSION "0.2"
 
+void tifm_sock_power(struct tifm_dev *sock, int power_on)
+{
+	unsigned int rc;
+
+	rc = readl(sock->addr + SOCK_CONTROL);
+	if(power_on) {
+		DBG("power on\n");
+		rc |= 0x40;
+		writel(rc, sock->addr + SOCK_CONTROL);
+	} else {
+		DBG("power off\n");
+		rc &= 0xffffffbf;
+		writel(rc, sock->addr + SOCK_CONTROL);
+	}
+}
+EXPORT_SYMBOL(tifm_sock_power);
+
 static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id, struct pt_regs *regs)
 {
 	struct tifm_adapter *fm = (struct tifm_adapter*)dev_id;

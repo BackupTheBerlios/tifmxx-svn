@@ -88,19 +88,6 @@ struct tifm_adapter {
 	struct device       *dev;
 };
 
-typedef enum { SD_INV = 0, SD_MMC = 1, SD_SD = 2, SD_IO = 3 } sd_type_id;
-
-struct tifm_sd {
-	struct tifm_dev     *dev;
-
-	wait_queue_head_t   event;
-	unsigned int        flags;
-	unsigned int        status;
-	unsigned int        fifo_status;
-	sd_type_id          media_type;
-
-};
-
 struct tifm_adapter* tifm_alloc_adapter(void);
 void tifm_free_adapter(struct tifm_adapter *fm);
 int tifm_add_adapter(struct tifm_adapter *fm);
@@ -108,6 +95,7 @@ void tifm_remove_adapter(struct tifm_adapter *fm);
 struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm);
 int tifm_register_driver(struct tifm_driver *drv);
 void tifm_unregister_driver(struct tifm_driver *drv);
+void tifm_sock_power(struct tifm_dev *sock, int power_on);
 
 static inline void* tifm_get_drvdata(struct tifm_dev *dev)
 {

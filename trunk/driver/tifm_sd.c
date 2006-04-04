@@ -32,6 +32,21 @@ enum { CARD_EVENT = 0x0001, FIFO_EVENT = 0x0002, CARD_BUSY = 0x0004,
        CARD_ACTIVE = 0x0008, EJECT_EVENT = 0x0010, FLAG_V2 = 0x0020,
        CARD_RO = 0x0040 };
 
+typedef enum { SD_INV = 0, SD_MMC = 1, SD_SD = 2, SD_IO = 3 } sd_type_id;
+
+struct tifm_sd {
+	struct tifm_dev     *dev;
+
+	wait_queue_head_t   event;
+	unsigned int        flags;
+	unsigned int        status;
+	unsigned int        fifo_status;
+	sd_type_id          media_type;
+
+	struct mmc_request  *req;
+	struct work_struct  cmd_handler;
+};
+
 /* Called from interrupt handler */
 static void tifm_sd_signal_irq(struct tifm_dev *sock, unsigned int sock_irq_status)
 {
@@ -70,62 +85,63 @@ static void tifm_sd_signal_irq(struct tifm_dev *sock, unsigned int sock_irq_stat
         }
 }
 
+static void tifm_sd_execute(void *data)
+{
+	struct tifm_sd *card = (struct tifm_sd*)data;
+	struct tifm_dev *sock = card->dev;
+	struct mmc_host *host = tifm_get_drvdata(sock);
+	unsigned long f;
+
+	if(!get_device(&sock->dev)) return;
+	card->req->cmd->error = MMC_ERR_TIMEOUT;
+	mmc_request_done(host, card->req);
+	put_device(&sock->dev);
+}
+
 static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 {
 	struct mmc_command *cmd = mrq->cmd;
+	struct tifm_sd *card = mmc_priv(mmc);
 
 	DBG("called; mmc opcode 0x%x, flags 0x%x\n", cmd->opcode, cmd->flags);
-	cmd->error = MMC_ERR_TIMEOUT;
-	mmc_request_done(mmc, mrq);
-}
-
-static void tifm_sd_power(struct tifm_dev *sock, unsigned char mode)
-{
-	unsigned int rc;
-
-	rc = readl(sock->addr + SOCK_CONTROL);
-	switch(mode) {
-		case MMC_POWER_OFF:
-			DBG("power off\n");
-			rc &= 0xffffffbf;
-			writel(rc, sock->addr + SOCK_CONTROL);
-			break;
-		case MMC_POWER_UP:
-			DBG("power up\n");
-			break;
-		case MMC_POWER_ON:
-			DBG("power on\n");
-			rc |= 0x40;
-			writel(rc, sock->addr + SOCK_CONTROL);
-			break;
-	}
+	card->req = mrq;
+	schedule_work(&card->cmd_handler);
 }
 
 static void tifm_sd_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 {
-	struct tifm_dev *sock = mmc_priv(mmc);
+	struct tifm_sd *card = mmc_priv(mmc);
+	struct tifm_dev *sock = card->dev;
 	unsigned long f;
 
+	if(!get_device(&sock->dev)) return;
 	DBG("set_ios (power=%u, clock=%uHz, vdd=%u, mode=%u)\n",
 	    ios->power_mode, ios->clock, ios->vdd, ios->bus_mode);
 
 	spin_lock_irqsave(&sock->lock, f);
 	//clock, vdd, bus_mode, chip_select
-	tifm_sd_power(sock, ios->power_mode);
+	if(ios->power_mode == MMC_POWER_ON)
+		tifm_sock_power(sock, 1);
+	else if(ios->power_mode == MMC_POWER_OFF)
+		tifm_sock_power(sock, 0);
 	//bus_width
 	spin_unlock_irqrestore(&sock->lock, f);
+	put_device(&sock->dev);
 }
 
 static int tifm_sd_ro(struct mmc_host *mmc)
 {
 	int rc;
-	unsigned long f;
 	struct tifm_sd *card = mmc_priv(mmc);
+	struct tifm_dev *sock = card->dev;
+	unsigned long f;
 
+	if(!get_device(&sock->dev)) return 1;
 	DBG("called\n");
-	spin_lock_irqsave(&card->dev->lock, f);
+	spin_lock_irqsave(&sock->lock, f);
 	rc = (card->flags & CARD_RO) ? 1 : 0;
-	spin_unlock_irqrestore(&card->dev->lock, f);
+	spin_unlock_irqrestore(&sock->lock, f);
+	put_device(&sock->dev);
 	return rc;
 }
 
@@ -147,6 +163,7 @@ static int tifm_sd_probe(struct tifm_dev *dev)
 	card = mmc_priv(mmc);
 	card->dev = dev;
 	init_waitqueue_head(&card->event);
+	INIT_WORK(&card->cmd_handler, tifm_sd_execute, (void*)card);
 
 	dev->signal_irq = tifm_sd_signal_irq;
 	
@@ -179,8 +196,12 @@ static void tifm_sd_remove(struct tifm_dev *dev)
 	card->flags |= EJECT_EVENT;
 	wake_up_all(&card->event);
 	dev->signal_irq = 0;
-	tifm_set_drvdata(dev, 0);
 	spin_unlock_irqrestore(&dev->lock, f);
+
+	cancel_delayed_work(&card->cmd_handler);
+	flush_scheduled_work();
+
+	tifm_set_drvdata(dev, 0);
 	mmc_free_host(mmc);
 }
 
