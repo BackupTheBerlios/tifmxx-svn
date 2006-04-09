@@ -24,14 +24,14 @@ enum {
 
 /* Socket registers (relative to socket base address): */
 enum {
-	SOCK_CONTROL                   = 0x004, 
-	SOCK_PRESENT_STATE             = 0x008, 
-	SOCK_DMA_ADDRESS               = 0x00c, 
-	SOCK_DMA_CONTROL               = 0x010, 
-	SOCK_DMA_FIFO_INT_ENABLE_SET   = 0x014, 
-	SOCK_DMA_FIFO_INT_ENABLE_CLEAR = 0x018, 
-	SOCK_DMA_FIFO_STATUS           = 0x020, 
-	SOCK_FIFO_CONTROL              = 0x024, 
+	SOCK_CONTROL                   = 0x004,
+	SOCK_PRESENT_STATE             = 0x008,
+	SOCK_DMA_ADDRESS               = 0x00c,
+	SOCK_DMA_CONTROL               = 0x010,
+	SOCK_DMA_FIFO_INT_ENABLE_SET   = 0x014,
+	SOCK_DMA_FIFO_INT_ENABLE_CLEAR = 0x018,
+	SOCK_DMA_FIFO_STATUS           = 0x020,
+	SOCK_FIFO_CONTROL              = 0x024,
 	SOCK_FIFO_PAGE_SIZE            = 0x028,
 	SOCK_MMCSD_COMMAND             = 0x104,
 	SOCK_MMCSD_ARG_LOW             = 0x108,

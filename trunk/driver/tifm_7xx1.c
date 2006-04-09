@@ -39,8 +39,12 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id, struct pt_regs *regs)
 				sock_irq_status = 0
 						| (((irq_status >> (cnt + 16)) & 1) ? 0x2 : 0)
 						| (((irq_status >> (cnt + 8)) & 1) ? 0x1 : 0);
-				if(sock_irq_status && fm->sockets[cnt] && fm->sockets[cnt]->signal_irq)
-					fm->sockets[cnt]->signal_irq(fm->sockets[cnt], sock_irq_status);
+				if(sock_irq_status && fm->sockets[cnt]) {
+					spin_lock(&fm->sockets[cnt]->lock);
+					if(fm->sockets[cnt]->signal_irq)
+						fm->sockets[cnt]->signal_irq(fm->sockets[cnt], sock_irq_status);
+					spin_unlock(&fm->sockets[cnt]->lock);
+				}
 			}
 			spin_unlock(&fm->lock);
 		}
@@ -72,7 +76,7 @@ static tifm_device_id tifm_7xx1_toggle_sock_power(char *sock_addr, int is_x2)
 	} else {
 		// SmartMedia cards need extra 40 msec
 		if(1 == ((readl(sock_addr + SOCK_PRESENT_STATE) >> 4) & 7)) msleep(40);
-		writel(readl(sock_addr + 0x4) | 0x0040, sock_addr + SOCK_CONTROL);
+		writel(readl(sock_addr + SOCK_CONTROL) | 0x0040, sock_addr + SOCK_CONTROL);
 		msleep(10);
 		writel((s_state & 0x7) | 0x0c40, sock_addr + SOCK_CONTROL);
 	}
