@@ -47,7 +47,6 @@ struct tifm_sd {
 
 	struct mmc_request  *req;
 	struct work_struct  cmd_handler;
-	struct work_struct  init_proc;
 };
 
 /* Called from interrupt handler */
@@ -155,7 +154,7 @@ static inline unsigned int tifm_sd_opcode_mask(unsigned int opcode, int is_app)
 						 0x0000, 0x0000, 0x0000, 0x0000,
 						 0x0000, 0x0000, 0x0000, 0x0000,
 						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x2100, 0x0000,
+						 0x0000, 0x1300, 0x2100, 0x0000,
 						 0x0000, 0x0000, 0x0000, 0x0000,
 						 0x0000, 0x0000, 0x0000, 0x0000,
 						 0x0000, 0x0000, 0x0000, 0x0000,
@@ -176,6 +175,12 @@ static inline void tifm_sd_fetch_r2(char *addr, u32 *resp)
 	resp[2] |= readl(addr + 0x08);
 	resp[3] = readl(addr + 0x04); resp[3] <<= 16;
 	resp[3] |= readl(addr + 0x00);
+}
+
+static inline void tifm_sd_fetch_r3(char *addr, u32 *resp)
+{
+	resp[0] = readl(addr + 0x04); resp[0] <<= 16;
+	resp[0] |= readl(addr + 0x00);
 }
 
 static void tifm_sd_execute(void *data)
@@ -211,6 +216,10 @@ static void tifm_sd_execute(void *data)
 				break;
 			case MMC_APP_CMD:
 				card->flags |= SD_APP; // next command is APP one
+				cmd->resp[0] = R1_APP_CMD;
+				break;
+			case SD_APP_OP_COND:
+				tifm_sd_fetch_r3(sock->addr + SOCK_MMCSD_RESPONSE + 0x18, cmd->resp);
 				break;
 		}
 	}
@@ -327,6 +336,7 @@ static void tifm_sd_card_init(void *data)
 		tifm_eject(sock);
 	} else {
 		card->flags |= CARD_READY | HOST_REG;
+		PREPARE_WORK(&card->cmd_handler, tifm_sd_execute, (void*)card);
 		up(&sock->lock);
 		mmc_add_host(host);
 	}
@@ -355,8 +365,7 @@ static int tifm_sd_probe(struct tifm_dev *dev)
 	card->dev = dev;
 	card->clk_div = 60;
 	init_waitqueue_head(&card->event);
-	INIT_WORK(&card->cmd_handler, tifm_sd_execute, (void*)card);
-	INIT_WORK(&card->init_proc, tifm_sd_card_init, (void*)card);
+	INIT_WORK(&card->cmd_handler, tifm_sd_card_init, (void*)card);
 
 	tifm_set_drvdata(dev, mmc);
 	dev->signal_irq = tifm_sd_signal_irq;
@@ -394,7 +403,7 @@ static int tifm_sd_probe(struct tifm_dev *dev)
 	mmc->max_sectors = 0x3f;
 	mmc->max_seg_size = mmc->max_sectors << 9;
 
-	tifm_schedule_work(card->dev, &card->init_proc);
+	tifm_schedule_work(card->dev, &card->cmd_handler);
 
 	return 0;
 
@@ -423,7 +432,6 @@ static void tifm_sd_remove(struct tifm_dev *dev)
 	wake_up_all(&card->event);
 	dev->signal_irq = 0;
 
-	tifm_cancel_work(card->dev, &card->init_proc);
 	tifm_cancel_work(card->dev, &card->cmd_handler);
 
 	tifm_set_drvdata(dev, 0);
