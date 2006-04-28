@@ -30,7 +30,7 @@
 
 enum { CARD_EVENT = 0x0001, FIFO_EVENT = 0x0002, CARD_BUSY = 0x0004,
        CARD_READY = 0x0008, EJECT_EVENT = 0x0010, FLAG_V2 = 0x0020,
-       CARD_RO = 0x0040, SD_APP = 0x0080, HOST_REG = 0x0100 };
+       CARD_RO = 0x0040, HOST_REG = 0x0080 };
 
 typedef enum { SD_INV = 0, SD_MMC = 1, SD_SD = 2, SD_IO = 3 } sd_type_id;
 
@@ -44,6 +44,14 @@ struct tifm_sd {
 	unsigned int        clk_freq;
 	unsigned int        clk_div;
 	sd_type_id          media_type;
+
+	/* local copy of current ios */
+	unsigned int        clock;
+	unsigned short      vdd;
+	unsigned char       bus_mode;
+	unsigned char       chip_select;
+	unsigned char       bus_width;
+	unsigned char       power_mode;
 
 	struct mmc_request  *req;
 	struct work_struct  cmd_handler;
@@ -111,7 +119,7 @@ static int tifm_sd_wait_for_eoc(struct tifm_sd *card)
 
 		if(!wait_event_timeout(card->event,
 				       tifm_sd_test_flag(card, CARD_EVENT | EJECT_EVENT),
-				       msecs_to_jiffies(100))) // arbitrary time-out value; Should I use data timeout instead?
+				       msecs_to_jiffies(500))) // arbitrary time-out value; Should I use data timeout instead?
 			err_code = MMC_ERR_TIMEOUT;
 
 		card->flags &= ~CARD_EVENT;
@@ -119,69 +127,92 @@ static int tifm_sd_wait_for_eoc(struct tifm_sd *card)
 	return err_code;
 }
 
-static inline unsigned int tifm_sd_opcode_mask(unsigned int opcode, int is_app)
+// 0x00    BC   -      0x0000       go idle state
+// 0x01    BCR  R3     0x1300  2,6     send op cond
+// 0x02    BCR  R2     0x1200  1     all send cid
+// 0x03    AC   R1     0x1600  5     set relative address
+// 0x03    BCR  R6     0x1600  5     app send relative address
+// 0x04    BC   -                   set dsr
+// 0x05                0x1300  2,6
+// 0x06    AC   R1     0x2100  0,3     app set bus width
+// 0x07    AC   R1b    0x2900  4     select card
+// 0x09    AC   R2     0x2200  1     send csd
+// 0x0a    AC   R2     0x2200  1     send cid
+// 0x0b    ADTC R1                  read dat until stop
+// 0x0c    AC   R1b    0x2900  4     stop transmission
+// 0x0d    AC   R1     0x2100  0,3     send status
+// 0x0f    AC   -                   go inactive state
+// 0x10    AC   R1     0x2100  0,3     set block len
+// 0x11    ADTC R1     0xb100  0,3     read single block
+// 0x12    ADTC R1     0xb100  0,3     read multiple block
+// 0x14    ADTC R1                  write dat until stop
+// 0x17    AC   R1     0x2100  0,3     set block count
+// 0x18    ADTC R1     0x3100  0,3     write block
+// 0x19    ADTC R1     0x3100  0,3     write multiple block
+// 0x1a    ADTC R1                  program cid
+// 0x1b    ADTC R1                  program csd
+// 0x1c    AC   R1b                 set write prot
+// 0x1d    AC   R1b                 clr write prot
+// 0x1e    ADTC R1b                 send write prot
+// 0x23    AC   R1                  erase group start
+// 0x24    AC   R1                  erase group end
+// 0x26    AC   R1b                 erase
+// 0x27    AC   R4                  fast io
+// 0x28    BCR  R5                  go irq state
+// 0x29    BCR  R3     0x1300  2,6    app op cond
+// 0x2a    ADTC R1     0x2100  0,3    lock unlock
+// 0x2a    AC   R1     0x2100  0,3    app lock unlock
+// 0x33    ADTC R1                  app send scr
+// 0x37    AC   R1     0x2100  0,3    app cmd
+// 0x38    ADTC R1                  gen cmd
+
+static inline unsigned int tifm_sd_op_flags(unsigned int cmd_flags, unsigned int data_flags)
 {
-	if(!is_app)
+	unsigned int rc = 0;
+
+	switch(cmd_flags & 0x1f)
 	{
-		const unsigned int op_mask[] = { 0x0000, 0x1300, 0x1200, 0x1600,
-						 0x0000, 0x1300, 0x0000, 0x2900,
-						 0x0000, 0x2200, 0x2200, 0x0000,
-						 0x2900, 0x2100, 0x0000, 0x0000,
-						 0x2100, 0xb100, 0xb100, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x2100,
-						 0x3100, 0x3100, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x2100, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x2100,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000 };
-		if(opcode > 64) return opcode; // this should not happen
-		return opcode | op_mask[opcode];
+		case MMC_RSP_R1:
+			rc |= 0x0100;
+			break;
+		case MMC_RSP_R1B:
+			rc |= 0x0900;
+			break;
+		case MMC_RSP_R2:
+			rc |= 0x0200;
+			break;
+		case MMC_RSP_R3:
+			rc |= 0x0300;
+			break;
+		case MMC_RSP_R6:
+			rc |= 0x0600;
+			break;
+		/* most probably and when implemented:
+		case MMC_RSP_R4:
+			rc |= 0x0100;
+			break;
+		case MMC_RSP_R6R:
+			rc |= 0x0300;
+			break;
+		*/
 	}
-	else
+
+	switch(cmd_flags & MMC_CMD_MASK)
 	{
-		const unsigned int op_mask[] = { 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x2100, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x1300, 0x2100, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000,
-						 0x0000, 0x0000, 0x0000, 0x0000 };
-		if(opcode > 64) return opcode; // this should not happen
-		return opcode | op_mask[opcode];
+		case MMC_CMD_AC:
+			rc |= 0x2000;
+			break;
+		case MMC_CMD_ADTC:
+			rc |= 0x3000;
+			if(data_flags & MMC_DATA_READ) rc |= 0x8000;
+			break;
+		case MMC_CMD_BCR:
+			rc |= 0x1000;
+			break;
 	}
+	return rc;
 }
 
-static inline void tifm_sd_fetch_r2(char *addr, u32 *resp)
-{
-	resp[0] = readl(addr + 0x1c); resp[0] <<= 16;
-	resp[0] |= readl(addr + 0x18);
-	resp[1] = readl(addr + 0x14); resp[1] <<= 16;
-	resp[1] |= readl(addr + 0x10);
-	resp[2] = readl(addr + 0x0c); resp[2] <<= 16;
-	resp[2] |= readl(addr + 0x08);
-	resp[3] = readl(addr + 0x04); resp[3] <<= 16;
-	resp[3] |= readl(addr + 0x00);
-}
-
-static inline void tifm_sd_fetch_r3(char *addr, u32 *resp)
-{
-	resp[0] = readl(addr + 0x04); resp[0] <<= 16;
-	resp[0] |= readl(addr + 0x00);
-}
 
 static void tifm_sd_execute(void *data)
 {
@@ -189,55 +220,54 @@ static void tifm_sd_execute(void *data)
 	struct tifm_dev *sock = card->dev;
 	struct mmc_host *host = tifm_get_drvdata(sock);
 	struct mmc_command *cmd = card->req->cmd;
+	struct mmc_request *mrq = card->req;
 	int err_code = 0;
 
-	DBG("started processing opcode 0x%x\n", cmd->opcode);
-	if(!get_device(&sock->dev)) return;
+	DBG("started processing opcode 0x%x, arg: 0x%x\n", cmd->opcode, cmd->arg);
+	if(!get_device(&sock->dev)) return;	
 	down(&sock->lock);
 
-	writel(cmd->arg >> 16, sock->addr + SOCK_MMCSD_ARG_HIGH);
+	writel((cmd->arg >> 16) & 0xffff, sock->addr + SOCK_MMCSD_ARG_HIGH);
 	writel(cmd->arg & 0xffff, sock->addr + SOCK_MMCSD_ARG_LOW);
 	card->status = 0;
 	card->flags &= ~CARD_EVENT;
-	writel(tifm_sd_opcode_mask(cmd->opcode, (card->flags & SD_APP)), sock->addr + SOCK_MMCSD_COMMAND);
+	writel(cmd->opcode | tifm_sd_op_flags(cmd->flags, cmd->data ? cmd->data->flags : 0),
+		sock->addr + SOCK_MMCSD_COMMAND);
 
 	err_code = tifm_sd_wait_for_eoc(card);
 
 	cmd->error = err_code;
-	card->flags &= ~SD_APP;
 	if(!err_code) {
-		switch(cmd->opcode) {
-			case MMC_ALL_SEND_CID:
-			case MMC_SEND_CID:
-				tifm_sd_fetch_r2(sock->addr + SOCK_MMCSD_RESPONSE + 0x18, cmd->resp);
-				break;
-			case MMC_SEND_CSD:
-				tifm_sd_fetch_r2(sock->addr + SOCK_MMCSD_RESPONSE, cmd->resp);
-				break;
-			case MMC_APP_CMD:
-				card->flags |= SD_APP; // next command is APP one
-				cmd->resp[0] = R1_APP_CMD;
-				break;
-			case SD_APP_OP_COND:
-				tifm_sd_fetch_r3(sock->addr + SOCK_MMCSD_RESPONSE + 0x18, cmd->resp);
-				break;
-		}
+		cmd->resp[0] = readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x1c); cmd->resp[0] <<= 16;
+		cmd->resp[0] |= readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x18);
+		cmd->resp[1] = readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x14); cmd->resp[1] <<= 16;
+		cmd->resp[1] |= readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x10);
+		cmd->resp[2] = readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x0c); cmd->resp[2] <<= 16;
+		cmd->resp[2] |= readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x08);
+		cmd->resp[3] = readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x04); cmd->resp[3] <<= 16;
+		cmd->resp[3] |= readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x00);
+		DBG("resp: %08x %08x %08x %08x\n", cmd->resp[0], cmd->resp[1], cmd->resp[2], cmd->resp[3]);
 	}
-
-	mmc_request_done(host, card->req);
-	up(&sock->lock);
 	DBG("finished processing opcode 0x%x, error code %d\n", cmd->opcode, cmd->error);
+	mrq = card->req;
+	card->req = 0;
+	up(&sock->lock);
 	put_device(&sock->dev);
+	mmc_request_done(host, mrq);
 }
 
 static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 {
 	struct mmc_command *cmd = mrq->cmd;
 	struct tifm_sd *card = mmc_priv(mmc);
+	struct tifm_dev *sock = card->dev;
 
 	DBG("called; mmc opcode 0x%x, flags 0x%x\n", cmd->opcode, cmd->flags);
+	down(&sock->lock);
+	if(card->req) DBG("Error! Have queued command.\n");
 	card->req = mrq;
 	tifm_schedule_work(card->dev, &card->cmd_handler);
+	up(&sock->lock);
 }
 
 static void tifm_sd_ios(struct mmc_host *mmc, struct mmc_ios *ios)
@@ -246,36 +276,41 @@ static void tifm_sd_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 	struct tifm_dev *sock = card->dev;
 
 	if(!get_device(&sock->dev)) return;
-	DBG("set_ios (power=%u, clock=%uHz, vdd=%u, mode=%u)\n",
-	    ios->power_mode, ios->clock, ios->vdd, ios->bus_mode);
+	DBG("set_ios (power=%u, clock=%uHz, vdd=%u, width=%u, mode=%u)\n",
+	    ios->power_mode, ios->clock, ios->vdd, ios->bus_width, ios->bus_mode);
 
 	down(&sock->lock);
-	if(ios->bus_width == MMC_BUS_WIDTH_4)
-	{
-		card->clk_freq = 24000000;
-		mmc->f_min = card->clk_freq / 60;
-		writel(0x0100 | readl(sock->addr + SOCK_CONTROL), sock->addr + SOCK_CONTROL);
-	}
-	else
-	{
-		card->clk_freq = 20000000;
-		mmc->f_min = card->clk_freq / 60;
-		writel(0xfffffeff & readl(sock->addr + SOCK_CONTROL), sock->addr + SOCK_CONTROL);
+	if(card->bus_width != ios->bus_width) {
+		DBG("setting bus width %d\n", ios->bus_width);
+		if(ios->bus_width == MMC_BUS_WIDTH_4) {
+			card->clk_freq = 24000000;
+			mmc->f_min = card->clk_freq / 60;
+			writel(0x0100 | readl(sock->addr + SOCK_CONTROL), sock->addr + SOCK_CONTROL);
+		} else {
+			card->clk_freq = 20000000;
+			mmc->f_min = card->clk_freq / 60;
+			writel(0xfffffeff & readl(sock->addr + SOCK_CONTROL), sock->addr + SOCK_CONTROL);
+		}
+		card->bus_width = ios->bus_width;
 	}
 
-	if(ios->clock) {
+	if(ios->clock && ios->clock != card->clock) {
 		card->clk_div = card->clk_freq / ios->clock;
 		if(card->clk_div * ios->clock < card->clk_freq) card->clk_div++;
 		writel(card->clk_div | (0xffc0 & readl(sock->addr + SOCK_MMCSD_CONFIG)),
 		       sock->addr + SOCK_MMCSD_CONFIG);
 		DBG("setting clock divider %d, base freq %d\n", card->clk_div, card->clk_freq);
+		card->clock = card->clk_freq / card->clk_div;
 	}
 	
 	//vdd, bus_mode, chip_select
-	if(ios->power_mode == MMC_POWER_ON)
-		tifm_sock_power(sock, 1);
-	else if(ios->power_mode == MMC_POWER_OFF)
-		tifm_sock_power(sock, 0);
+	if(ios->power_mode != card->power_mode) {
+		if(ios->power_mode == MMC_POWER_ON)
+			tifm_sock_power(sock, 1);
+		else if(ios->power_mode == MMC_POWER_OFF)
+			tifm_sock_power(sock, 0);
+		card->power_mode = ios->power_mode;
+	}
 	up(&sock->lock);
 	put_device(&sock->dev);
 }
@@ -287,10 +322,10 @@ static int tifm_sd_ro(struct mmc_host *mmc)
 	struct tifm_dev *sock = card->dev;
 
 	if(!get_device(&sock->dev)) return 1;
-	DBG("called\n");
 	down(&sock->lock);
 	card->flags |= (0x0200 & readl(sock->addr + SOCK_PRESENT_STATE)) ? CARD_RO : 0;
 	rc = (card->flags & CARD_RO) ? 1 : 0;
+	DBG("value: %d\n", rc);
 	up(&sock->lock);
 	put_device(&sock->dev);
 	return rc;

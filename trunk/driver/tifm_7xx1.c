@@ -240,6 +240,7 @@ err_out:
 static void tifm_7xx1_remove(struct pci_dev *dev)
 {
 	struct tifm_adapter *fm = pci_get_drvdata(dev);
+	int cnt;
 	
 	if(!fm) return;
 
@@ -250,6 +251,11 @@ static void tifm_7xx1_remove(struct pci_dev *dev)
 	free_irq(dev->irq, fm);
 	cancel_delayed_work(&fm->isr_bh);
 	flush_workqueue(fm->wq);
+
+	for(cnt = 0; cnt < fm->max_sockets; cnt++) {
+		if(fm->sockets[cnt]) device_unregister(&fm->sockets[cnt]->dev);
+		fm->sockets[cnt] = 0;
+	}
 
 	iounmap(fm->addr);
 	pci_intx(dev, 0);
