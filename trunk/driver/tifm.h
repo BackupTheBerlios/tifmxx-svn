@@ -3,7 +3,7 @@
 #define _TIFMXX_H
 
 #include <linux/spinlock.h>
-#include <linux/workqueue.h>
+#include <linux/interrupt.h>
 #include <linux/wait.h>
 #include <linux/delay.h>
 #include <linux/pci.h>
@@ -59,14 +59,17 @@ typedef enum {FM_NULL = 0, FM_SM = 0x01, FM_MS = 0x02, FM_SD = 0x03} tifm_device
 
 struct tifm_driver;
 struct tifm_dev {
-	char __iomem       *addr;
-	struct semaphore   lock;
-	tifm_device_id     media_id;
+	char __iomem            *addr;
+	spinlock_t              lock;
+	unsigned long           irq_flags;
+	tifm_device_id          media_id;
+	char                    wq_name[KOBJ_NAME_LEN];
+	struct workqueue_struct *wq;
 
-	unsigned int       (*signal_irq)(struct tifm_dev *sock, unsigned int sock_irq_status);
+	unsigned int            (*signal_irq)(struct tifm_dev *sock, unsigned int sock_irq_status);
 
-	struct tifm_driver *drv;
-	struct device      dev;
+	struct tifm_driver      *drv;
+	struct device           dev;
 };
 
 struct tifm_driver {
@@ -83,9 +86,10 @@ struct tifm_adapter {
 	spinlock_t              lock;
 	unsigned int            id;
 	unsigned int            max_sockets;
+	char                    wq_name[KOBJ_NAME_LEN];
 	struct workqueue_struct *wq;
+	struct work_struct      media_detector;
 	struct tifm_dev         **sockets;
-	struct work_struct      isr_bh;
 	struct class_device     cdev;
 	struct device           *dev;
 
@@ -97,13 +101,16 @@ struct tifm_adapter* tifm_alloc_adapter(void);
 void tifm_free_adapter(struct tifm_adapter *fm);
 int tifm_add_adapter(struct tifm_adapter *fm);
 void tifm_remove_adapter(struct tifm_adapter *fm);
-struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm);
+struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm, unsigned int id);
 int tifm_register_driver(struct tifm_driver *drv);
 void tifm_unregister_driver(struct tifm_driver *drv);
 void tifm_sock_power(struct tifm_dev *sock, int power_on);
 void tifm_eject(struct tifm_dev *sock);
-void tifm_schedule_work(struct tifm_dev *sock, struct work_struct *work);
-void tifm_cancel_work(struct tifm_dev *sock, struct work_struct *work);
+int tifm_map_sg(struct tifm_dev *sock, struct scatterlist *sg, int nents,
+		int direction);
+void tifm_unmap_sg(struct tifm_dev *sock, struct scatterlist *sg, int nents,
+		   int direction);
+
 
 static inline void* tifm_get_drvdata(struct tifm_dev *dev)
 {

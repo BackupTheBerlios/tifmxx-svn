@@ -117,25 +117,23 @@ EXPORT_SYMBOL(tifm_free_adapter);
 int tifm_add_adapter(struct tifm_adapter *fm)
 {
 	int rc;
-	char *wq_name;
 
 	if(!idr_pre_get(&tifm_adapter_idr, GFP_KERNEL)) return -ENOMEM;
-	if(!(wq_name = kmalloc(18, GFP_KERNEL))) return -ENOMEM;
 
 	spin_lock(&tifm_adapter_lock);
 	rc = idr_get_new(&tifm_adapter_idr, fm, &fm->id);
 	spin_unlock(&tifm_adapter_lock);
 	if(!rc) {
-		snprintf(fm->cdev.class_id, BUS_ID_SIZE, "tifm%d", fm->id);
-		snprintf(wq_name, 18, "wq/tifm%x", fm->id);
-		fm->wq = create_workqueue(wq_name);
-		if(!fm->wq) {
-			spin_lock(&tifm_adapter_lock);
-			idr_remove(&tifm_adapter_idr, fm->id);
-			spin_unlock(&tifm_adapter_lock);
-			return 1;
-		}
-		rc = class_device_add(&fm->cdev);
+		snprintf(fm->cdev.class_id, BUS_ID_SIZE, "tifm_%x", fm->id);
+		snprintf(fm->wq_name, KOBJ_NAME_LEN, "wq/tifm_%x", fm->id);
+
+		fm->wq = create_workqueue(fm->wq_name);
+		if(fm->wq) return class_device_add(&fm->cdev);
+				
+		spin_lock(&tifm_adapter_lock);
+		idr_remove(&tifm_adapter_idr, fm->id);
+		spin_unlock(&tifm_adapter_lock);
+		rc = -ENOMEM;
 	}
 	return rc;
 }
@@ -155,16 +153,23 @@ EXPORT_SYMBOL(tifm_remove_adapter);
 static void tifm_free_device(struct device *dev)
 {
 	struct tifm_dev *fm_dev = container_of(dev, struct tifm_dev, dev);
+	if(fm_dev->wq) destroy_workqueue(fm_dev->wq);
 	kfree(fm_dev);
 }
 
 
-struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm)
+struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm, unsigned int id)
 {
 	struct tifm_dev *dev = kzalloc(sizeof(struct tifm_dev), GFP_KERNEL);
 	
 	if(dev) {
-		init_MUTEX(&dev->lock);
+		spin_lock_init(&dev->lock);
+		snprintf(dev->wq_name, KOBJ_NAME_LEN, "wq/tifm_%x:%x", fm->id, id);
+		dev->wq = create_workqueue(dev->wq_name);
+		if(!dev->wq) {
+			kfree(dev);
+			return 0;
+		}
 		dev->dev.parent = fm->dev;
 		dev->dev.bus = &tifm_bus_type;
 		dev->dev.dma_mask = fm->dev->dma_mask;
@@ -188,22 +193,21 @@ void tifm_eject(struct tifm_dev *sock)
 }
 EXPORT_SYMBOL(tifm_eject);
 
-void tifm_schedule_work(struct tifm_dev *sock, struct work_struct *work)
+int tifm_map_sg(struct tifm_dev *sock, struct scatterlist *sg, int nents,
+		int direction)
 {
 	struct tifm_adapter *fm = (struct tifm_adapter*)dev_get_drvdata(sock->dev.parent);
-	if(!queue_work(fm->wq, work)) {
-		DBG("could not add work to wq!\n");
-	}
+	return pci_map_sg(to_pci_dev(fm->dev), sg, nents, direction);
 }
-EXPORT_SYMBOL(tifm_schedule_work);
+EXPORT_SYMBOL(tifm_map_sg);
 
-void tifm_cancel_work(struct tifm_dev *sock, struct work_struct *work)
+void tifm_unmap_sg(struct tifm_dev *sock, struct scatterlist *sg, int nents,
+		   int direction)
 {
 	struct tifm_adapter *fm = (struct tifm_adapter*)dev_get_drvdata(sock->dev.parent);
-	cancel_delayed_work(work);
-	flush_workqueue(fm->wq);
+	return pci_unmap_sg(to_pci_dev(fm->dev), sg, nents, direction);
 }
-EXPORT_SYMBOL(tifm_cancel_work);
+EXPORT_SYMBOL(tifm_unmap_sg);
 
 static int tifm_device_probe(struct device *dev)
 {

@@ -101,7 +101,7 @@ struct tifmxx_mmcsd_data
 
 	struct tifmxx_mmcsd_ecmd *active_cmd;
 	unsigned int             dma_pages_processed;
-	unsigned int             dma_pages_total;
+	unsigned int             blocks_total;
 };
 
 struct tifmxx_sock_data

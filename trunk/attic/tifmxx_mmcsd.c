@@ -610,7 +610,7 @@ tifmxx_mmcsd_execute(struct tifmxx_sock_data *sock, struct tifmxx_mmcsd_ecmd *cm
 	{
 		sock->mmcsd_p->active_cmd = cmd;
 		sock->mmcsd_p->dma_pages_processed = 0;
-		sock->mmcsd_p->dma_pages_total = cmd->dtx_length >> 9;
+		sock->mmcsd_p->blocks_total = cmd->dtx_length >> 9;
 	}
 
 	if(dma_phys_addr)
@@ -646,7 +646,7 @@ tifmxx_mmcsd_execute(struct tifmxx_sock_data *sock, struct tifmxx_mmcsd_ecmd *cm
 					cmd_mask = 0x8000;
 				}
 
-				writel(sock->mmcsd_p->dma_pages_total - 1, sock->sock_addr + 0x12c);
+				writel(sock->mmcsd_p->blocks_total - 1, sock->sock_addr + 0x12c);
 				writel(sock->mmcsd_p->read_block_len - 1, sock->sock_addr + 0x128);
 				sock->mmcsd_p->cmd_status &= 0xfffffff7;
 			}
@@ -685,7 +685,7 @@ tifmxx_mmcsd_execute(struct tifmxx_sock_data *sock, struct tifmxx_mmcsd_ecmd *cm
 	if(dma_phys_addr)
 	{
 		spin_lock_irqsave(&sock->lock, f);
-		if(sock->mmcsd_p->dma_pages_processed >= sock->mmcsd_p->dma_pages_total)
+		if(sock->mmcsd_p->dma_pages_processed >= sock->mmcsd_p->blocks_total)
 		{
 			if(!rc)
 			{

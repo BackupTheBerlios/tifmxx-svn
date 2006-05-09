@@ -65,7 +65,7 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id, struct pt_regs *regs)
 			spin_unlock(&fm->lock);
 		}
 		writel(irq_status, fm->addr + FM_INTERRUPT_STATUS);
-		queue_work(fm->wq, &fm->isr_bh);
+		queue_work(fm->wq, &fm->media_detector);
 		return IRQ_HANDLED;
 	}
 	return IRQ_NONE;
@@ -130,7 +130,7 @@ static void tifm_7xx1_detect_card(struct tifm_adapter *fm, unsigned int sock_num
 		spin_lock_irqsave(&fm->lock, f);
 		if(media_id) {
 			DBG("Adding media %d to socket %d\n", media_id, sock_num);
-			fm->sockets[sock_num] = tifm_alloc_device(fm);
+			fm->sockets[sock_num] = tifm_alloc_device(fm, sock_num);
 			if(fm->sockets[sock_num]) {
 				fm->sockets[sock_num]->addr = tifm_7xx1_sock_addr(fm->addr, sock_num);
 				fm->sockets[sock_num]->media_id = media_id;
@@ -164,9 +164,9 @@ static void tifm_7xx1_detect_card(struct tifm_adapter *fm, unsigned int sock_num
 	writel(0x00010100 << sock_num, fm->addr + FM_SET_INTERRUPT_ENABLE);
 }
 
-static void tifm_7xx1_bh(void *dev_id)
+static void tifm_7xx1_detect(void *adapter)
 {
-	struct tifm_adapter *fm = (struct tifm_adapter*)dev_id;
+	struct tifm_adapter *fm = (struct tifm_adapter*)adapter;
 	unsigned int irq_status = fm->irq_status, cnt;
 	
 	for(cnt = 0; cnt <  fm->max_sockets; cnt++)
@@ -202,7 +202,7 @@ static int tifm_7xx1_probe(struct pci_dev *dev, const struct pci_device_id *dev_
 	fm->sockets = kzalloc(sizeof(struct tifm_dev*) * fm->max_sockets, GFP_KERNEL);
 	if(!fm->sockets) goto err_out_free;
 
-	INIT_WORK(&fm->isr_bh, tifm_7xx1_bh, (void*)fm);
+	INIT_WORK(&fm->media_detector, tifm_7xx1_detect, (void*)fm);
 	fm->power = tifm_7xx1_power;
 	fm->eject = tifm_7xx1_eject;
 	pci_set_drvdata(dev, fm);
@@ -249,7 +249,7 @@ static void tifm_7xx1_remove(struct pci_dev *dev)
 
 	writel(0xffffffff, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 	free_irq(dev->irq, fm);
-	cancel_delayed_work(&fm->isr_bh);
+	cancel_delayed_work(&fm->media_detector);
 	flush_workqueue(fm->wq);
 
 	for(cnt = 0; cnt < fm->max_sockets; cnt++) {
