@@ -2,7 +2,7 @@
 #include <linux/interrupt.h>
 
 #define DRIVER_NAME "tifm_7xx1"
-#define DRIVER_VERSION "0.2"
+#define DRIVER_VERSION "0.3"
 
 static void tifm_7xx1_power(struct tifm_adapter *fm, struct tifm_dev *sock, int power_on)
 {

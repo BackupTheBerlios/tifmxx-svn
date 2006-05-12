@@ -32,7 +32,7 @@
 #include "tifm.h"
 
 #define DRIVER_NAME "tifm_core"
-#define DRIVER_VERSION "0.2"
+#define DRIVER_VERSION "0.3"
 
 static DEFINE_IDR(tifm_adapter_idr);
 static DEFINE_SPINLOCK(tifm_adapter_lock);
@@ -172,7 +172,6 @@ struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm, unsigned int id)
 		}
 		dev->dev.parent = fm->dev;
 		dev->dev.bus = &tifm_bus_type;
-		dev->dev.dma_mask = fm->dev->dma_mask;
 		dev->dev.release = tifm_free_device;
 	}
 	return dev;
