@@ -93,18 +93,17 @@ struct tifm_adapter {
 	struct class_device     cdev;
 	struct device           *dev;
 
-	void                    (*power)(struct tifm_adapter *fm, struct tifm_dev *sock, int power_on);
 	void                    (*eject)(struct tifm_adapter *fm, struct tifm_dev *sock);
 };
 
 struct tifm_adapter* tifm_alloc_adapter(void);
+void tifm_free_device(struct device *dev);
 void tifm_free_adapter(struct tifm_adapter *fm);
 int tifm_add_adapter(struct tifm_adapter *fm);
 void tifm_remove_adapter(struct tifm_adapter *fm);
 struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm, unsigned int id);
 int tifm_register_driver(struct tifm_driver *drv);
 void tifm_unregister_driver(struct tifm_driver *drv);
-void tifm_sock_power(struct tifm_dev *sock, int power_on);
 void tifm_eject(struct tifm_dev *sock);
 int tifm_map_sg(struct tifm_dev *sock, struct scatterlist *sg, int nents,
 		int direction);

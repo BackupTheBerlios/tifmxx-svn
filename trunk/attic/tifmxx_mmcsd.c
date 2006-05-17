@@ -659,7 +659,7 @@ tifmxx_mmcsd_execute(struct tifmxx_sock_data *sock, struct tifmxx_mmcsd_ecmd *cm
 	else
 	{
 		writel(0x0000, sock->sock_addr + 0x130);
-		writel(0x0c00 | readl(sock->sock_addr + 0x118), sock->sock_addr + 0x130);
+		writel(0x0c00 | readl(sock->sock_addr + 0x118), sock->sock_addr + 0x118);
 	}
 
 	spin_unlock_irqrestore(&sock->lock, f);

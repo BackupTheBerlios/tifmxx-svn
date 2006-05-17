@@ -124,8 +124,8 @@ int tifm_add_adapter(struct tifm_adapter *fm)
 	rc = idr_get_new(&tifm_adapter_idr, fm, &fm->id);
 	spin_unlock(&tifm_adapter_lock);
 	if(!rc) {
-		snprintf(fm->cdev.class_id, BUS_ID_SIZE, "tifm_%x", fm->id);
-		snprintf(fm->wq_name, KOBJ_NAME_LEN, "wq/tifm_%x", fm->id);
+		snprintf(fm->cdev.class_id, BUS_ID_SIZE, "tifm%u", fm->id);
+		strncpy(fm->wq_name, fm->cdev.class_id, KOBJ_NAME_LEN);
 
 		fm->wq = create_workqueue(fm->wq_name);
 		if(fm->wq) return class_device_add(&fm->cdev);
@@ -150,13 +150,13 @@ void tifm_remove_adapter(struct tifm_adapter *fm)
 EXPORT_SYMBOL(tifm_remove_adapter);
 
 
-static void tifm_free_device(struct device *dev)
+void tifm_free_device(struct device *dev)
 {
 	struct tifm_dev *fm_dev = container_of(dev, struct tifm_dev, dev);
 	if(fm_dev->wq) destroy_workqueue(fm_dev->wq);
 	kfree(fm_dev);
 }
-
+EXPORT_SYMBOL(tifm_free_device);
 
 struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm, unsigned int id)
 {
@@ -164,7 +164,7 @@ struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm, unsigned int id)
 	
 	if(dev) {
 		spin_lock_init(&dev->lock);
-		snprintf(dev->wq_name, KOBJ_NAME_LEN, "wq/tifm_%x:%x", fm->id, id);
+		snprintf(dev->wq_name, KOBJ_NAME_LEN, "tifm%u:%u", fm->id, id);
 		dev->wq = create_workqueue(dev->wq_name);
 		if(!dev->wq) {
 			kfree(dev);
@@ -177,13 +177,6 @@ struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm, unsigned int id)
 	return dev;
 }
 EXPORT_SYMBOL(tifm_alloc_device);
-
-void tifm_sock_power(struct tifm_dev *sock, int power_on)
-{
-	struct tifm_adapter *fm = (struct tifm_adapter*)dev_get_drvdata(sock->dev.parent);
-	fm->power(fm, sock, power_on);
-}
-EXPORT_SYMBOL(tifm_sock_power);
 
 void tifm_eject(struct tifm_dev *sock)
 {

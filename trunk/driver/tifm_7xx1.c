@@ -4,22 +4,6 @@
 #define DRIVER_NAME "tifm_7xx1"
 #define DRIVER_VERSION "0.3"
 
-static void tifm_7xx1_power(struct tifm_adapter *fm, struct tifm_dev *sock, int power_on)
-{
-	unsigned int rc;
-
-	rc = readl(sock->addr + SOCK_CONTROL);
-	if(power_on) {
-		DBG("power on\n");
-		rc |= 0x40;
-		writel(rc, sock->addr + SOCK_CONTROL);
-	} else {
-		DBG("power off\n");
-		rc &= 0xffffffbf;
-		writel(rc, sock->addr + SOCK_CONTROL);
-	}
-}
-
 static void tifm_7xx1_eject(struct tifm_adapter *fm, struct tifm_dev *sock)
 {
 	int cnt;
@@ -47,7 +31,6 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id, struct pt_regs *regs)
 	if(irq_status && (~irq_status))
 	{
 		fm->irq_status = irq_status;
-		DBG("irq_status 0x%08x\n", irq_status);
 
 		if(irq_status & 0x80000000) {
 			writel(0x80000000, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
@@ -128,8 +111,7 @@ static void tifm_7xx1_detect_card(struct tifm_adapter *fm, unsigned int sock_num
 		media_id = tifm_7xx1_toggle_sock_power(tifm_7xx1_sock_addr(fm->addr, sock_num),
 						       fm->max_sockets == 2);
 		spin_lock_irqsave(&fm->lock, f);
-		if(media_id) {
-			DBG("Adding media %d to socket %d\n", media_id, sock_num);
+		if(media_id && !fm->sockets[sock_num]) {
 			fm->sockets[sock_num] = tifm_alloc_device(fm, sock_num);
 			if(fm->sockets[sock_num]) {
 				fm->sockets[sock_num]->addr = tifm_7xx1_sock_addr(fm->addr, sock_num);
@@ -146,10 +128,10 @@ static void tifm_7xx1_detect_card(struct tifm_adapter *fm, unsigned int sock_num
 						break;
 				}
 				snprintf(fm->sockets[sock_num]->dev.bus_id, BUS_ID_SIZE,
-					 "tifm_%s%x:%x", card_name, fm->id, sock_num);
+					 "tifm_%s%u:%u", card_name, fm->id, sock_num);
 				
 				if(device_register(&fm->sockets[sock_num]->dev)) {
-					kfree(fm->sockets[sock_num]);
+					tifm_free_device(&fm->sockets[sock_num]->dev);
 					fm->sockets[sock_num] = 0;
 				}
 			}
@@ -203,7 +185,6 @@ static int tifm_7xx1_probe(struct pci_dev *dev, const struct pci_device_id *dev_
 	if(!fm->sockets) goto err_out_free;
 
 	INIT_WORK(&fm->media_detector, tifm_7xx1_detect, (void*)fm);
-	fm->power = tifm_7xx1_power;
 	fm->eject = tifm_7xx1_eject;
 	pci_set_drvdata(dev, fm);
 
