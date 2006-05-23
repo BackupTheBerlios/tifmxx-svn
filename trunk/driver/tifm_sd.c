@@ -491,11 +491,9 @@ unsigned long tifm_sd_write(struct tifm_sd *card, char *buf, unsigned long count
 
 	writel(0x0014 | readl(sock->addr + SOCK_MMCSD_INT_ENABLE), sock->addr + SOCK_MMCSD_INT_ENABLE);
 	card->flags |= FLAG_W2;
-
-	DBG("write %ld\n", count);
 	
 	while(count - rc) {
-		t_val = buf[rc++];
+		t_val = buf[rc++] & 0x00ff;
 		if(count - rc) t_val |= (buf[rc++] << 8) & 0xff00;
 		while(!(card->status & 0x0800)) {
 			if((card->flags & EJECT_EVENT) || (card->status & 0x80) || !r_time)
@@ -513,7 +511,7 @@ unsigned long tifm_sd_write(struct tifm_sd *card, char *buf, unsigned long count
 			spin_lock_irqsave(&sock->lock, sock->irq_flags);
 			card->flags &= ~CARD_EVENT;
 		}
-		card->status &= 0xffff7fff;
+		card->status &= 0xfffff7ff;
 		writel(t_val, sock->addr + SOCK_MMCSD_DATA);
 	}
 	card->req->cmd->error = tifm_sd_wait_for_card(card);
@@ -659,7 +657,7 @@ static void tifm_sd_card_init(void *data)
 	struct tifm_sd *card = (struct tifm_sd*)data;
 	struct tifm_dev *sock = card->dev;
 	struct mmc_host *host = tifm_get_drvdata(sock);
-	u64 t;
+	//u64 t;
 	long rc = 1;
 
 	if(!get_device(&sock->dev)) return;
