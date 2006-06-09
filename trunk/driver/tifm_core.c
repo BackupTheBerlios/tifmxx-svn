@@ -188,16 +188,14 @@ EXPORT_SYMBOL(tifm_eject);
 int tifm_map_sg(struct tifm_dev *sock, struct scatterlist *sg, int nents,
 		int direction)
 {
-	struct tifm_adapter *fm = (struct tifm_adapter*)dev_get_drvdata(sock->dev.parent);
-	return pci_map_sg(to_pci_dev(fm->dev), sg, nents, direction);
+	return pci_map_sg(to_pci_dev(sock->dev.parent), sg, nents, direction);
 }
 EXPORT_SYMBOL(tifm_map_sg);
 
 void tifm_unmap_sg(struct tifm_dev *sock, struct scatterlist *sg, int nents,
 		   int direction)
 {
-	struct tifm_adapter *fm = (struct tifm_adapter*)dev_get_drvdata(sock->dev.parent);
-	return pci_unmap_sg(to_pci_dev(fm->dev), sg, nents, direction);
+	pci_unmap_sg(to_pci_dev(sock->dev.parent), sg, nents, direction);
 }
 EXPORT_SYMBOL(tifm_unmap_sg);
 

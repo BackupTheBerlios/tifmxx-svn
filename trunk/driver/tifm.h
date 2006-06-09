@@ -83,12 +83,15 @@ struct tifm_driver {
 struct tifm_adapter {
 	char __iomem            *addr;
 	unsigned int            irq_status;
+	unsigned int            insert_mask;
+	unsigned int            remove_mask;
 	spinlock_t              lock;
 	unsigned int            id;
 	unsigned int            max_sockets;
 	char                    wq_name[KOBJ_NAME_LEN];
 	struct workqueue_struct *wq;
-	struct work_struct      media_detector;
+	struct work_struct      media_inserter;
+	struct work_struct      media_remover;
 	struct tifm_dev         **sockets;
 	struct class_device     cdev;
 	struct device           *dev;
