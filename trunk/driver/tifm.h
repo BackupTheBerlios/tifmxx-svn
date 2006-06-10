@@ -18,7 +18,7 @@
 #include <linux/delay.h>
 #include <linux/pci.h>
 
-#define CONFIG_TIFM_DEBUG 1
+#define CONFIG_TIFM_DEBUG 0
 #ifdef CONFIG_TIFM_DEBUG
 #define DBG(f, x...) \
         printk(KERN_DEBUG DRIVER_NAME " [%s()]: " f, __func__,## x)

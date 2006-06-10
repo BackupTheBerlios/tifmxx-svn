@@ -13,7 +13,7 @@
 #include <linux/interrupt.h>
 
 #define DRIVER_NAME "tifm_7xx1"
-#define DRIVER_VERSION "0.3"
+#define DRIVER_VERSION "0.4"
 
 static void tifm_7xx1_eject(struct tifm_adapter *fm, struct tifm_dev *sock)
 {
