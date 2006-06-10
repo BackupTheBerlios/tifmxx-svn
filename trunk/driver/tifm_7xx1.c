@@ -138,21 +138,23 @@ static void tifm_7xx1_insert_media(void *adapter)
 	tifm_device_id media_id;
 	char *card_name = "xx";
 	int cnt;
+	unsigned int insert_mask;
+	struct tifm_dev *new_sock = 0;
 
 	if(!class_device_get(&fm->cdev)) return;
 	spin_lock_irqsave(&fm->lock, f);
-	
+	insert_mask = fm->insert_mask;
+	fm->insert_mask = 0;
+	spin_unlock_irqrestore(&fm->lock, f);
+
 	for(cnt = 0; cnt < fm->max_sockets; cnt++) {
-		if((fm->insert_mask & (1 << cnt)) && !fm->sockets[cnt]) {
-			spin_unlock_irqrestore(&fm->lock, f);
+		if(insert_mask & (1 << cnt)) {
 			media_id = tifm_7xx1_toggle_sock_power(tifm_7xx1_sock_addr(fm->addr, cnt),
 							       fm->max_sockets == 2);
-			spin_lock_irqsave(&fm->lock, f);
-			if(media_id && !fm->sockets[cnt]) {
-				fm->sockets[cnt] = tifm_alloc_device(fm, cnt);
-				if(fm->sockets[cnt]) {
-					fm->sockets[cnt]->addr = tifm_7xx1_sock_addr(fm->addr, cnt);
-					fm->sockets[cnt]->media_id = media_id;
+			if(media_id) {
+				if((new_sock = tifm_alloc_device(fm, cnt))) {
+					new_sock->addr = tifm_7xx1_sock_addr(fm->addr, cnt);
+					new_sock->media_id = media_id;
 					switch(media_id)
 					{
 						case 1:
@@ -164,23 +166,23 @@ static void tifm_7xx1_insert_media(void *adapter)
 						default:
 							break;
 					}
-					snprintf(fm->sockets[cnt]->dev.bus_id, BUS_ID_SIZE,
+					snprintf(new_sock->dev.bus_id, BUS_ID_SIZE,
 						 "tifm_%s%u:%u", card_name, fm->id, cnt);
-
-					if(device_register(&fm->sockets[cnt]->dev)) {
-						tifm_free_device(&fm->sockets[cnt]->dev);
-						fm->sockets[cnt] = 0;
+					spin_lock_irqsave(&fm->lock, f);
+					if(!fm->sockets[cnt] && !device_register(&new_sock->dev)) {
+						fm->sockets[cnt] = new_sock;
+						new_sock = 0;
 					}
+					spin_unlock_irqrestore(&fm->lock, f);
+					if(new_sock) tifm_free_device(&new_sock->dev);
 				}
 			}
 			writel(0x00010100 << cnt, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 			writel(0x00010100 << cnt, fm->addr + FM_SET_INTERRUPT_ENABLE);
 		}
 	}
-	fm->insert_mask = 0;
 
 	writel(0x80000000, fm->addr + FM_SET_INTERRUPT_ENABLE);
-	spin_unlock_irqrestore(&fm->lock, f);
 	class_device_put(&fm->cdev);
 }
 
@@ -189,7 +191,7 @@ static int tifm_7xx1_probe(struct pci_dev *dev, const struct pci_device_id *dev_
 	struct tifm_adapter *fm;
 	int pci_dev_busy = 0;
 	int rc;
-	
+
 	rc = pci_set_dma_mask(dev, DMA_32BIT_MASK); if(rc) return rc;
 	rc = pci_enable_device(dev); if(rc) return rc;
 
@@ -228,6 +230,7 @@ static int tifm_7xx1_probe(struct pci_dev *dev, const struct pci_device_id *dev_
 	writel(0xffffffff, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 	writel(0x8000000f, fm->addr + FM_SET_INTERRUPT_ENABLE);
 
+	fm->insert_mask = 0xf;
 	
 	return 0;
 

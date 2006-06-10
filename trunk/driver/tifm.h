@@ -61,7 +61,6 @@ struct tifm_driver;
 struct tifm_dev {
 	char __iomem            *addr;
 	spinlock_t              lock;
-	unsigned long           irq_flags;
 	tifm_device_id          media_id;
 	char                    wq_name[KOBJ_NAME_LEN];
 	struct workqueue_struct *wq;

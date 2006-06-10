@@ -127,7 +127,7 @@ int tifm_add_adapter(struct tifm_adapter *fm)
 		snprintf(fm->cdev.class_id, BUS_ID_SIZE, "tifm%u", fm->id);
 		strncpy(fm->wq_name, fm->cdev.class_id, KOBJ_NAME_LEN);
 
-		fm->wq = create_workqueue(fm->wq_name);
+		fm->wq = create_singlethread_workqueue(fm->wq_name);
 		if(fm->wq) return class_device_add(&fm->cdev);
 				
 		spin_lock(&tifm_adapter_lock);
@@ -165,7 +165,7 @@ struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm, unsigned int id)
 	if(dev) {
 		spin_lock_init(&dev->lock);
 		snprintf(dev->wq_name, KOBJ_NAME_LEN, "tifm%u:%u", fm->id, id);
-		dev->wq = create_workqueue(dev->wq_name);
+		dev->wq = create_singlethread_workqueue(dev->wq_name);
 		if(!dev->wq) {
 			kfree(dev);
 			return 0;
