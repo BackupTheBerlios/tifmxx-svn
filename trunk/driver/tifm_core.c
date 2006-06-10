@@ -1,25 +1,14 @@
 /*
- *
- *  TI FlashMedia driver
+ *  tifm_core.c - TI FlashMedia driver
  *
  *  Copyright (C) 2006 Alex Dubov <oakad@yahoo.com>
  *
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License as published by
- *  the Free Software Foundation; either version 2 of the License, or
- *  (at your option) any later version.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  *
  */
+
 #include <linux/config.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -37,7 +26,7 @@
 static DEFINE_IDR(tifm_adapter_idr);
 static DEFINE_SPINLOCK(tifm_adapter_lock);
 
-static tifm_device_id* tifm_device_match(tifm_device_id *ids, struct tifm_dev *dev)
+static tifm_media_id* tifm_device_match(tifm_media_id *ids, struct tifm_dev *dev)
 {
 	while(*ids) {
 		if(dev->media_id == *ids) return ids;
@@ -51,7 +40,6 @@ static int tifm_match(struct device *dev, struct device_driver *drv)
 	struct tifm_dev *fm_dev = container_of(dev, struct tifm_dev, dev);
 	struct tifm_driver *fm_drv = container_of(drv, struct tifm_driver, driver);
 
-	DBG("match called for drv %s\n", drv->name);
 	if(!fm_drv->id_table) return -EINVAL;
 	if(tifm_device_match(fm_drv->id_table, fm_dev)) return 1;
 	return -ENODEV;
@@ -60,7 +48,18 @@ static int tifm_match(struct device *dev, struct device_driver *drv)
 static int tifm_uevent(struct device *dev, char **envp, int num_envp,
 		       char *buffer, int buffer_size)
 {
-	return -ENODEV;
+	struct tifm_dev *fm_dev;
+	int i = 0;
+	int length = 0;
+	const char *card_type_name[] = {"INV", "SM", "MS", "SD"};
+
+	if(!dev || !(fm_dev = container_of(dev, struct tifm_dev, dev)))
+		return -ENODEV;
+	if(add_uevent_var(envp, num_envp, &i, buffer, buffer_size, &length,
+			  "TIFM_CARD_TYPE=%s", card_type_name[fm_dev->media_id]))
+		return -ENOMEM;
+
+	return 0;
 }
 
 static int tifm_suspend(struct device *dev, pm_message_t message)
@@ -204,7 +203,7 @@ static int tifm_device_probe(struct device *dev)
 	struct tifm_driver *drv = container_of(dev->driver, struct tifm_driver, driver);
 	struct tifm_dev *fm_dev = container_of(dev, struct tifm_dev, dev);
 	int rc = 0;
-	const tifm_device_id *id;
+	const tifm_media_id *id;
 
 	get_device(dev);
 	if(!fm_dev->drv && drv->probe && drv->id_table) {

@@ -1,3 +1,14 @@
+/*
+ *  tifm_7xx1.c - TI FlashMedia driver
+ *
+ *  Copyright (C) 2006 Alex Dubov <oakad@yahoo.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ */
+
 #include "tifm.h"
 #include <linux/interrupt.h>
 
@@ -86,7 +97,7 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id, struct pt_regs *regs)
 	return rc;
 }
 
-static tifm_device_id tifm_7xx1_toggle_sock_power(char *sock_addr, int is_x2)
+static tifm_media_id tifm_7xx1_toggle_sock_power(char *sock_addr, int is_x2)
 {
 	unsigned int s_state;
 	unsigned long long t;
@@ -135,7 +146,7 @@ static void tifm_7xx1_insert_media(void *adapter)
 {
 	struct tifm_adapter *fm = (struct tifm_adapter*)adapter;
 	unsigned long f;
-	tifm_device_id media_id;
+	tifm_media_id media_id;
 	char *card_name = "xx";
 	int cnt;
 	unsigned int insert_mask;
@@ -184,6 +195,48 @@ static void tifm_7xx1_insert_media(void *adapter)
 
 	writel(0x80000000, fm->addr + FM_SET_INTERRUPT_ENABLE);
 	class_device_put(&fm->cdev);
+}
+
+static int tifm_7xx1_suspend(struct pci_dev *dev, pm_message_t state)
+{
+	struct tifm_adapter *fm = pci_get_drvdata(dev);
+	unsigned long f;
+	int cnt;
+
+	spin_lock_irqsave(&fm->lock, f);
+	writel(0x80000000, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
+	for(cnt = 0; cnt < fm->max_sockets; cnt++) {
+		if(fm->sockets[cnt]) {
+			device_unregister(&fm->sockets[cnt]->dev);
+			fm->sockets[cnt] = 0;
+			writel(0x00010100 << cnt, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
+		}
+	}
+	fm->remove_mask = 0;
+	fm->insert_mask = 0;
+	spin_unlock_irqrestore(&fm->lock, f);
+	pci_set_power_state(dev, PCI_D3hot);
+        pci_disable_device(dev);
+        pci_save_state(dev);
+	return 0;
+}
+
+static int tifm_7xx1_resume(struct pci_dev *dev)
+{
+	struct tifm_adapter *fm = pci_get_drvdata(dev);
+	unsigned long f;
+
+	pci_restore_state(dev);
+        pci_enable_device(dev);
+        pci_set_power_state(dev, PCI_D0);
+        pci_set_master(dev);
+
+	spin_lock_irqsave(&fm->lock, f);
+	writel(0xffffffff, fm->addr + FM_INTERRUPT_STATUS);
+	writel(0xffffffff, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
+	writel(0x8000000f, fm->addr + FM_SET_INTERRUPT_ENABLE);
+	spin_unlock_irqrestore(&fm->lock, f);
+	return 0;
 }
 
 static int tifm_7xx1_probe(struct pci_dev *dev, const struct pci_device_id *dev_id)
@@ -292,6 +345,8 @@ static struct pci_driver tifm_7xx1_driver = {
 	.id_table = tifm_7xx1_pci_tbl,
 	.probe = tifm_7xx1_probe,
 	.remove = tifm_7xx1_remove,
+	.suspend = tifm_7xx1_suspend,
+	.resume = tifm_7xx1_resume,
 };
 
 static int __init tifm_7xx1_init(void)

@@ -1,6 +1,16 @@
-/* Header file for TI FlashMedia driver */
-#ifndef _TIFMXX_H
-#define _TIFMXX_H
+/*
+ *  tifm.h - TI FlashMedia driver
+ *
+ *  Copyright (C) 2006 Alex Dubov <oakad@yahoo.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ *
+ */
+
+#ifndef _TIFM_H
+#define _TIFM_H
 
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
@@ -55,13 +65,13 @@ enum {
 	SOCK_MS_SYSTEM                 = 0x190,
 	SOCK_FIFO_ACCESS               = 0x200 };
 
-typedef enum {FM_NULL = 0, FM_SM = 0x01, FM_MS = 0x02, FM_SD = 0x03} tifm_device_id;
+typedef enum {FM_NULL = 0, FM_SM = 0x01, FM_MS = 0x02, FM_SD = 0x03} tifm_media_id;
 
 struct tifm_driver;
 struct tifm_dev {
 	char __iomem            *addr;
 	spinlock_t              lock;
-	tifm_device_id          media_id;
+	tifm_media_id           media_id;
 	char                    wq_name[KOBJ_NAME_LEN];
 	struct workqueue_struct *wq;
 
@@ -72,7 +82,7 @@ struct tifm_dev {
 };
 
 struct tifm_driver {
-	tifm_device_id       *id_table;	
+	tifm_media_id        *id_table;	
 	int                  (*probe)(struct tifm_dev *dev);
 	void                 (*remove)(struct tifm_dev *dev);
 	
@@ -124,7 +134,7 @@ static inline void tifm_set_drvdata(struct tifm_dev *dev, void *data)
 }
 
 struct tifm_device_id {
-	__u32 media_id;
+	tifm_media_id media_id;
 };
 
 #endif
