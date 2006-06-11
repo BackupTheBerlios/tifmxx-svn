@@ -36,16 +36,21 @@ static void tifm_7xx1_remove_media(void *adapter)
 	struct tifm_adapter *fm = (struct tifm_adapter*)adapter;
 	unsigned long f;
 	int cnt;
+	struct tifm_dev *sock;
 
 	if(!class_device_get(&fm->cdev)) return;
 	spin_lock_irqsave(&fm->lock, f);
 	for(cnt = 0; cnt < fm->max_sockets; cnt++) {
 		if(fm->sockets[cnt] && (fm->remove_mask & (1 << cnt))) {
 			DBG("Demand removing card from socket %d\n", cnt);
-			device_unregister(&fm->sockets[cnt]->dev);
+			sock = fm->sockets[cnt];
 			fm->sockets[cnt] = 0;
 			writel(0x00010100 << cnt, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 			writel(0x00010100 << cnt, fm->addr + FM_SET_INTERRUPT_ENABLE);
+
+			spin_unlock_irqrestore(&fm->lock, f);
+			device_unregister(&sock->dev);
+			spin_lock_irqsave(&fm->lock, f);
 		}
 	}
 	fm->remove_mask = 0;
