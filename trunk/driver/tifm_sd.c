@@ -33,7 +33,6 @@ struct tifm_sd {
 	unsigned int        fifo_status;
 	unsigned int        clk_freq;
 	unsigned int        clk_div;
-	unsigned int        timeout_clks;
 	unsigned long       timeout_jiffies;
 
 	struct mmc_request  *req;
@@ -207,23 +206,6 @@ static inline int tifm_sd_wait_for_card(struct tifm_sd *card)
 	return err_code;
 }
 
-static inline void tifm_sd_set_timeout(struct tifm_sd *card, unsigned int timeout_clks)
-{
-	struct timespec t;
-	
-	if(timeout_clks) {
-		t.tv_sec = 0;
-		t.tv_nsec = card->clk_div * timeout_clks * (1000000000l / card->clk_freq);
-		card->timeout_jiffies = timespec_to_jiffies(&t);
-		card->timeout_clks = timeout_clks;
-	} else {
-		// conservative timeout value
-		card->timeout_jiffies = msecs_to_jiffies(1000);
-		card->timeout_clks = card->clk_freq / card->clk_div;
-	}
-	//DBG("setting timeout %d ms\n", jiffies_to_msecs(card->timeout_jiffies));
-}
-
 static inline unsigned int tifm_sd_op_flags(unsigned int cmd_flags)
 {
 	unsigned int rc = 0;
@@ -380,7 +362,6 @@ static void tifm_sd_do_cmd(void *data)
 			goto out;
 		}
 		spin_lock_irqsave(&sock->lock, f);
-		tifm_sd_set_timeout(card, r_data->timeout_clks);
 		tifm_sd_prepare_data(card, mrq->cmd);
 		spin_unlock_irqrestore(&sock->lock, f);
 	}
@@ -523,7 +504,6 @@ static void tifm_sd_do_cmd_nodma(void *data)
 		r_buf += r_data->sg[0].offset;
 
 		spin_lock_irqsave(&sock->lock, f);
-		tifm_sd_set_timeout(card, r_data->timeout_clks);
 		writel(0x0000, sock->addr + SOCK_MMCSD_BUFFER_CONFIG);
 		writel(0x0c00 | readl(sock->addr + SOCK_MMCSD_INT_ENABLE), sock->addr + SOCK_MMCSD_INT_ENABLE);
 		m_length = mrq->cmd->data->blocks << mrq->cmd->data->blksz_bits;
@@ -683,6 +663,8 @@ static void tifm_sd_card_init(void *data)
 		PREPARE_WORK(&card->cmd_handler,
 			     no_dma ? tifm_sd_do_cmd_nodma : tifm_sd_do_cmd,
 			     data);
+		//use constant large delay, as I have frequent timeouts with MMC supplied ones
+		card->timeout_jiffies = msecs_to_jiffies(1000);
 		spin_unlock_irqrestore(&sock->lock, f);
 		mmc_add_host(host);
 	}

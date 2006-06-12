@@ -45,6 +45,7 @@ static void tifm_7xx1_remove_media(void *adapter)
 			DBG("Demand removing card from socket %d\n", cnt);
 			sock = fm->sockets[cnt];
 			fm->sockets[cnt] = 0;
+			fm->remove_mask &= ~(1 << cnt);
 			writel(0x00010100 << cnt, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 			writel(0x00010100 << cnt, fm->addr + FM_SET_INTERRUPT_ENABLE);
 
@@ -53,7 +54,6 @@ static void tifm_7xx1_remove_media(void *adapter)
 			spin_lock_irqsave(&fm->lock, f);
 		}
 	}
-	fm->remove_mask = 0;
 	spin_unlock_irqrestore(&fm->lock, f);
 	class_device_put(&fm->cdev);
 }
@@ -153,7 +153,7 @@ static void tifm_7xx1_insert_media(void *adapter)
 	unsigned long f;
 	tifm_media_id media_id;
 	char *card_name = "xx";
-	int cnt;
+	int cnt, ok_to_register;
 	unsigned int insert_mask;
 	struct tifm_dev *new_sock = 0;
 
@@ -168,6 +168,7 @@ static void tifm_7xx1_insert_media(void *adapter)
 			media_id = tifm_7xx1_toggle_sock_power(tifm_7xx1_sock_addr(fm->addr, cnt),
 							       fm->max_sockets == 2);
 			if(media_id) {
+				ok_to_register = 0;
 				if((new_sock = tifm_alloc_device(fm, cnt))) {
 					new_sock->addr = tifm_7xx1_sock_addr(fm->addr, cnt);
 					new_sock->media_id = media_id;
@@ -185,12 +186,17 @@ static void tifm_7xx1_insert_media(void *adapter)
 					snprintf(new_sock->dev.bus_id, BUS_ID_SIZE,
 						 "tifm_%s%u:%u", card_name, fm->id, cnt);
 					spin_lock_irqsave(&fm->lock, f);
-					if(!fm->sockets[cnt] && !device_register(&new_sock->dev)) {
+					if(!fm->sockets[cnt]) {
 						fm->sockets[cnt] = new_sock;
-						new_sock = 0;
+						ok_to_register = 1;
 					}
 					spin_unlock_irqrestore(&fm->lock, f);
-					if(new_sock) tifm_free_device(&new_sock->dev);
+					if(!ok_to_register || device_register(&new_sock->dev)) {
+						spin_lock_irqsave(&fm->lock, f);
+						fm->sockets[cnt] = 0;
+						spin_unlock_irqrestore(&fm->lock, f);
+						tifm_free_device(&new_sock->dev);
+					}
 				}
 			}
 			writel(0x00010100 << cnt, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
