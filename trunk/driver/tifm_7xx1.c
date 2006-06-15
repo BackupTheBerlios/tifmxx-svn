@@ -13,7 +13,7 @@
 #include <linux/interrupt.h>
 
 #define DRIVER_NAME "tifm_7xx1"
-#define DRIVER_VERSION "0.4"
+#define DRIVER_VERSION "0.5"
 
 static void tifm_7xx1_eject(struct tifm_adapter *fm, struct tifm_dev *sock)
 {
@@ -21,11 +21,13 @@ static void tifm_7xx1_eject(struct tifm_adapter *fm, struct tifm_dev *sock)
 	unsigned long f;
 
 	spin_lock_irqsave(&fm->lock, f);
-	for(cnt = 0; cnt < fm->max_sockets; cnt++) {
-		if(fm->sockets[cnt] == sock) {
-			fm->remove_mask = 1 << cnt;
-			queue_work(fm->wq, &fm->media_remover);
-			break;
+	if(!fm->inhibit_new_cards) {
+		for(cnt = 0; cnt < fm->max_sockets; cnt++) {
+			if(fm->sockets[cnt] == sock) {
+				fm->remove_mask |= (1 << cnt);
+				queue_work(fm->wq, &fm->media_remover);
+				break;
+			}
 		}
 	}
 	spin_unlock_irqrestore(&fm->lock, f);
@@ -42,7 +44,7 @@ static void tifm_7xx1_remove_media(void *adapter)
 	spin_lock_irqsave(&fm->lock, f);
 	for(cnt = 0; cnt < fm->max_sockets; cnt++) {
 		if(fm->sockets[cnt] && (fm->remove_mask & (1 << cnt))) {
-			DBG("Demand removing card from socket %d\n", cnt);
+			printk(KERN_INFO "tifm_7xx1: demand removing card from socket %d\n", cnt);
 			sock = fm->sockets[cnt];
 			fm->sockets[cnt] = 0;
 			fm->remove_mask &= ~(1 << cnt);
@@ -89,11 +91,13 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id, struct pt_regs *regs)
 		}
 		writel(irq_status, fm->addr + FM_INTERRUPT_STATUS);
 
-		if(!fm->remove_mask && !fm->insert_mask)
-			writel(0x80000000, fm->addr + FM_SET_INTERRUPT_ENABLE);
-		else {
-			queue_work(fm->wq, &fm->media_remover);
-			queue_work(fm->wq, &fm->media_inserter);
+		if(!fm->inhibit_new_cards) {
+			if(!fm->remove_mask && !fm->insert_mask)
+				writel(0x80000000, fm->addr + FM_SET_INTERRUPT_ENABLE);
+			else {
+				queue_work(fm->wq, &fm->media_remover);
+				queue_work(fm->wq, &fm->media_inserter);
+			}
 		}
 	
 		rc = IRQ_HANDLED;
@@ -105,12 +109,11 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id, struct pt_regs *regs)
 static tifm_media_id tifm_7xx1_toggle_sock_power(char *sock_addr, int is_x2)
 {
 	unsigned int s_state;
-	unsigned long long t;
+	int cnt;
 
 	writel(0x0e00, sock_addr + SOCK_CONTROL);
 
-	t = get_jiffies_64();
-	while(get_jiffies_64() - t < msecs_to_jiffies(1000)) {
+	for(cnt = 0; cnt < 100; cnt++) {
 		if(!(0x0080 & readl(sock_addr + SOCK_PRESENT_STATE))) break;
 		msleep(10);
 	}
@@ -128,8 +131,7 @@ static tifm_media_id tifm_7xx1_toggle_sock_power(char *sock_addr, int is_x2)
 		writel((s_state & 0x7) | 0x0c40, sock_addr + SOCK_CONTROL);
 	}
 	
-	t = get_jiffies_64();
-	while(get_jiffies_64() - t < msecs_to_jiffies(1000)) {
+	for(cnt = 0; cnt < 100; cnt++) {
 		if((0x0080 & readl(sock_addr + SOCK_PRESENT_STATE))) break;
 		msleep(10);
 	}
@@ -161,6 +163,11 @@ static void tifm_7xx1_insert_media(void *adapter)
 	spin_lock_irqsave(&fm->lock, f);
 	insert_mask = fm->insert_mask;
 	fm->insert_mask = 0;
+	if(fm->inhibit_new_cards) {
+		spin_unlock_irqrestore(&fm->lock, f);
+		class_device_put(&fm->cdev);
+		return;
+	}
 	spin_unlock_irqrestore(&fm->lock, f);
 
 	for(cnt = 0; cnt < fm->max_sockets; cnt++) {
@@ -212,20 +219,17 @@ static int tifm_7xx1_suspend(struct pci_dev *dev, pm_message_t state)
 {
 	struct tifm_adapter *fm = pci_get_drvdata(dev);
 	unsigned long f;
-	int cnt;
 
 	spin_lock_irqsave(&fm->lock, f);
-	writel(0x80000000, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
-	for(cnt = 0; cnt < fm->max_sockets; cnt++) {
-		if(fm->sockets[cnt]) {
-			device_unregister(&fm->sockets[cnt]->dev);
-			fm->sockets[cnt] = 0;
-			writel(0x00010100 << cnt, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
-		}
-	}
-	fm->remove_mask = 0;
+	fm->inhibit_new_cards = 1;
+	fm->remove_mask = 0xf;
 	fm->insert_mask = 0;
+	writel(0x80000000, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 	spin_unlock_irqrestore(&fm->lock, f);
+	flush_workqueue(fm->wq);
+
+	tifm_7xx1_remove_media(fm);
+	
 	pci_set_power_state(dev, PCI_D3hot);
         pci_disable_device(dev);
         pci_save_state(dev);
@@ -243,9 +247,11 @@ static int tifm_7xx1_resume(struct pci_dev *dev)
         pci_set_master(dev);
 
 	spin_lock_irqsave(&fm->lock, f);
+	fm->inhibit_new_cards = 0;
 	writel(0xffffffff, fm->addr + FM_INTERRUPT_STATUS);
 	writel(0xffffffff, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 	writel(0x8000000f, fm->addr + FM_SET_INTERRUPT_ENABLE);
+	fm->insert_mask = 0xf;
 	spin_unlock_irqrestore(&fm->lock, f);
 	return 0;
 }
@@ -316,24 +322,27 @@ err_out:
 static void tifm_7xx1_remove(struct pci_dev *dev)
 {
 	struct tifm_adapter *fm = pci_get_drvdata(dev);
-	int cnt;
 	unsigned long f;
 	
 	if(!fm) return;
 
-	tifm_remove_adapter(fm);
 	spin_lock_irqsave(&fm->lock, f);
-	pci_set_drvdata(dev, NULL);
+	fm->inhibit_new_cards = 1;
+	fm->remove_mask = 0xf;
+	fm->insert_mask = 0;
+	writel(0x80000000, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
+	spin_unlock_irqrestore(&fm->lock, f);
+
+	flush_workqueue(fm->wq);
+
+	tifm_7xx1_remove_media(fm);
 
 	writel(0xffffffff, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 	free_irq(dev->irq, fm);
 
-
-	for(cnt = 0; cnt < fm->max_sockets; cnt++) {
-		if(fm->sockets[cnt]) device_unregister(&fm->sockets[cnt]->dev);
-		fm->sockets[cnt] = 0;
-	}
-	spin_unlock_irqrestore(&fm->lock, f);
+	tifm_remove_adapter(fm);
+	
+	pci_set_drvdata(dev, NULL);
 
 	iounmap(fm->addr);
 	pci_intx(dev, 0);

@@ -98,6 +98,7 @@ struct tifm_adapter {
 	unsigned int            id;
 	unsigned int            max_sockets;
 	char                    wq_name[KOBJ_NAME_LEN];
+	unsigned int            inhibit_new_cards;
 	struct workqueue_struct *wq;
 	struct work_struct      media_inserter;
 	struct work_struct      media_remover;
