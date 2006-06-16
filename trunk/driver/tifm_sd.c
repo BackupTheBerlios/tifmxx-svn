@@ -153,6 +153,8 @@ change_state:
 			if(card->req->stop) {
 				card->state = W_STOP_RESP;
 				tifm_sd_exec(card, card->req->stop);
+				queue_delayed_work(sock->wq, &card->abort_handler, card->timeout_jiffies);
+				return;
 			} else card->state = READY;
 		} else {
 			cmd->error = err_code;
@@ -191,6 +193,7 @@ change_state:
 				if(card->req->stop) {
 					card->state = W_STOP_RESP;
 					tifm_sd_exec(card, card->req->stop);
+					break;
 				} else if(cmd->error) {
 					card->state = READY;
 				} else {
@@ -218,6 +221,7 @@ change_state:
 				} else if(card->req->stop) {
 					card->state = W_STOP_RESP;
 					tifm_sd_exec(card, card->req->stop);
+					break;
 				} else {
 					card->state = READY;
 				}
@@ -259,6 +263,7 @@ change_state:
 					if(card->req->stop) {
 						card->state = W_STOP_RESP;
 						tifm_sd_exec(card, card->req->stop);
+						break;
 					} else card->state = READY;
 					goto change_state;
 				}
