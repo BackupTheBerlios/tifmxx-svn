@@ -100,7 +100,6 @@ static void tifm_sd_exec(struct tifm_sd *card, struct mmc_command *cmd)
 
 	writel((cmd->arg >> 16) & 0xffff, sock->addr + SOCK_MMCSD_ARG_HIGH);
 	writel(cmd->arg & 0xffff, sock->addr + SOCK_MMCSD_ARG_LOW);
-	card->status = 0;
 	card->flags &= ~CARD_EVENT;
 	writel(cmd->opcode | cmd_mask, sock->addr + SOCK_MMCSD_COMMAND);
 }
@@ -134,6 +133,7 @@ static inline void tifm_sd_process_cmd(struct tifm_sd *card)
 
 	cancel_delayed_work(&card->abort_handler);
 
+change_state:
 	if(card->status & 0x4000) err_code = MMC_ERR_FAILED;
 	if(card->status & 0x0080) err_code = MMC_ERR_TIMEOUT;
 	if(card->status & 0x0100) err_code = MMC_ERR_BADCRC;
@@ -150,6 +150,10 @@ static inline void tifm_sd_process_cmd(struct tifm_sd *card)
 			writel(0xffff, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
 			writel(0x0002, sock->addr + SOCK_DMA_CONTROL);
 			cmd->error = err_code;
+			if(card->req->stop) {
+				card->state = W_STOP_RESP;
+				tifm_sd_exec(card, card->req->stop);
+			} else card->state = READY;
 		} else {
 			cmd->error = err_code;
 			if(card->req->data && !card->buffer) { // dma transfer
@@ -160,13 +164,12 @@ static inline void tifm_sd_process_cmd(struct tifm_sd *card)
 		}
 	}
 
-change_state:
 	DBG("state: %d, error: %d\n", card->state, err_code);
 	switch(card->state) {
 		case IDLE:
 			break;
 		case W_RESP:
-			if((card->flags & CARD_EVENT) && (card->status & 1)) {
+			if(card->status & 1) {
 				tifm_sd_fetch_resp(cmd, sock);
 				if(!cmd->data) {
 					card->state = READY;
@@ -179,12 +182,12 @@ change_state:
 					       sock->addr + SOCK_MMCSD_INT_ENABLE);
 					card->flags |= FLAG_W2;
 					card->state = W_WRITE;
-					goto change_state;
 				}
 			}
+			if(card->state != W_RESP) goto change_state;
 			break;
 		case W_BRS:
-			if((card->flags & CARD_EVENT) && (card->status & 8)) {
+			if(card->status & 8) {
 				if(card->req->stop) {
 					card->state = W_STOP_RESP;
 					tifm_sd_exec(card, card->req->stop);
@@ -194,16 +197,18 @@ change_state:
 					card->state = (cmd->data->flags & MMC_DATA_WRITE)
 						      ? W_CARD : W_FIFO;
 				}
+				goto change_state;
 			}
 			break;
 		case W_STOP_RESP:
-			if((card->flags & CARD_EVENT) && (card->status & 1)) {
+			if(card->status & 1) {
 				tifm_sd_fetch_resp(card->req->stop, sock);
 				card->state = card->buffer ? READY
 					      : ((cmd->data->flags & MMC_DATA_WRITE)
 						 ? W_CARD : W_FIFO);
+				goto change_state;
 			}
-			goto change_state;
+			break;
 		case W_CARD:
 			if(card->flags & FLAG_W2) {
 				writel(readl(card->dev->addr + SOCK_MMCSD_INT_ENABLE) & 0xffffffeb,
@@ -216,12 +221,14 @@ change_state:
 				} else {
 					card->state = READY;
 				}
-			} else break;
-			goto change_state;
+				goto change_state;
+			}
+			break;
 		case W_FIFO:
 			if(card->fifo_status & 1) {
 				card->state = READY;
 				card->fifo_status = 0;
+				goto change_state;
 			}
 			break;
 		case W_WRITE:
@@ -232,19 +239,10 @@ change_state:
 					if(card->buffer_size > card->buffer_pos)
 						t_val |= ((card->buffer[card->buffer_pos++]) << 8) & 0xff00;
 					writel(t_val, sock->addr + SOCK_MMCSD_DATA);
-					card->state = W_WRITE;
 				}
 				if(card->buffer_size == card->buffer_pos) {
-					if(card->flags & FLAG_W2) {
-						writel(readl(card->dev->addr + SOCK_MMCSD_INT_ENABLE) & 0xffffffeb,
-					    	       card->dev->addr + SOCK_MMCSD_INT_ENABLE);
-						if(card->req->stop) {
-							card->state = W_STOP_RESP;
-							tifm_sd_exec(card, card->req->stop);
-						} else {
-							card->state = READY;
-						}
-					} else card->state = W_CARD;
+					card->state = W_CARD;
+					goto change_state;
 				}
 			}
 			break;
@@ -262,15 +260,16 @@ change_state:
 						card->state = W_STOP_RESP;
 						tifm_sd_exec(card, card->req->stop);
 					} else card->state = READY;
-				} else card->state = W_READ;
+					goto change_state;
+				}
 			}
 			break;
 		case READY:
-			break;
+			queue_work(sock->wq, &card->cmd_handler);
+			return;
 	}
 
-	if(card->state == READY) queue_work(sock->wq, &card->cmd_handler);
-	else queue_delayed_work(sock->wq, &card->abort_handler, card->timeout_jiffies);
+	queue_delayed_work(sock->wq, &card->abort_handler, card->timeout_jiffies);
 }
 
 /* Called from interrupt handler */
@@ -408,6 +407,8 @@ static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 			tifm_sd_prepare_data(card, mrq->cmd);
 		}
 	}
+	card->status = 0;
+	card->fifo_status = 0;
 	card->state = W_RESP;
 	card->req = mrq;
 	queue_delayed_work(sock->wq, &card->abort_handler, card->timeout_jiffies);
