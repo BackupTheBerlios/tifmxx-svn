@@ -417,6 +417,7 @@ static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	card->state = W_RESP;
 	card->req = mrq;
 	queue_delayed_work(sock->wq, &card->abort_handler, card->timeout_jiffies);
+	writel(readl(sock->addr + SOCK_CONTROL) | 0x00000040, sock->addr + SOCK_CONTROL);
 	tifm_sd_exec(card, mrq->cmd);
 	spin_unlock_irqrestore(&sock->lock, f);
 	return;
@@ -454,11 +455,12 @@ static void tifm_sd_end_cmd(void *data)
 			writel(0xfffff3ff & readl(sock->addr + SOCK_MMCSD_INT_ENABLE), sock->addr + SOCK_MMCSD_INT_ENABLE);
 		} else {
 			unmap_type = 2;
-			mrq->cmd->data->bytes_xfered = mrq->cmd->data->blocks - readl(sock->addr + SOCK_MMCSD_NUM_BLOCKS);
+			mrq->cmd->data->bytes_xfered = mrq->cmd->data->blocks - readl(sock->addr + SOCK_MMCSD_NUM_BLOCKS) - 1;
 			mrq->cmd->data->bytes_xfered <<= mrq->cmd->data->blksz_bits;
 			mrq->cmd->data->bytes_xfered += (1 << mrq->cmd->data->blksz_bits) - readl(sock->addr + SOCK_MMCSD_BLOCK_LEN) + 1;
 		}
 	}
+	writel(readl(sock->addr + SOCK_CONTROL) & 0xffffffbf, sock->addr + SOCK_CONTROL);
 	spin_unlock_irqrestore(&sock->lock, f);
 
 	if(unmap_type == 1) kunmap(mrq->cmd->data->sg->page);
@@ -513,11 +515,12 @@ static void tifm_sd_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 
 	//vdd, bus_mode, chip_select
 	//DBG("Power mode %d\n", ios->power_mode);
+/*
 	if(ios->power_mode == MMC_POWER_ON)
 		writel(readl(sock->addr + SOCK_CONTROL) | 0x00000040, sock->addr + SOCK_CONTROL);
 	else if(ios->power_mode == MMC_POWER_OFF)
 		writel(readl(sock->addr + SOCK_CONTROL) & 0xffffffbf, sock->addr + SOCK_CONTROL);
-
+*/
 	spin_unlock_irqrestore(&sock->lock, f);
 }
 
