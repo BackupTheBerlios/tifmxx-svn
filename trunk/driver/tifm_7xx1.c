@@ -48,6 +48,8 @@ static void tifm_7xx1_remove_media(void *adapter)
 			sock = fm->sockets[cnt];
 			fm->sockets[cnt] = 0;
 			fm->remove_mask &= ~(1 << cnt);
+
+			writel(0x0e00, sock->addr + SOCK_CONTROL);
 			writel(0x00010100 << cnt, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 			writel(0x00010100 << cnt, fm->addr + FM_SET_INTERRUPT_ENABLE);
 
@@ -70,6 +72,7 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id, struct pt_regs *regs)
 
 	spin_lock(&fm->lock);
 	irq_status = readl(fm->addr + FM_INTERRUPT_STATUS);
+	DBG("irq_status: %x\n", irq_status);
 	if(irq_status && (~irq_status))
 	{
 		
@@ -182,7 +185,7 @@ static void tifm_7xx1_insert_media(void *adapter)
 					switch(media_id)
 					{
 						case 1:
-							card_name = "sm"; break;
+							card_name = "xd"; break;
 						case 2:
 							card_name = "ms"; break;
 						case 3:
@@ -192,6 +195,7 @@ static void tifm_7xx1_insert_media(void *adapter)
 					}
 					snprintf(new_sock->dev.bus_id, BUS_ID_SIZE,
 						 "tifm_%s%u:%u", card_name, fm->id, cnt);
+					printk(KERN_INFO "tifm_7xx1: %s card detected in socket %d\n", card_name, cnt);
 					spin_lock_irqsave(&fm->lock, f);
 					if(!fm->sockets[cnt]) {
 						fm->sockets[cnt] = new_sock;

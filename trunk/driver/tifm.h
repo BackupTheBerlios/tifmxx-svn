@@ -65,7 +65,7 @@ enum {
 	SOCK_MS_SYSTEM                 = 0x190,
 	SOCK_FIFO_ACCESS               = 0x200 };
 
-typedef enum {FM_NULL = 0, FM_SM = 0x01, FM_MS = 0x02, FM_SD = 0x03} tifm_media_id;
+typedef enum {FM_NULL = 0, FM_XD = 0x01, FM_MS = 0x02, FM_SD = 0x03} tifm_media_id;
 
 struct tifm_driver;
 struct tifm_dev {
