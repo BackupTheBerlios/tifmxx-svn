@@ -28,8 +28,9 @@ static DEFINE_SPINLOCK(tifm_adapter_lock);
 
 static tifm_media_id* tifm_device_match(tifm_media_id *ids, struct tifm_dev *dev)
 {
-	while(*ids) {
-		if(dev->media_id == *ids) return ids;
+	while (*ids) {
+		if (dev->media_id == *ids)
+			return ids;
 		ids++;
 	}
 	return 0;
@@ -40,8 +41,10 @@ static int tifm_match(struct device *dev, struct device_driver *drv)
 	struct tifm_dev *fm_dev = container_of(dev, struct tifm_dev, dev);
 	struct tifm_driver *fm_drv = container_of(drv, struct tifm_driver, driver);
 
-	if(!fm_drv->id_table) return -EINVAL;
-	if(tifm_device_match(fm_drv->id_table, fm_dev)) return 1;
+	if (!fm_drv->id_table)
+		return -EINVAL;
+	if (tifm_device_match(fm_drv->id_table, fm_dev))
+		return 1;
 	return -ENODEV;
 }
 
@@ -53,22 +56,12 @@ static int tifm_uevent(struct device *dev, char **envp, int num_envp,
 	int length = 0;
 	const char *card_type_name[] = {"INV", "SM", "MS", "SD"};
 
-	if(!dev || !(fm_dev = container_of(dev, struct tifm_dev, dev)))
+	if (!dev || !(fm_dev = container_of(dev, struct tifm_dev, dev)))
 		return -ENODEV;
-	if(add_uevent_var(envp, num_envp, &i, buffer, buffer_size, &length,
-			  "TIFM_CARD_TYPE=%s", card_type_name[fm_dev->media_id]))
+	if (add_uevent_var(envp, num_envp, &i, buffer, buffer_size, &length,
+			   "TIFM_CARD_TYPE=%s", card_type_name[fm_dev->media_id]))
 		return -ENOMEM;
 
-	return 0;
-}
-
-static int tifm_suspend(struct device *dev, pm_message_t message)
-{
-	return 0;
-}
-
-static int tifm_resume(struct device *dev)
-{
 	return 0;
 }
 
@@ -76,16 +69,16 @@ static struct bus_type tifm_bus_type = {
 	.name    = "tifm",
 	.match   = tifm_match,
 	.uevent  = tifm_uevent,
-	.suspend = tifm_suspend,
-	.resume  = tifm_resume
 };
 
 static void tifm_free(struct class_device *cdev)
 {
 	struct tifm_adapter *fm = container_of(cdev, struct tifm_adapter, cdev);
 
-	if(fm->sockets) kfree(fm->sockets);
-	if(fm->wq) destroy_workqueue(fm->wq);
+	if (fm->sockets)
+		kfree(fm->sockets);
+	if (fm->wq)
+		destroy_workqueue(fm->wq);
 	kfree(fm);
 }
 
@@ -98,7 +91,7 @@ struct tifm_adapter* tifm_alloc_adapter(void)
 {
 	struct tifm_adapter *fm = kzalloc(sizeof(struct tifm_adapter), GFP_KERNEL);
 
-	if(fm) {
+	if (fm) {
 		fm->cdev.class = &tifm_adapter_class; 
 		spin_lock_init(&fm->lock);
 		class_device_initialize(&fm->cdev);
@@ -117,17 +110,19 @@ int tifm_add_adapter(struct tifm_adapter *fm)
 {
 	int rc;
 
-	if(!idr_pre_get(&tifm_adapter_idr, GFP_KERNEL)) return -ENOMEM;
+	if (!idr_pre_get(&tifm_adapter_idr, GFP_KERNEL))
+		return -ENOMEM;
 
 	spin_lock(&tifm_adapter_lock);
 	rc = idr_get_new(&tifm_adapter_idr, fm, &fm->id);
 	spin_unlock(&tifm_adapter_lock);
-	if(!rc) {
+	if (!rc) {
 		snprintf(fm->cdev.class_id, BUS_ID_SIZE, "tifm%u", fm->id);
 		strncpy(fm->wq_name, fm->cdev.class_id, KOBJ_NAME_LEN);
 
 		fm->wq = create_singlethread_workqueue(fm->wq_name);
-		if(fm->wq) return class_device_add(&fm->cdev);
+		if (fm->wq)
+			return class_device_add(&fm->cdev);
 				
 		spin_lock(&tifm_adapter_lock);
 		idr_remove(&tifm_adapter_idr, fm->id);
@@ -152,7 +147,8 @@ EXPORT_SYMBOL(tifm_remove_adapter);
 void tifm_free_device(struct device *dev)
 {
 	struct tifm_dev *fm_dev = container_of(dev, struct tifm_dev, dev);
-	if(fm_dev->wq) destroy_workqueue(fm_dev->wq);
+	if (fm_dev->wq)
+		destroy_workqueue(fm_dev->wq);
 	kfree(fm_dev);
 }
 EXPORT_SYMBOL(tifm_free_device);
@@ -161,11 +157,11 @@ struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm, unsigned int id)
 {
 	struct tifm_dev *dev = kzalloc(sizeof(struct tifm_dev), GFP_KERNEL);
 	
-	if(dev) {
+	if (dev) {
 		spin_lock_init(&dev->lock);
 		snprintf(dev->wq_name, KOBJ_NAME_LEN, "tifm%u:%u", fm->id, id);
 		dev->wq = create_singlethread_workqueue(dev->wq_name);
-		if(!dev->wq) {
+		if (!dev->wq) {
 			kfree(dev);
 			return 0;
 		}
@@ -206,16 +202,18 @@ static int tifm_device_probe(struct device *dev)
 	const tifm_media_id *id;
 
 	get_device(dev);
-	if(!fm_dev->drv && drv->probe && drv->id_table) {
+	if (!fm_dev->drv && drv->probe && drv->id_table) {
 		rc = -ENODEV;
 		id = tifm_device_match(drv->id_table, fm_dev);
-		if(id) rc = drv->probe(fm_dev);
-		if(rc >= 0) {
+		if (id)
+			rc = drv->probe(fm_dev);
+		if (rc >= 0) {
 			rc = 0;
 			fm_dev->drv = drv;
 		}
 	}
-	if(rc) put_device(dev);
+	if (rc)
+		put_device(dev);
 	return rc;
 }
 
@@ -224,8 +222,8 @@ static int tifm_device_remove(struct device *dev)
 	struct tifm_dev *fm_dev = container_of(dev, struct tifm_dev, dev);
 	struct tifm_driver *drv = fm_dev->drv;
 
-	if(drv) {
-		if(drv->remove) drv->remove(fm_dev);
+	if (drv) {
+		if (drv->remove) drv->remove(fm_dev);
 		fm_dev->drv = 0;
 	}
 
@@ -253,9 +251,10 @@ static int __init tifm_init(void)
 {
 	int rc = bus_register(&tifm_bus_type);
 
-	if(!rc) {
+	if (!rc) {
 		rc = class_register(&tifm_adapter_class);
-		if(rc) bus_unregister(&tifm_bus_type);
+		if (rc)
+			bus_unregister(&tifm_bus_type);
 	}
 
 	return rc;
