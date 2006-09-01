@@ -21,39 +21,121 @@
 static int no_dma = 0;
 module_param(no_dma, bool, 0644);
 
-enum { CARD_EVENT = 0x0001, FIFO_EVENT = 0x0002, EJECT_EVENT = 0x0004,
-       FLAG_W2 = 0x0008, CARD_RO = 0x0010, HOST_REG = 0x0020};
+/* Constants here are mostly from OMAP5912 datasheet */
+#define TIFM_MMCSD_RESET      0x0002
+#define TIFM_MMCSD_CLKMASK    0x03ff
+#define TIFM_MMCSD_POWER      0x0800
+#define TIFM_MMCSD_4BBUS      0x8000
+#define TIFM_MMCSD_RXDE       0x8000   /* rx dma enable */
+#define TIFM_MMCSD_TXDE       0x0080   /* tx dma enable */
+#define TIFM_MMCSD_BUFINT     0x0c00   /* set bits: AE, AF */
+#define TIFM_MMCSD_DPE        0x0020   /* data timeout counted in kilocycles */
+#define TIFM_MMCSD_INAB       0x0080   /* abort / initialize command */
+#define TIFM_MMCSD_READ       0x8000
 
-typedef enum { IDLE = 0, W_RESP, W_BRS, W_STOP_RESP, W_FIFO, W_CARD, W_WRITE,
-	       W_READ, READY} card_state_t;
+#define TIFM_MMCSD_DATAMASK   0x001d   /* set bits: EOFB, BRS, CB, EOC */
+#define TIFM_MMCSD_ERRMASK    0x41e0   /* set bits: CERR, CCRC, CTO, DCRC, DTO */
+#define TIFM_MMCSD_EOC        0x0001   /* end of command phase  */
+#define TIFM_MMCSD_CB         0x0004   /* card enter busy state */
+#define TIFM_MMCSD_BRS        0x0008   /* block received/sent   */
+#define TIFM_MMCSD_EOFB       0x0010   /* card exit busy state  */
+#define TIFM_MMCSD_DTO        0x0020   /* data time-out         */
+#define TIFM_MMCSD_DCRC       0x0040   /* data crc error        */
+#define TIFM_MMCSD_CTO        0x0080   /* command time-out      */
+#define TIFM_MMCSD_CCRC       0x0100   /* command crc error     */
+#define TIFM_MMCSD_AF         0x0400   /* fifo almost full      */
+#define TIFM_MMCSD_AE         0x0800   /* fifo almost empty     */
+#define TIFM_MMCSD_CERR       0x4000   /* card status error     */
+
+#define TIFM_MMCSD_FIFO_SIZE  0x0020
+
+typedef enum {
+	IDLE = 0,
+	CMD,    /* main command ended                   */
+	BRS,    /* block transfer finished              */
+	SCMD,   /* stop command ended                   */
+	CARD,   /* card left busy state                 */
+	FIFO,   /* FIFO operation completed (uncertain) */
+	READY
+} card_state_t;
+
+enum {
+	FIFO_RDY   = 0x0001,     /* hardware dependent value */
+	HOST_REG   = 0x0002,
+	EJECT      = 0x0004,
+	EJECT_DONE = 0x0008,
+	CARD_BUSY  = 0x0010,
+	OPENDRAIN  = 0x0040,     /* hardware dependent value */
+	CARD_EVENT = 0x0100,     /* hardware dependent value */
+	CARD_RO    = 0x0200,     /* hardware dependent value */
+	FIFO_EVENT = 0x10000 };  /* hardware dependent value */
 
 struct tifm_sd {
 	struct tifm_dev     *dev;
 
-	wait_queue_head_t   event;
 	unsigned int        flags;
-	unsigned int        status;
-	unsigned int        fifo_status;
 	card_state_t        state;
 	unsigned int        clk_freq;
 	unsigned int        clk_div;
-	unsigned long       timeout_jiffies;
+	unsigned long       timeout_jiffies; // software timeout - 2 sec
+	unsigned int        data_timeout;    // hardware data timeout in clocks
 
 	struct mmc_request    *req;
 	struct work_struct    cmd_handler;
 	struct work_struct    abort_handler;
+	wait_queue_head_t     can_eject;
 
 	char                  *buffer;
-	unsigned long         buffer_size;
-	unsigned long         buffer_pos;
+	size_t                buffer_size; 
+	size_t                buffer_pos;
 
 };
+
+static inline int tifm_sd_transfer_data(struct tifm_dev *sock, struct tifm_sd *host, unsigned int host_status)
+{
+	struct mmc_command *cmd = host->req->cmd;
+	unsigned int t_val = 0, cnt = 0;
+
+	if (host_status & TIFM_MMCSD_BRS) {
+		/* in non-dma rx mode BRS fires when fifo is still not empty */
+		if (host->buffer && (cmd->data->flags & MMC_DATA_READ)) {
+			while (host->buffer_size > host->buffer_pos) {
+				t_val = readl(sock->addr + SOCK_MMCSD_DATA);
+				host->buffer[host->buffer_pos++] = t_val & 0xff;
+				host->buffer[host->buffer_pos++] = (t_val >> 8) & 0xff;
+			}
+		}
+		return 1;
+	} else if (host->buffer) {
+		if ((cmd->data->flags & MMC_DATA_READ) && (host_status & TIFM_MMCSD_AF)) {
+			for(cnt = 0; cnt < TIFM_MMCSD_FIFO_SIZE; cnt++) {
+				t_val = readl(sock->addr + SOCK_MMCSD_DATA);
+				if (host->buffer_size > host->buffer_pos) {
+					host->buffer[host->buffer_pos++] = t_val & 0xff;
+					host->buffer[host->buffer_pos++] = (t_val >> 8) & 0xff;
+				}
+			}
+		} else if ((cmd->data->flags & MMC_DATA_WRITE) && (host_status & TIFM_MMCSD_AE)) {
+			for(cnt = 0; cnt < TIFM_MMCSD_FIFO_SIZE; cnt++) {
+				if (host->buffer_size > host->buffer_pos) {
+					t_val = host->buffer[host->buffer_pos++] & 0x00ff;
+					t_val |= ((host->buffer[host->buffer_pos++]) << 8) & 0xff00;
+					writel(t_val, sock->addr + SOCK_MMCSD_DATA);
+				}
+			}
+		}
+	}
+	return 0;
+}
 
 static inline unsigned int tifm_sd_op_flags(unsigned int cmd_flags)
 {
 	unsigned int rc = 0;
 
 	switch (cmd_flags & 0x1f) {
+		case MMC_RSP_NONE:
+			rc |= 0x0000;
+			break;
 		case MMC_RSP_R1:
 			rc |= 0x0100;
 			break;
@@ -66,40 +148,45 @@ static inline unsigned int tifm_sd_op_flags(unsigned int cmd_flags)
 		case MMC_RSP_R3:
 			rc |= 0x0300;
 			break;
+		/* R4, R5 - easy to guess */
 		case MMC_RSP_R6:
 			rc |= 0x0600;
 			break;
+		default:
+			BUG();
 	}
 
 	switch (cmd_flags & MMC_CMD_MASK) {
+		case MMC_CMD_BC:
+			rc |= 0x0000;
+			break;
+		case MMC_CMD_BCR:
+			rc |= 0x1000;
+			break;
 		case MMC_CMD_AC:
 			rc |= 0x2000;
 			break;
 		case MMC_CMD_ADTC:
 			rc |= 0x3000;
 			break;
-		case MMC_CMD_BCR:
-			rc |= 0x1000;
-			break;
+		default:
+			BUG();
 	}
 	return rc;
 }
 
-static void tifm_sd_exec(struct tifm_sd *card, struct mmc_command *cmd)
+static void tifm_sd_exec(struct tifm_sd *host, struct mmc_command *cmd)
 {
-	struct tifm_dev *sock = card->dev;
-	unsigned int cmd_mask = tifm_sd_op_flags(cmd->flags);
+	struct tifm_dev *sock = host->dev;
+	unsigned int cmd_mask = tifm_sd_op_flags(cmd->flags) | (host->flags & OPENDRAIN);
 
-	if (cmd->data) {
-		if (((cmd->flags & MMC_CMD_MASK) == MMC_CMD_ADTC)
-		    && (cmd->data->flags & MMC_DATA_READ))
-			cmd_mask |= 0x8000;
-	}
+	if (cmd->data && (cmd->data->flags & MMC_DATA_READ))
+		cmd_mask |= TIFM_MMCSD_READ;
+
 	DBG("executing opcode 0x%x, arg: 0x%x, mask: 0x%x\n", cmd->opcode, cmd->arg, cmd_mask);
 
 	writel((cmd->arg >> 16) & 0xffff, sock->addr + SOCK_MMCSD_ARG_HIGH);
 	writel(cmd->arg & 0xffff, sock->addr + SOCK_MMCSD_ARG_LOW);
-	card->flags &= ~CARD_EVENT;
 	writel(cmd->opcode | cmd_mask, sock->addr + SOCK_MMCSD_COMMAND);
 }
 
@@ -115,222 +202,143 @@ static inline void tifm_sd_fetch_resp(struct mmc_command *cmd, struct tifm_dev *
 	cmd->resp[3] |= readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x00);
 }
 
-static inline void tifm_sd_process_cmd(struct tifm_sd *card)
+static inline void tifm_sd_process_cmd(struct tifm_dev *sock, struct tifm_sd *host, unsigned int host_status)
 {
-	int err_code = 0;
-	struct mmc_command *cmd;
-	struct tifm_dev *sock = card->dev;
-	unsigned int t_val;
+	struct mmc_command *cmd = host->req->cmd;
 
-	if (card->state == IDLE) {
-		DBG("idle interrupt %x, %x, %x\n", card->flags, card->status, card->fifo_status);
-		return;
-	}
-	
-	cancel_delayed_work(&card->abort_handler);
-	
-	cmd = card->req->cmd;
-	
 change_state:
-	if (card->status & 0x4000)
-		err_code = MMC_ERR_FAILED;
-	if (card->status & 0x0080)
-		err_code = MMC_ERR_TIMEOUT;
-	if (card->status & 0x0100)
-		err_code = MMC_ERR_BADCRC;
-
-	if (err_code || cmd->error) {
-		if (card->state == W_STOP_RESP) {
-			card->req->stop->error = err_code;
-			if (card->req->data && !card->buffer) { // dma transfer
-				writel(0xffff, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
-				writel(0x0002, sock->addr + SOCK_DMA_CONTROL);
-			}
-			card->state = READY;
-		} else if (card->state == W_BRS) {
-			writel(0xffff, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
-			writel(0x0002, sock->addr + SOCK_DMA_CONTROL);
-			cmd->error = err_code;
-			if (card->req->stop) {
-				card->state = W_STOP_RESP;
-				tifm_sd_exec(card, card->req->stop);
-				queue_delayed_work(sock->wq, &card->abort_handler, card->timeout_jiffies);
-				return;
-			}
-			else
-				card->state = READY;
-		} else {
-			cmd->error = err_code;
-			if (card->req->data && !card->buffer) { // dma transfer
-				writel(0xffff, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
-				writel(0x0002, sock->addr + SOCK_DMA_CONTROL);
-			}
-			card->state = READY;
-		}
-	}
-
-	DBG("state: %d, error: %d\n", card->state, err_code);
-	switch (card->state) {
+	switch (host->state) {
 		case IDLE:
-			break;
-		case W_RESP:
-			if (card->status & 1) {
+			return;
+		case CMD:
+			if (host_status & TIFM_MMCSD_EOC) {
 				tifm_sd_fetch_resp(cmd, sock);
-				if (!cmd->data) {
-					card->state = READY;
-				} else if (!card->buffer) {
-					card->state = W_BRS;
-				} else if (cmd->data->flags & MMC_DATA_READ) {
-					card->state = W_READ;
-				} else {
-					writel(0x0014 | readl(sock->addr + SOCK_MMCSD_INT_ENABLE),
-					       sock->addr + SOCK_MMCSD_INT_ENABLE);
-					card->flags |= FLAG_W2;
-					card->state = W_WRITE;
-				}
-			}
-			if (card->state != W_RESP)
-				goto change_state;
-			break;
-		case W_BRS:
-			if (card->status & 8) {
-				if (card->req->stop) {
-					card->state = W_STOP_RESP;
-					tifm_sd_exec(card, card->req->stop);
-					break;
-				} else if (cmd->error) {
-					card->state = READY;
-				} else {
-					card->state = (cmd->data->flags & MMC_DATA_WRITE)
-						      ? W_CARD : W_FIFO;
-				}
+				if (cmd->data) {
+					host->state = BRS;
+					if (cmd->data->flags & MMC_DATA_WRITE)
+						host->flags |= CARD_BUSY;
+				} else
+					host->state = READY;
 				goto change_state;
 			}
 			break;
-		case W_STOP_RESP:
-			if (card->status & 1) {
-				tifm_sd_fetch_resp(card->req->stop, sock);
-				card->state = card->buffer ? READY
-					      : ((cmd->data->flags & MMC_DATA_WRITE)
-						 ? W_CARD : W_FIFO);
-				goto change_state;
-			}
-			break;
-		case W_CARD:
-			if (card->flags & FLAG_W2) {
-				writel(readl(card->dev->addr + SOCK_MMCSD_INT_ENABLE) & 0xffffffeb,
-				       card->dev->addr + SOCK_MMCSD_INT_ENABLE);
-				if (!card->buffer) {
-					card->state = W_FIFO;
-				} else if (card->req->stop) {
-					card->state = W_STOP_RESP;
-					tifm_sd_exec(card, card->req->stop);
-					break;
-				} else {
-					card->state = READY;
-				}
-				goto change_state;
-			}
-			break;
-		case W_FIFO:
-			if (card->fifo_status & 1) {
-				card->state = READY;
-				card->fifo_status = 0;
-				goto change_state;
-			}
-			break;
-		case W_WRITE:
-			if (card->status & 0x0800) {
-				card->status &= 0xfffff7ff;
-				if (card->buffer_size > card->buffer_pos) {
-					t_val = card->buffer[card->buffer_pos++] & 0x00ff;
-					if (card->buffer_size > card->buffer_pos)
-						t_val |= ((card->buffer[card->buffer_pos++]) << 8) & 0xff00;
-					writel(t_val, sock->addr + SOCK_MMCSD_DATA);
-				}
-				if (card->buffer_size == card->buffer_pos) {
-					card->state = W_CARD;
-					goto change_state;
-				}
-			}
-			break;
-		case W_READ:
-			if (card->status & 0x0400) {
-				card->status &= 0xfffffbff;
-				t_val = readl(sock->addr + SOCK_MMCSD_DATA);
-				if (card->buffer_size > card->buffer_pos)
-					card->buffer[card->buffer_pos++] = t_val & 0xff;
-				if (card->buffer_size > card->buffer_pos)
-					card->buffer[card->buffer_pos++] = (t_val >> 8) & 0xff;
-
-				if (card->buffer_size == card->buffer_pos) {
-					if (card->req->stop) {
-						card->state = W_STOP_RESP;
-						tifm_sd_exec(card, card->req->stop);
-						break;
+		case BRS:
+			if (tifm_sd_transfer_data(sock, host, host_status)) {
+				if (!host->req->stop) {
+					if (cmd->data->flags & MMC_DATA_WRITE) {
+						host->state = CARD;
+					} else {
+						host->state = host->buffer ? READY : FIFO;
 					}
-					else card->state = READY;
 					goto change_state;
 				}
+				tifm_sd_exec(host, host->req->stop);
+				host->state = SCMD;
+			}
+			break;
+		case SCMD:
+			if (host_status & TIFM_MMCSD_EOC) {
+				tifm_sd_fetch_resp(host->req->stop, sock);
+				if (cmd->error) {
+					host->state = READY;
+				} else if (cmd->data->flags & MMC_DATA_WRITE) {
+					host->state = CARD;
+				} else {
+					host->state = host->buffer ? READY : FIFO;
+				}
+				goto change_state;
+			}
+			break;
+		case CARD:
+			if (!(host->flags & CARD_BUSY)) {
+				host->state = host->buffer ? READY : FIFO;
+				goto change_state;
+			}
+			break;
+		case FIFO:
+			if (host->flags & FIFO_RDY) {
+				host->state = READY;
+				host->flags &= ~FIFO_RDY;
+				goto change_state;
 			}
 			break;
 		case READY:
-			queue_work(sock->wq, &card->cmd_handler);
-			card->state = IDLE;
+			queue_work(sock->wq, &host->cmd_handler);
 			return;
 	}
 
-	queue_delayed_work(sock->wq, &card->abort_handler, card->timeout_jiffies);
+	queue_delayed_work(sock->wq, &host->abort_handler, host->timeout_jiffies);
 }
 
 /* Called from interrupt handler */
 static unsigned int tifm_sd_signal_irq(struct tifm_dev *sock, unsigned int sock_irq_status)
 {
-	struct tifm_sd *card = mmc_priv((struct mmc_host*)tifm_get_drvdata(sock));
-	unsigned int card_status;
+	struct tifm_sd *host;
+	unsigned int host_status = 0, fifo_status = 0;
+	int error_code = 0;
 
 	spin_lock(&sock->lock);
-	card->flags &= ~(CARD_EVENT | FIFO_EVENT); 
-	card->flags |= (sock_irq_status & 0x00000100) ? CARD_EVENT : 0;
-	card->flags |= (sock_irq_status & 0x00010000) ? FIFO_EVENT : 0;
+	host = mmc_priv((struct mmc_host*)tifm_get_drvdata(sock));
+	cancel_delayed_work(&host->abort_handler);
 
-	if (card->flags & FIFO_EVENT) {
-		card->fifo_status = readl(sock->addr + SOCK_DMA_FIFO_STATUS);
-		writel(card->fifo_status, sock->addr + SOCK_DMA_FIFO_STATUS);
+	if (sock_irq_status & FIFO_EVENT) {
+		fifo_status = readl(sock->addr + SOCK_DMA_FIFO_STATUS);
+		writel(fifo_status, sock->addr + SOCK_DMA_FIFO_STATUS);
+
+		host->flags |= FIFO_RDY;
 	}
 
-	if (card->flags & CARD_EVENT) {
-		card_status = readl(sock->addr + SOCK_MMCSD_STATUS);
-		writel(card_status, sock->addr + SOCK_MMCSD_STATUS);
-		card->status |= card_status;
+	if (sock_irq_status & CARD_EVENT) {
+		host_status = readl(sock->addr + SOCK_MMCSD_STATUS);
+		writel(host_status, sock->addr + SOCK_MMCSD_STATUS);
+		
+		if (!(host->flags & HOST_REG))
+			queue_work(sock->wq, &host->cmd_handler);
+		if (!host->req)
+			goto done;
 
-		if (card_status & 0x8) {
-			writel(0x0014 | readl(sock->addr + SOCK_MMCSD_INT_ENABLE),
-			       sock->addr + SOCK_MMCSD_INT_ENABLE);
-			card->flags |= FLAG_W2;
+		if (host_status & TIFM_MMCSD_ERRMASK) {
+			if (host_status & TIFM_MMCSD_CERR)
+				error_code = MMC_ERR_FAILED;
+			else if (host_status & (TIFM_MMCSD_CTO | TIFM_MMCSD_DTO))
+				error_code = MMC_ERR_TIMEOUT;
+			else if (host_status & (TIFM_MMCSD_CCRC | TIFM_MMCSD_DCRC))
+				error_code = MMC_ERR_BADCRC;
+
+			writel(TIFM_FIFO_INT_SETALL, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
+			writel(TIFM_DMA_RESET, sock->addr + SOCK_DMA_CONTROL);
+
+			if (host->req->stop) {
+				if (host->state == SCMD) {
+					host->req->stop->error = error_code;
+				} else if(host->state == BRS) {
+					host->req->cmd->error = error_code;
+					tifm_sd_exec(host, host->req->stop);
+					queue_delayed_work(sock->wq, &host->abort_handler, host->timeout_jiffies);
+					host->state = SCMD;
+					goto done;
+				} else {
+					host->req->cmd->error = error_code;
+				}
+			} else {
+				host->req->cmd->error = error_code;
+			}
+			host->state = READY;
 		}
 
-		if (card_status & 0x0010)
-			card->flags &= ~FLAG_W2;
-		if (card_status & 0x0004)
-			card->flags |= FLAG_W2;
+		if (host_status & TIFM_MMCSD_CB)
+			host->flags |= CARD_BUSY;
+		if (host_status & TIFM_MMCSD_EOFB)
+			host->flags &= ~CARD_BUSY;
         }
 
-	if (!(card->flags & EJECT_EVENT) && (card->flags & (CARD_EVENT | FIFO_EVENT))) {
-		if (!(card->flags & HOST_REG)) {
-			cancel_delayed_work(&card->abort_handler);
-			queue_work(sock->wq, &card->cmd_handler);
-		}
-		else
-			tifm_sd_process_cmd(card);
-		card->flags &= ~CARD_EVENT;
-	}
+	if (host->req)
+		tifm_sd_process_cmd(sock, host, host_status);
+done:
+	DBG("host_status %x, fifo_status %x\n", host_status, fifo_status);
 	spin_unlock(&sock->lock);
-	DBG("after irq: card_status = 0x%08x, fifo_status = 0x%08x, flags = 0x%08x\n",
-	    card->status, card->fifo_status, card->flags);
 	return sock_irq_status;
 }
-
 
 static inline void tifm_sd_prepare_data(struct tifm_sd *card, struct mmc_command *cmd)
 {
@@ -339,43 +347,51 @@ static inline void tifm_sd_prepare_data(struct tifm_sd *card, struct mmc_command
 	
 	/* DMA style IO */
 
-	writel(0xffff, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
-	writel(0x0001, sock->addr + SOCK_FIFO_CONTROL);
-	writel(0x0005, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_SET);
+	writel(TIFM_FIFO_INT_SETALL, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
+	writel(cmd->data->blksz_bits - 2, sock->addr + SOCK_FIFO_PAGE_SIZE);
+	writel(TIFM_FIFO_ENABLE, sock->addr + SOCK_FIFO_CONTROL);
+	writel(TIFM_FIFO_INTMASK, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_SET);
 	
-	dest_cnt = cmd->data->blocks << 8;
+	dest_cnt = (cmd->data->blocks) << 8;
 	
 	writel(sg_dma_address(cmd->data->sg), sock->addr + SOCK_DMA_ADDRESS);
-	
-	if (cmd->data->flags & MMC_DATA_WRITE) {
-		writel((readl(sock->addr + SOCK_DMA_CONTROL) & 0x80)
-		       | dest_cnt | 0x8001, sock->addr + SOCK_DMA_CONTROL);
-		writel(0x0080, sock->addr + SOCK_MMCSD_BUFFER_CONFIG);
-	}
-	else {
-		writel((readl(sock->addr + SOCK_DMA_CONTROL) & 0x80)
-		       | dest_cnt | 0x0001, sock->addr + SOCK_DMA_CONTROL);
-		writel(0x8000, sock->addr + SOCK_MMCSD_BUFFER_CONFIG);
-	}
 
 	writel(cmd->data->blocks - 1, sock->addr + SOCK_MMCSD_NUM_BLOCKS);
 	writel((1 << cmd->data->blksz_bits) - 1, sock->addr + SOCK_MMCSD_BLOCK_LEN);
+	
+	if (cmd->data->flags & MMC_DATA_WRITE) {
+		writel(TIFM_MMCSD_TXDE, sock->addr + SOCK_MMCSD_BUFFER_CONFIG);
+		writel(dest_cnt | TIFM_DMA_TX | TIFM_DMA_EN, sock->addr + SOCK_DMA_CONTROL);
+	} else {
+		writel(TIFM_MMCSD_RXDE, sock->addr + SOCK_MMCSD_BUFFER_CONFIG);
+		writel(dest_cnt | TIFM_DMA_EN, sock->addr + SOCK_DMA_CONTROL);
+	}
+}
 
-	card->status &= 0xfffffff7;
-	card->fifo_status = 0;
+static inline void tifm_sd_set_data_to(struct tifm_dev *sock, unsigned int data_to)
+{
+	if (data_to < 0xffff) {
+		writel((~TIFM_MMCSD_DPE) & readl(sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG),
+		       sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG);
+		writel(data_to, sock->addr + SOCK_MMCSD_DATA_TO);
+	} else {
+		writel(TIFM_MMCSD_DPE | readl(sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG),
+		       sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG);
+		if(data_to > 0x03fffc00) data_to = 0x03fffc00; // maximal value
+		writel(data_to >> 10, sock->addr + SOCK_MMCSD_DATA_TO);
+	}
 }
 
 static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 {
-	struct tifm_sd *card = mmc_priv(mmc);
-	struct tifm_dev *sock = card->dev;
-	struct mmc_host *host = tifm_get_drvdata(sock);
+	struct tifm_sd *host = mmc_priv(mmc);
+	struct tifm_dev *sock = host->dev;
 	unsigned long flags;
 	int sg_count = 0;
 	struct mmc_data *r_data = mrq->cmd->data;
 	char *t_buffer = 0;
 
-	if (r_data && (!mrq->stop || no_dma)) {
+	if (r_data && no_dma) {
 		t_buffer = kmap(r_data->sg->page);
 		if (!t_buffer) {
 			printk(KERN_ERR "tifm_sd: kmap failed\n");
@@ -384,27 +400,35 @@ static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	}
 	
 	spin_lock_irqsave(&sock->lock, flags);
-	if (card->flags & EJECT_EVENT) {
+	if (host->flags & EJECT) {
 		spin_unlock_irqrestore(&sock->lock, flags);
 		goto err_out;
 	}
 
-	if (card->req) {
+	if (host->req) {
 		printk(KERN_ERR "tifm_sd: unfinished request detected\n");
 		spin_unlock_irqrestore(&sock->lock, flags);
 		goto err_out;
 	}
 
 	if (r_data) {
-		if (!mrq->stop || no_dma) {
-			card->buffer = t_buffer + r_data->sg->offset;
-			writel(0x0000, sock->addr + SOCK_MMCSD_BUFFER_CONFIG);
-			writel(0x0c00 | readl(sock->addr + SOCK_MMCSD_INT_ENABLE), sock->addr + SOCK_MMCSD_INT_ENABLE);
-			card->buffer_size = mrq->cmd->data->blocks << mrq->cmd->data->blksz_bits;
-			card->buffer_pos = 0;
+		if (r_data->timeout_clks != host->data_timeout) {
+			tifm_sd_set_data_to(sock, r_data->timeout_clks);
+			host->data_timeout = r_data->timeout_clks;
+		}
+
+		if (no_dma) {
+			host->buffer = t_buffer + r_data->sg->offset;
+			host->buffer_size = mrq->cmd->data->blocks << mrq->cmd->data->blksz_bits;
+
+			writel(TIFM_MMCSD_BUFINT | readl(sock->addr + SOCK_MMCSD_INT_ENABLE),
+			       sock->addr + SOCK_MMCSD_INT_ENABLE);
+			writel(((TIFM_MMCSD_FIFO_SIZE - 1) << 8) | (TIFM_MMCSD_FIFO_SIZE - 1),
+			       sock->addr + SOCK_MMCSD_BUFFER_CONFIG);
+
+			host->buffer_pos = 0;
 			writel(r_data->blocks - 1, sock->addr + SOCK_MMCSD_NUM_BLOCKS);
-			writel((1 << r_data->blksz_bits) - 1, sock->addr + SOCK_MMCSD_BLOCK_LEN);		
-			card->status &= 0xfffff3ff;
+			writel((1 << r_data->blksz_bits) - 1, sock->addr + SOCK_MMCSD_BLOCK_LEN);
 		} else  {
 			sg_count = tifm_map_sg(sock, r_data->sg, r_data->sg_len,
 				       mrq->cmd->flags & MMC_DATA_WRITE
@@ -415,16 +439,15 @@ static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 				goto err_out;
 			}
 
-			tifm_sd_prepare_data(card, mrq->cmd);
+			tifm_sd_prepare_data(host, mrq->cmd);
 		}
 	}
-	card->status = 0;
-	card->fifo_status = 0;
-	card->state = W_RESP;
-	card->req = mrq;
-	queue_delayed_work(sock->wq, &card->abort_handler, card->timeout_jiffies);
-	writel(readl(sock->addr + SOCK_CONTROL) | 0x00000040, sock->addr + SOCK_CONTROL);
-	tifm_sd_exec(card, mrq->cmd);
+
+	host->req = mrq;
+	host->state = CMD;
+	queue_delayed_work(sock->wq, &host->abort_handler, host->timeout_jiffies);
+	writel(TIFM_CTRL_LED | readl(sock->addr + SOCK_CONTROL), sock->addr + SOCK_CONTROL);
+	tifm_sd_exec(host, mrq->cmd);
 	spin_unlock_irqrestore(&sock->lock, flags);
 	return;
 
@@ -437,43 +460,46 @@ err_out:
 			      ? PCI_DMA_TODEVICE : PCI_DMA_FROMDEVICE);
 
 	mrq->cmd->error = MMC_ERR_TIMEOUT;
-	mmc_request_done(host, mrq);
+	mmc_request_done(mmc, mrq);
 }
 
 static void tifm_sd_end_cmd(void *data)
 {
-	struct tifm_sd *card = (struct tifm_sd*)data;
-	struct tifm_dev *sock = card->dev;
-	struct mmc_host *host = tifm_get_drvdata(sock);
+	struct tifm_sd *host = (struct tifm_sd*)data;
+	struct tifm_dev *sock = host->dev;
+	struct mmc_host *mmc = tifm_get_drvdata(sock);
 	struct mmc_request *mrq;
 	int unmap_type = 0;
 	unsigned long flags;
 
 	spin_lock_irqsave(&sock->lock, flags);
-	mrq = card->req;
-	card->req = 0;
+	mrq = host->req;
+	host->req = 0;
+	host->state = IDLE;
 	if (!mrq) {
-		spin_unlock_irqrestore(&sock->lock, flags);
 		printk(KERN_ERR "tifm_sd: no request to complete?\n");
+		spin_unlock_irqrestore(&sock->lock, flags);
 		return;
 	}
 	if (mrq->cmd->data) {
-		 if (card->buffer) {
-			writel(0xfffff3ff & readl(sock->addr + SOCK_MMCSD_INT_ENABLE), sock->addr + SOCK_MMCSD_INT_ENABLE);
+		 if (host->buffer) {
+			writel((~TIFM_MMCSD_BUFINT) & readl(sock->addr + SOCK_MMCSD_INT_ENABLE),
+			       sock->addr + SOCK_MMCSD_INT_ENABLE);
 			unmap_type = 1;
-			mrq->cmd->data->bytes_xfered = card->buffer_pos;
-			card->buffer = 0;
-			card->buffer_pos = 0;
-			card->buffer_size = 0;
+			mrq->cmd->data->bytes_xfered = host->buffer_pos;
+			host->buffer = 0;
+			host->buffer_pos = 0;
+			host->buffer_size = 0;
 		} else {
 			unmap_type = 2;
-			mrq->cmd->data->bytes_xfered = mrq->cmd->data->blocks - readl(sock->addr + SOCK_MMCSD_NUM_BLOCKS) - 1;
+			mrq->cmd->data->bytes_xfered = mrq->cmd->data->blocks
+						       - readl(sock->addr + SOCK_MMCSD_NUM_BLOCKS) - 1;
 			mrq->cmd->data->bytes_xfered <<= mrq->cmd->data->blksz_bits;
-			mrq->cmd->data->bytes_xfered += (1 << mrq->cmd->data->blksz_bits) - readl(sock->addr + SOCK_MMCSD_BLOCK_LEN) + 1;
+			mrq->cmd->data->bytes_xfered += (1 << mrq->cmd->data->blksz_bits)
+							- readl(sock->addr + SOCK_MMCSD_BLOCK_LEN) + 1;
 		}
 	}
-	writel(readl(sock->addr + SOCK_CONTROL) & 0xffffffbf, sock->addr + SOCK_CONTROL);
-
+	writel((~TIFM_CTRL_LED) & readl(sock->addr + SOCK_CONTROL), sock->addr + SOCK_CONTROL);
 	spin_unlock_irqrestore(&sock->lock, flags);
 
 	if (unmap_type == 1)
@@ -482,7 +508,7 @@ static void tifm_sd_end_cmd(void *data)
 		tifm_unmap_sg(sock, mrq->cmd->data->sg, mrq->cmd->data->sg_len,
 			      (mrq->cmd->data->flags & MMC_DATA_WRITE)
 			      ? PCI_DMA_TODEVICE : PCI_DMA_FROMDEVICE);
-	mmc_request_done(host, mrq);
+	mmc_request_done(mmc, mrq);
 }
 
 static void tifm_sd_abort(void *data)
@@ -493,18 +519,20 @@ static void tifm_sd_abort(void *data)
 
 static void tifm_sd_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 {
-	struct tifm_sd *card = mmc_priv(mmc);
-	struct tifm_dev *sock = card->dev;
+	struct tifm_sd *host = mmc_priv(mmc);
+	struct tifm_dev *sock = host->dev;
 	unsigned int clk_div1, clk_div2;
 	unsigned long flags;
 
 	spin_lock_irqsave(&sock->lock, flags);
-	
-	DBG("Setting bus width %d\n", ios->bus_width);
+		
+	DBG("Setting bus width %d, power %d\n", ios->bus_width, ios->power_mode);
 	if (ios->bus_width == MMC_BUS_WIDTH_4) {
-		writel(0x8800 | card->clk_div, sock->addr + SOCK_MMCSD_CONFIG);
+		writel(TIFM_MMCSD_4BBUS | readl(sock->addr + SOCK_MMCSD_CONFIG),
+		       sock->addr + SOCK_MMCSD_CONFIG);
 	} else {
-		writel(0x0800 | card->clk_div, sock->addr + SOCK_MMCSD_CONFIG);
+		writel((~TIFM_MMCSD_4BBUS) & readl(sock->addr + SOCK_MMCSD_CONFIG),
+		       sock->addr + SOCK_MMCSD_CONFIG);
 	}
 
 	if (ios->clock) {
@@ -517,23 +545,36 @@ static void tifm_sd_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 		if ((24000000 / clk_div2) > ios->clock)
 			clk_div2++;
 		if ((20000000 / clk_div1) > (24000000 / clk_div2)) {
-			card->clk_freq = 20000000;
-			card->clk_div = clk_div1;
-			writel(0xfffffeff & readl(sock->addr + SOCK_CONTROL), sock->addr + SOCK_CONTROL);
+			host->clk_freq = 20000000;
+			host->clk_div = clk_div1;
+			writel((~TIFM_CTRL_FAST_CLK) & readl(sock->addr + SOCK_CONTROL),
+			       sock->addr + SOCK_CONTROL);
 		} else {
-			card->clk_freq = 24000000;
-			card->clk_div = clk_div2;
-			writel(0x00000100 | readl(sock->addr + SOCK_CONTROL), sock->addr + SOCK_CONTROL);
+			host->clk_freq = 24000000;
+			host->clk_div = clk_div2;
+			writel(TIFM_CTRL_FAST_CLK | readl(sock->addr + SOCK_CONTROL),
+			       sock->addr + SOCK_CONTROL);
 		}
 	} else {
-		card->clk_div = 0;
+		host->clk_div = 0;
 	}
-	writel(card->clk_div | (0xffc0 & readl(sock->addr + SOCK_MMCSD_CONFIG)),
+	host->clk_div &= TIFM_MMCSD_CLKMASK;
+	writel(host->clk_div | ((~TIFM_MMCSD_CLKMASK) & readl(sock->addr + SOCK_MMCSD_CONFIG)),
 	       sock->addr + SOCK_MMCSD_CONFIG);
-	//DBG("Want clock %d, setting %d\n", ios->clock, card->clk_div ? card->clk_freq / card->clk_div : 0);
 
-	//vdd, bus_mode, chip_select
+	if (ios->bus_mode == MMC_BUSMODE_OPENDRAIN)
+		host->flags |= OPENDRAIN;
+	else
+		host->flags &= ~OPENDRAIN;
+
+	/* chip_select : maybe later */
+	//vdd
 	//power is set before probe / after remove
+	//I believe, power_off when already marked for eject is sufficient to allow removal.
+	if ((host->flags & EJECT) && ios->power_mode == MMC_POWER_OFF) {
+		host->flags |= EJECT_DONE;
+		wake_up_all(&host->can_eject);
+	}
 	
 	spin_unlock_irqrestore(&sock->lock, flags);
 }
@@ -541,14 +582,14 @@ static void tifm_sd_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 static int tifm_sd_ro(struct mmc_host *mmc)
 {
 	int rc;
-	struct tifm_sd *card = mmc_priv(mmc);
-	struct tifm_dev *sock = card->dev;
+	struct tifm_sd *host = mmc_priv(mmc);
+	struct tifm_dev *sock = host->dev;
 	unsigned long flags;
 
 	spin_lock_irqsave(&sock->lock, flags);
 	
-	card->flags |= (0x0200 & readl(sock->addr + SOCK_PRESENT_STATE)) ? CARD_RO : 0;
-	rc = (card->flags & CARD_RO) ? 1 : 0;
+	host->flags |= (CARD_RO & readl(sock->addr + SOCK_PRESENT_STATE));
+	rc = (host->flags & CARD_RO) ? 1 : 0;
 	
 	spin_unlock_irqrestore(&sock->lock, flags);
 	return rc;
@@ -562,25 +603,26 @@ static struct mmc_host_ops tifm_sd_ops = {
 
 static void tifm_sd_register_host(void *data)
 {
-	struct tifm_sd *card = (struct tifm_sd*)data;
-	struct tifm_dev *sock = card->dev;
-	struct mmc_host *host = tifm_get_drvdata(sock);
+	struct tifm_sd *host = (struct tifm_sd*)data;
+	struct tifm_dev *sock = host->dev;
+	struct mmc_host *mmc = tifm_get_drvdata(sock);
 	unsigned long flags;
 
 	spin_lock_irqsave(&sock->lock, flags);
-	card->flags |= HOST_REG;
-	PREPARE_WORK(&card->cmd_handler, tifm_sd_end_cmd, data);
+	host->flags |= HOST_REG;
+	PREPARE_WORK(&host->cmd_handler, tifm_sd_end_cmd, data);
 	spin_unlock_irqrestore(&sock->lock, flags);
-	mmc_add_host(host);
+	DBG("adding host\n");
+	mmc_add_host(mmc);
 }
 
 static int tifm_sd_probe(struct tifm_dev *sock)
 {
 	struct mmc_host *mmc;
-	struct tifm_sd *card;
+	struct tifm_sd *host;
 	int rc = -EIO;
 
-	if (!(0x8 & readl(sock->addr + SOCK_PRESENT_STATE))) {
+	if (!(TIFM_SOCK_STATE_OCCUPIED & readl(sock->addr + SOCK_PRESENT_STATE))) {
 		printk(KERN_WARNING "tifm_sd: card gone, unexpectedly\n");
 		return rc;
 	}
@@ -589,18 +631,19 @@ static int tifm_sd_probe(struct tifm_dev *sock)
 	if (!mmc)
 		return -ENOMEM;
 
-	card = mmc_priv(mmc);
-	card->dev = sock;
-	card->clk_div = 61;
-	init_waitqueue_head(&card->event);
-	INIT_WORK(&card->cmd_handler, tifm_sd_register_host, (void*)card);
-	INIT_WORK(&card->abort_handler, tifm_sd_abort, (void*)card);
+	host = mmc_priv(mmc);
+	host->dev = sock;
+	host->clk_div = 61;
+	init_waitqueue_head(&host->can_eject);
+	INIT_WORK(&host->cmd_handler, tifm_sd_register_host, (void*)host);
+	INIT_WORK(&host->abort_handler, tifm_sd_abort, (void*)host);
 
 	tifm_set_drvdata(sock, mmc);
 	sock->signal_irq = tifm_sd_signal_irq;
 
-	card->clk_freq = 20000000;
-	card->timeout_jiffies = msecs_to_jiffies(2000);
+	host->clk_freq = 20000000;
+	host->timeout_jiffies = msecs_to_jiffies(2000);
+	host->data_timeout = 0;
 
 	mmc->ops = &tifm_sd_ops;
 	mmc->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
@@ -609,14 +652,15 @@ static int tifm_sd_probe(struct tifm_dev *sock)
 	mmc->f_max = 24000000;
 	mmc->max_hw_segs = 1;
 	mmc->max_phys_segs = 1;
-	mmc->max_sectors = 64; //6b hw block counter
+	mmc->max_sectors = 127;
 	mmc->max_seg_size = mmc->max_sectors << 11; //2k maximum hw block length
 
-	writel(0x0000, sock->addr + SOCK_MMCSD_INT_ENABLE);
-	writel(0x0002, sock->addr + SOCK_MMCSD_SYSTEM_CONTROL);
-	writel(0x000b, sock->addr + SOCK_MMCSD_CONFIG);
-/*
-	for(rc = 0; rc < 50; rc++) 
+	writel(0, sock->addr + SOCK_MMCSD_INT_ENABLE);
+	writel(TIFM_MMCSD_RESET, sock->addr + SOCK_MMCSD_SYSTEM_CONTROL);
+	writel(host->clk_div | TIFM_MMCSD_POWER, sock->addr + SOCK_MMCSD_CONFIG);
+
+	for(rc = 0; rc < 50; rc++) {
+		/* Wait for reset ack */
 		if (1 & readl(sock->addr + SOCK_MMCSD_SYSTEM_STATUS)) {
 			rc = 0;
 			break;
@@ -629,57 +673,55 @@ static int tifm_sd_probe(struct tifm_dev *sock)
 		mmc_free_host(mmc);
 		return -ENODEV;
 	}
-*/
-	writel(0x0000, sock->addr + SOCK_MMCSD_NUM_BLOCKS);
-	writel(card->clk_div | 0x0800, sock->addr + SOCK_MMCSD_CONFIG);
-	writel(0x8000, sock->addr + SOCK_MMCSD_BUFFER_CONFIG);
-	writel(0x41e9, sock->addr + SOCK_MMCSD_INT_ENABLE);
-	writel(0x0020 | readl(sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG),
-	       sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG);
-	writel(0x0040, sock->addr + SOCK_MMCSD_COMMAND_TO);
-	writel(0x7fff, sock->addr + SOCK_MMCSD_DATA_TO);
-	writel(0x0080, sock->addr + SOCK_MMCSD_COMMAND);
-	writel(card->clk_div | 0x0800, sock->addr + SOCK_MMCSD_CONFIG);
+
+	writel(0, sock->addr + SOCK_MMCSD_NUM_BLOCKS);
+	writel(host->clk_div | TIFM_MMCSD_POWER, sock->addr + SOCK_MMCSD_CONFIG);
+	writel(TIFM_MMCSD_RXDE, sock->addr + SOCK_MMCSD_BUFFER_CONFIG);
+	writel(TIFM_MMCSD_DATAMASK | TIFM_MMCSD_ERRMASK, sock->addr + SOCK_MMCSD_INT_ENABLE);
+
+	writel(64, sock->addr + SOCK_MMCSD_COMMAND_TO); // command timeout 64 clocks for now
+	writel(TIFM_MMCSD_INAB, sock->addr + SOCK_MMCSD_COMMAND);
+	writel(host->clk_div | TIFM_MMCSD_POWER, sock->addr + SOCK_MMCSD_CONFIG);
 	
-	queue_delayed_work(sock->wq, &card->abort_handler, card->timeout_jiffies);
+	queue_delayed_work(sock->wq, &host->abort_handler, host->timeout_jiffies);
 
 	return 0;
+}
+
+static inline int tifm_sd_host_is_down(struct tifm_dev *sock)
+{
+	struct mmc_host *mmc = tifm_get_drvdata(sock);
+	struct tifm_sd *host = mmc_priv(mmc);
+	unsigned long flags;
+	int rc = 0;
+
+	spin_lock_irqsave(&sock->lock, flags);
+	rc = (host->flags & EJECT_DONE);
+	spin_unlock_irqrestore(&sock->lock, flags);
+	return rc;
 }
 
 static void tifm_sd_remove(struct tifm_dev *sock)
 {
 	struct mmc_host *mmc = tifm_get_drvdata(sock);
-	struct tifm_sd *card = mmc_priv(mmc);
-	struct mmc_data *r_data;
+	struct tifm_sd *host = mmc_priv(mmc);
 	unsigned long flags;
 
 	spin_lock_irqsave(&sock->lock, flags);
-	card->flags |= EJECT_EVENT;
-	cancel_delayed_work(&card->abort_handler);
-	card->state = IDLE;
+	host->flags |= EJECT;
+	if (host->req)
+		queue_work(sock->wq, &host->cmd_handler);
 	spin_unlock_irqrestore(&sock->lock, flags);
-	flush_workqueue(sock->wq);
-	
-	if (card->req) {
-		if (card->req->cmd->data) {
-    			r_data = card->req->cmd->data;
-			if (card->buffer)
-				kunmap(r_data->sg->page);
-			else
-				tifm_unmap_sg(sock, r_data->sg, r_data->sg_len,
-					      (r_data->flags & MMC_DATA_WRITE)
-					      ? PCI_DMA_TODEVICE : PCI_DMA_FROMDEVICE);
-		}
-		card->req->cmd->error = MMC_ERR_TIMEOUT;
-		mmc_request_done(mmc, card->req);
-		msleep(10); //wait for mmc_block to relax (remove when fixed)
-	}
+	wait_event_timeout(host->can_eject, tifm_sd_host_is_down(sock), msecs_to_jiffies(500));
 
-	if (card->flags & HOST_REG)
+	if (host->flags & HOST_REG)
 		mmc_remove_host(mmc);
 
+	/* The meaning of the bit majority in this constant is unknown. */
 	writel(0xfff8 & readl(sock->addr + SOCK_CONTROL), sock->addr + SOCK_CONTROL);
 	writel(0, sock->addr + SOCK_MMCSD_INT_ENABLE);
+	writel(TIFM_FIFO_INT_SETALL, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
+	writel(0, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_SET);
 
 	tifm_set_drvdata(sock, 0);
 	mmc_free_host(mmc);

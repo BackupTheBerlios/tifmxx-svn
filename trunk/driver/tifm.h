@@ -46,8 +46,8 @@ enum {
 	SOCK_MMCSD_COMMAND             = 0x104,
 	SOCK_MMCSD_ARG_LOW             = 0x108,
 	SOCK_MMCSD_ARG_HIGH            = 0x10c,
-	SOCK_MMCSD_CONFIG              = 0x110, 
-	SOCK_MMCSD_STATUS              = 0x114, 
+	SOCK_MMCSD_CONFIG              = 0x110,
+	SOCK_MMCSD_STATUS              = 0x114,
 	SOCK_MMCSD_INT_ENABLE          = 0x118,
 	SOCK_MMCSD_COMMAND_TO          = 0x11c,
 	SOCK_MMCSD_DATA_TO             = 0x120,
@@ -55,8 +55,10 @@ enum {
 	SOCK_MMCSD_BLOCK_LEN           = 0x128,
 	SOCK_MMCSD_NUM_BLOCKS          = 0x12c,
 	SOCK_MMCSD_BUFFER_CONFIG       = 0x130,
+	SOCK_MMCSD_SPI_CONFIG          = 0x134,
 	SOCK_MMCSD_SDIO_MODE_CONFIG    = 0x138,
 	SOCK_MMCSD_RESPONSE            = 0x144,
+	SOCK_MMCSD_SDIO_SR             = 0x164,
 	SOCK_MMCSD_SYSTEM_CONTROL      = 0x168,
 	SOCK_MMCSD_SYSTEM_STATUS       = 0x16c,
 	SOCK_MS_COMMAND                = 0x184,
@@ -64,6 +66,28 @@ enum {
 	SOCK_MS_STATUS                 = 0x18c,
 	SOCK_MS_SYSTEM                 = 0x190,
 	SOCK_FIFO_ACCESS               = 0x200 };
+
+
+#define TIFM_IRQ_ENABLE           0x80000000
+#define TIFM_IRQ_SOCKMASK         0x00000001
+#define TIFM_IRQ_CARDMASK         0x00000100
+#define TIFM_IRQ_FIFOMASK         0x00010000
+#define TIFM_IRQ_SETALL           0xffffffff
+#define TIFM_IRQ_SETALLSOCK       0x0000000f
+
+#define TIFM_CTRL_LED             0x00000040
+#define TIFM_CTRL_FAST_CLK        0x00000100
+
+#define TIFM_SOCK_STATE_OCCUPIED  0x00000008
+#define TIFM_SOCK_STATE_POWERED   0x00000080
+
+#define TIFM_FIFO_ENABLE          0x00000001 /* Meaning of this constant is unverified */
+#define TIFM_FIFO_INT_SETALL      0x0000ffff
+#define TIFM_FIFO_INTMASK         0x00000005 /* Meaning of this constant is unverified */
+
+#define TIFM_DMA_RESET            0x00000002 /* Meaning of this constant is unverified */
+#define TIFM_DMA_TX               0x00008000 /* Meaning of this constant is unverified */
+#define TIFM_DMA_EN               0x00000001 /* Meaning of this constant is unverified */
 
 typedef enum {FM_NULL = 0, FM_XD = 0x01, FM_MS = 0x02, FM_SD = 0x03} tifm_media_id;
 
