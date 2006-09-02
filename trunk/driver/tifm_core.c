@@ -21,7 +21,7 @@
 #include "tifm.h"
 
 #define DRIVER_NAME "tifm_core"
-#define DRIVER_VERSION "0.5"
+#define DRIVER_VERSION "0.6"
 
 static DEFINE_IDR(tifm_adapter_idr);
 static DEFINE_SPINLOCK(tifm_adapter_lock);

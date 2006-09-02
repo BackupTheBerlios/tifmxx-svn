@@ -13,7 +13,7 @@
 #include <linux/interrupt.h>
 
 #define DRIVER_NAME "tifm_7xx1"
-#define DRIVER_VERSION "0.5"
+#define DRIVER_VERSION "0.6"
 
 static void tifm_7xx1_eject(struct tifm_adapter *fm, struct tifm_dev *sock)
 {
@@ -149,10 +149,6 @@ static tifm_media_id tifm_7xx1_toggle_sock_power(char *sock_addr, int is_x2)
 
 	if (!is_x2)
 		writel(readl(sock_addr + SOCK_CONTROL) & (~TIFM_CTRL_LED), sock_addr + SOCK_CONTROL);
-
-	/* 7 stands apparently for 9 - 2 (i.e. set 512b block size) */
-	writel(7, sock_addr + SOCK_FIFO_PAGE_SIZE);
-	writel(TIFM_FIFO_ENABLE, sock_addr + SOCK_FIFO_CONTROL);
 
 	return (readl(sock_addr + SOCK_PRESENT_STATE) >> 4) & 7;
 }
