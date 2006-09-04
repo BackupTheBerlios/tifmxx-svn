@@ -49,6 +49,21 @@ module_param(no_dma, bool, 0644);
 
 #define TIFM_MMCSD_FIFO_SIZE  0x0020
 
+#define TIFM_MMCSD_RSP_R0     0x0000
+#define TIFM_MMCSD_RSP_R1     0x0100
+#define TIFM_MMCSD_RSP_R2     0x0200
+#define TIFM_MMCSD_RSP_R3     0x0300
+#define TIFM_MMCSD_RSP_R4     0x0400
+#define TIFM_MMCSD_RSP_R5     0x0500
+#define TIFM_MMCSD_RSP_R6     0x0600
+
+#define TIFM_MMCSD_RSP_BUSY   0x0800
+
+#define TIFM_MMCSD_CMD_BC     0x0000
+#define TIFM_MMCSD_CMD_BCR    0x1000
+#define TIFM_MMCSD_CMD_AC     0x2000
+#define TIFM_MMCSD_CMD_ADTC   0x3000
+
 typedef enum {
 	IDLE = 0,
 	CMD,    /* main command ended                   */
@@ -128,46 +143,44 @@ static inline int tifm_sd_transfer_data(struct tifm_dev *sock, struct tifm_sd *h
 	return 0;
 }
 
-static inline unsigned int tifm_sd_op_flags(unsigned int cmd_flags)
+static inline unsigned int tifm_sd_op_flags(struct mmc_command *cmd)
 {
 	unsigned int rc = 0;
 
-	switch (cmd_flags & 0x1f) {
+	switch (mmc_resp_type(cmd)) {
 		case MMC_RSP_NONE:
-			rc |= 0x0000;
-			break;
-		case MMC_RSP_R1:
-			rc |= 0x0100;
+			rc |= TIFM_MMCSD_RSP_R0;
 			break;
 		case MMC_RSP_R1B:
-			rc |= 0x0900;
+			rc |= TIFM_MMCSD_RSP_BUSY; // deliberate fall-through
+		case MMC_RSP_R1:
+			rc |= TIFM_MMCSD_RSP_R1;
 			break;
 		case MMC_RSP_R2:
-			rc |= 0x0200;
+			rc |= TIFM_MMCSD_RSP_R2;
 			break;
 		case MMC_RSP_R3:
-			rc |= 0x0300;
+			rc |= TIFM_MMCSD_RSP_R3;
 			break;
-		/* R4, R5 - easy to guess */
 		case MMC_RSP_R6:
-			rc |= 0x0600;
+			rc |= TIFM_MMCSD_RSP_R6;
 			break;
 		default:
 			BUG();
 	}
 
-	switch (cmd_flags & MMC_CMD_MASK) {
+	switch (mmc_cmd_type(cmd)) {
 		case MMC_CMD_BC:
-			rc |= 0x0000;
+			rc |= TIFM_MMCSD_CMD_BC;
 			break;
 		case MMC_CMD_BCR:
-			rc |= 0x1000;
+			rc |= TIFM_MMCSD_CMD_BCR;
 			break;
 		case MMC_CMD_AC:
-			rc |= 0x2000;
+			rc |= TIFM_MMCSD_CMD_AC;
 			break;
 		case MMC_CMD_ADTC:
-			rc |= 0x3000;
+			rc |= TIFM_MMCSD_CMD_ADTC;
 			break;
 		default:
 			BUG();
@@ -178,7 +191,7 @@ static inline unsigned int tifm_sd_op_flags(unsigned int cmd_flags)
 static void tifm_sd_exec(struct tifm_sd *host, struct mmc_command *cmd)
 {
 	struct tifm_dev *sock = host->dev;
-	unsigned int cmd_mask = tifm_sd_op_flags(cmd->flags) | (host->flags & OPENDRAIN);
+	unsigned int cmd_mask = tifm_sd_op_flags(cmd) | (host->flags & OPENDRAIN);
 
 	if (cmd->data && (cmd->data->flags & MMC_DATA_READ))
 		cmd_mask |= TIFM_MMCSD_READ;
@@ -192,14 +205,14 @@ static void tifm_sd_exec(struct tifm_sd *host, struct mmc_command *cmd)
 
 static inline void tifm_sd_fetch_resp(struct mmc_command *cmd, struct tifm_dev *sock)
 {
-	cmd->resp[0] = readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x1c); cmd->resp[0] <<= 16;
-	cmd->resp[0] |= readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x18);
-	cmd->resp[1] = readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x14); cmd->resp[1] <<= 16;
-	cmd->resp[1] |= readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x10);
-	cmd->resp[2] = readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x0c); cmd->resp[2] <<= 16;
-	cmd->resp[2] |= readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x08);
-	cmd->resp[3] = readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x04); cmd->resp[3] <<= 16;
-	cmd->resp[3] |= readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x00);
+	cmd->resp[0] = (readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x1c) << 16)
+		       | readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x18);
+	cmd->resp[1] = (readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x14) << 16)
+		       | readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x10);
+	cmd->resp[2] = (readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x0c) << 16)
+		       | readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x08);
+	cmd->resp[3] = (readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x04) << 16)
+		       | readl(sock->addr + SOCK_MMCSD_RESPONSE + 0x00);
 }
 
 static inline void tifm_sd_process_cmd(struct tifm_dev *sock, struct tifm_sd *host, unsigned int host_status)
@@ -368,17 +381,17 @@ static inline void tifm_sd_prepare_data(struct tifm_sd *card, struct mmc_command
 	}
 }
 
-static inline void tifm_sd_set_data_to(struct tifm_dev *sock, unsigned int data_to)
+static inline void tifm_sd_set_data_timeout(struct tifm_dev *sock, unsigned int data_timeout)
 {
-	if (data_to < 0xffff) {
+	if (data_timeout < 0xffff) {
 		writel((~TIFM_MMCSD_DPE) & readl(sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG),
 		       sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG);
-		writel(data_to, sock->addr + SOCK_MMCSD_DATA_TO);
+		writel(data_timeout, sock->addr + SOCK_MMCSD_DATA_TO);
 	} else {
 		writel(TIFM_MMCSD_DPE | readl(sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG),
 		       sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG);
-		if(data_to > 0x03fffc00) data_to = 0x03fffc00; // maximal value
-		writel(data_to >> 10, sock->addr + SOCK_MMCSD_DATA_TO);
+		if(data_timeout > 0x03fffc00) data_timeout = 0x03fffc00; // maximal value
+		writel(data_timeout >> 10, sock->addr + SOCK_MMCSD_DATA_TO);
 	}
 }
 
@@ -405,7 +418,7 @@ static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 
 	if (r_data) {
 		if (r_data->timeout_clks != host->data_timeout) {
-			tifm_sd_set_data_to(sock, r_data->timeout_clks);
+			tifm_sd_set_data_timeout(sock, r_data->timeout_clks);
 			host->data_timeout = r_data->timeout_clks;
 		}
 
@@ -501,7 +514,7 @@ static void tifm_sd_request_nodma(struct mmc_host *mmc, struct mmc_request *mrq)
 
 	if (r_data) {
 		if (r_data->timeout_clks != host->data_timeout) {
-			tifm_sd_set_data_to(sock, r_data->timeout_clks);
+			tifm_sd_set_data_timeout(sock, r_data->timeout_clks);
 			host->data_timeout = r_data->timeout_clks;
 		}
 
@@ -555,7 +568,11 @@ static void tifm_sd_end_cmd_nodma(void *data)
 		writel((~TIFM_MMCSD_BUFINT) & readl(sock->addr + SOCK_MMCSD_INT_ENABLE),
 		       sock->addr + SOCK_MMCSD_INT_ENABLE);
 
-		mrq->cmd->data->bytes_xfered = host->buffer_pos;
+		mrq->cmd->data->bytes_xfered = mrq->cmd->data->blocks
+					       - readl(sock->addr + SOCK_MMCSD_NUM_BLOCKS) - 1;
+		mrq->cmd->data->bytes_xfered <<= mrq->cmd->data->blksz_bits;
+		mrq->cmd->data->bytes_xfered += (1 << mrq->cmd->data->blksz_bits)
+						- readl(sock->addr + SOCK_MMCSD_BLOCK_LEN) + 1;
 		host->buffer = 0;
 		host->buffer_pos = 0;
 		host->buffer_size = 0;
@@ -700,7 +717,7 @@ static int tifm_sd_probe(struct tifm_dev *sock)
 	sock->signal_irq = tifm_sd_signal_irq;
 
 	host->clk_freq = 20000000;
-	host->timeout_jiffies = msecs_to_jiffies(2000);
+	host->timeout_jiffies = msecs_to_jiffies(1000);
 	host->data_timeout = 0;
 
 	tifm_sd_ops.request = no_dma ? tifm_sd_request_nodma : tifm_sd_request;
@@ -771,7 +788,7 @@ static void tifm_sd_remove(struct tifm_dev *sock)
 	if (host->req)
 		queue_work(sock->wq, &host->cmd_handler);
 	spin_unlock_irqrestore(&sock->lock, flags);
-	wait_event_timeout(host->can_eject, tifm_sd_host_is_down(sock), msecs_to_jiffies(500));
+	wait_event_timeout(host->can_eject, tifm_sd_host_is_down(sock), host->timeout_jiffies);
 
 	if (host->flags & HOST_REG)
 		mmc_remove_host(mmc);
