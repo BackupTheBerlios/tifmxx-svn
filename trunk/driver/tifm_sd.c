@@ -19,7 +19,9 @@
 #define DRIVER_VERSION "0.6"
 
 static int no_dma = 0;
+static int fixed_timeout = 0;
 module_param(no_dma, bool, 0644);
+module_param(fixed_timeout, bool, 0644);
 
 /* Constants here are mostly from OMAP5912 datasheet */
 #define TIFM_MMCSD_RESET      0x0002
@@ -100,6 +102,7 @@ struct tifm_sd {
 	struct work_struct    abort_handler;
 	wait_queue_head_t     can_eject;
 
+	size_t                written_blocks;
 	char                  *buffer;
 	size_t                buffer_size; 
 	size_t                buffer_pos;
@@ -228,8 +231,6 @@ change_state:
 				tifm_sd_fetch_resp(cmd, sock);
 				if (cmd->data) {
 					host->state = BRS;
-					if (cmd->data->flags & MMC_DATA_WRITE)
-						host->flags |= CARD_BUSY;
 				} else
 					host->state = READY;
 				goto change_state;
@@ -263,7 +264,8 @@ change_state:
 			}
 			break;
 		case CARD:
-			if (!(host->flags & CARD_BUSY)) {
+			if (!(host->flags & CARD_BUSY)
+			    && (host->written_blocks == cmd->data->blocks)) {
 				host->state = host->buffer ? READY : FIFO;
 				goto change_state;
 			}
@@ -341,8 +343,10 @@ static unsigned int tifm_sd_signal_irq(struct tifm_dev *sock, unsigned int sock_
 
 		if (host_status & TIFM_MMCSD_CB)
 			host->flags |= CARD_BUSY;
-		if (host_status & TIFM_MMCSD_EOFB)
+		if ((host_status & TIFM_MMCSD_EOFB) && (host->flags & CARD_BUSY)) { 
+			host->written_blocks++;
 			host->flags &= ~CARD_BUSY;
+		}
         }
 
 	if (host->req)
@@ -383,6 +387,8 @@ static inline void tifm_sd_prepare_data(struct tifm_sd *card, struct mmc_command
 
 static inline void tifm_sd_set_data_timeout(struct tifm_dev *sock, unsigned int data_timeout)
 {
+	if (fixed_timeout)
+		return;
 	if (data_timeout < 0xffff) {
 		writel((~TIFM_MMCSD_DPE) & readl(sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG),
 		       sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG);
@@ -431,6 +437,8 @@ static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 			goto err_out;
 		}
 
+		host->written_blocks = 0;
+		host->flags &= ~CARD_BUSY;
 		tifm_sd_prepare_data(host, mrq->cmd);
 	}
 
@@ -470,11 +478,15 @@ static void tifm_sd_end_cmd(void *data)
 		return;
 	}
 	if (mrq->cmd->data) {
-		mrq->cmd->data->bytes_xfered = mrq->cmd->data->blocks
-					       - readl(sock->addr + SOCK_MMCSD_NUM_BLOCKS) - 1;
-		mrq->cmd->data->bytes_xfered <<= mrq->cmd->data->blksz_bits;
-		mrq->cmd->data->bytes_xfered += (1 << mrq->cmd->data->blksz_bits)
-						- readl(sock->addr + SOCK_MMCSD_BLOCK_LEN) + 1;
+		if (mrq->cmd->data->flags & MMC_DATA_WRITE) {
+			mrq->cmd->data->bytes_xfered = host->written_blocks << mrq->cmd->data->blksz_bits;
+		} else {
+			mrq->cmd->data->bytes_xfered = mrq->cmd->data->blocks
+						       - readl(sock->addr + SOCK_MMCSD_NUM_BLOCKS) - 1;
+			mrq->cmd->data->bytes_xfered <<= mrq->cmd->data->blksz_bits;
+			mrq->cmd->data->bytes_xfered += (1 << mrq->cmd->data->blksz_bits)
+							- readl(sock->addr + SOCK_MMCSD_BLOCK_LEN) + 1;
+		}
 		tifm_unmap_sg(sock, mrq->cmd->data->sg, mrq->cmd->data->sg_len,
 		      (mrq->cmd->data->flags & MMC_DATA_WRITE)
 		      ? PCI_DMA_TODEVICE : PCI_DMA_FROMDEVICE);
@@ -526,6 +538,8 @@ static void tifm_sd_request_nodma(struct mmc_host *mmc, struct mmc_request *mrq)
 		writel(((TIFM_MMCSD_FIFO_SIZE - 1) << 8) | (TIFM_MMCSD_FIFO_SIZE - 1),
 		       sock->addr + SOCK_MMCSD_BUFFER_CONFIG);
 
+		host->written_blocks = 0;
+		host->flags &= ~CARD_BUSY;
 		host->buffer_pos = 0;
 		writel(r_data->blocks - 1, sock->addr + SOCK_MMCSD_NUM_BLOCKS);
 		writel((1 << r_data->blksz_bits) - 1, sock->addr + SOCK_MMCSD_BLOCK_LEN); 
@@ -568,11 +582,15 @@ static void tifm_sd_end_cmd_nodma(void *data)
 		writel((~TIFM_MMCSD_BUFINT) & readl(sock->addr + SOCK_MMCSD_INT_ENABLE),
 		       sock->addr + SOCK_MMCSD_INT_ENABLE);
 
-		mrq->cmd->data->bytes_xfered = mrq->cmd->data->blocks
-					       - readl(sock->addr + SOCK_MMCSD_NUM_BLOCKS) - 1;
-		mrq->cmd->data->bytes_xfered <<= mrq->cmd->data->blksz_bits;
-		mrq->cmd->data->bytes_xfered += (1 << mrq->cmd->data->blksz_bits)
-						- readl(sock->addr + SOCK_MMCSD_BLOCK_LEN) + 1;
+		if (mrq->cmd->data->flags & MMC_DATA_WRITE) {
+			mrq->cmd->data->bytes_xfered = host->written_blocks << mrq->cmd->data->blksz_bits;
+		} else {
+			mrq->cmd->data->bytes_xfered = mrq->cmd->data->blocks
+						       - readl(sock->addr + SOCK_MMCSD_NUM_BLOCKS) - 1;
+			mrq->cmd->data->bytes_xfered <<= mrq->cmd->data->blksz_bits;
+			mrq->cmd->data->bytes_xfered += (1 << mrq->cmd->data->blksz_bits)
+							- readl(sock->addr + SOCK_MMCSD_BLOCK_LEN) + 1;
+		}
 		host->buffer = 0;
 		host->buffer_pos = 0;
 		host->buffer_size = 0;
