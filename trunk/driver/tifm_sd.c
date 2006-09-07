@@ -95,7 +95,6 @@ struct tifm_sd {
 	unsigned int        clk_freq;
 	unsigned int        clk_div;
 	unsigned long       timeout_jiffies; // software timeout - 2 sec
-	unsigned int        data_timeout;    // hardware data timeout in clocks
 
 	struct mmc_request    *req;
 	struct work_struct    cmd_handler;
@@ -385,10 +384,17 @@ static inline void tifm_sd_prepare_data(struct tifm_sd *card, struct mmc_command
 	}
 }
 
-static inline void tifm_sd_set_data_timeout(struct tifm_dev *sock, unsigned int data_timeout)
+static inline void tifm_sd_set_data_timeout(struct tifm_sd *host, struct mmc_data *data)
 {
+	struct tifm_dev *sock = host->dev;
+	unsigned int data_timeout = data->timeout_clks;
+
 	if (fixed_timeout)
 		return;
+
+	data_timeout += data->timeout_ns / ((1000000000 / host->clk_freq) * host->clk_div);
+	data_timeout *= 10; // call it fudge factor for now	
+	
 	if (data_timeout < 0xffff) {
 		writel((~TIFM_MMCSD_DPE) & readl(sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG),
 		       sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG);
@@ -396,8 +402,9 @@ static inline void tifm_sd_set_data_timeout(struct tifm_dev *sock, unsigned int 
 	} else {
 		writel(TIFM_MMCSD_DPE | readl(sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG),
 		       sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG);
-		if(data_timeout > 0x03fffc00) data_timeout = 0x03fffc00; // maximal value
-		writel(data_timeout >> 10, sock->addr + SOCK_MMCSD_DATA_TO);
+		data_timeout = (data_timeout >> 10) + 1;
+		if(data_timeout > 0xffff) data_timeout = 0; // set to unlimited
+		writel(data_timeout, sock->addr + SOCK_MMCSD_DATA_TO);
 	}
 }
 
@@ -423,10 +430,7 @@ static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	}
 
 	if (r_data) {
-		if (r_data->timeout_clks != host->data_timeout) {
-			tifm_sd_set_data_timeout(sock, r_data->timeout_clks);
-			host->data_timeout = r_data->timeout_clks;
-		}
+		tifm_sd_set_data_timeout(host, r_data);
 
 		sg_count = tifm_map_sg(sock, r_data->sg, r_data->sg_len,
 				       mrq->cmd->flags & MMC_DATA_WRITE
@@ -525,10 +529,7 @@ static void tifm_sd_request_nodma(struct mmc_host *mmc, struct mmc_request *mrq)
 	}
 
 	if (r_data) {
-		if (r_data->timeout_clks != host->data_timeout) {
-			tifm_sd_set_data_timeout(sock, r_data->timeout_clks);
-			host->data_timeout = r_data->timeout_clks;
-		}
+		tifm_sd_set_data_timeout(host, r_data);
 
 		host->buffer = t_buffer + r_data->sg->offset;
 		host->buffer_size = mrq->cmd->data->blocks << mrq->cmd->data->blksz_bits;
@@ -736,7 +737,6 @@ static int tifm_sd_probe(struct tifm_dev *sock)
 
 	host->clk_freq = 20000000;
 	host->timeout_jiffies = msecs_to_jiffies(1000);
-	host->data_timeout = 0;
 
 	tifm_sd_ops.request = no_dma ? tifm_sd_request_nodma : tifm_sd_request;
 	mmc->ops = &tifm_sd_ops;
