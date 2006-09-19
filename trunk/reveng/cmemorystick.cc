@@ -1,7 +1,15 @@
 #include "cmemorystick.h"
 
+char
+CFlash::sub1FC40(short arg_1)
+{
+	int rv;
+	rv = read32(base_addr + 0x200 + (arg_1 & 0xfffc));
+	return ((char*)&rv)[arg_1 & 3];
+}
+
 bool
-CMemoryStick::ClearStatus(int *status_var)
+ClearStatus(int *status_var)
 {
 	*status_var = 0;
 	return 1;
@@ -84,10 +92,7 @@ CMemoryStick::sub21DA0()
 	{
 		((int*)lvar_x38)[cnt] = read32(base_addr + 0x188);
 	}
-	((int*)var_x0e3)[0] = ((int*)lvar_x38)[0];
-	((int*)var_x0e3)[2] = ((int*)lvar_x38)[2];
-	((int*)var_x0e3)[4] = ((int*)lvar_x38)[4];
-	((int*)var_x0e3)[6] = ((int*)lvar_x38)[6];
+	memcpy((char*)&ms_regs, lvar_x38, 32);
 	return 0;
 }
 
@@ -146,9 +151,9 @@ CMemoryStick::InitializeCard()
 	if((rc = sub22370(0x1f001f00))) return rc;
 	if((rc = sub21DA0())) return rc;
 	muiMediaID = 0x12; var_x029 = 0x12;
-	if(var_x0e3[4] & 1) return 0;
-	if(var_x0e3[6]) return 0;
-	if(var_x0e3[7] > 3) return 0;
+	if(ms_regs.status.type & 1) return 0;
+	if(ms_regs.status.category) return 0;
+	if(ms_regs.status.class > 3) return 0;
 	muiMediaID = 0x22; // MSPro device
 	return 0;
 }

@@ -1,3 +1,4 @@
+EXTRA_CFLAGS = -DDEBUG
 obj-m	    += tifm_core.o tifm_7xx1.o tifm_sd.o
 
 KERNELDIR ?= /lib/modules/$(shell uname -r)/build
