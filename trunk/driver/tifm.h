@@ -91,7 +91,8 @@ struct tifm_dev {
 	char                    wq_name[KOBJ_NAME_LEN];
 	struct workqueue_struct *wq;
 
-	unsigned int            (*signal_irq)(struct tifm_dev *sock, unsigned int sock_irq_status);
+	unsigned int            (*signal_irq)(struct tifm_dev *sock,
+					      unsigned int sock_irq_status);
 
 	struct tifm_driver      *drv;
 	struct device           dev;
