@@ -368,3 +368,509 @@ CMS::MediaModel()
 	SerialNumber = (sub1FC40(0x1b5) << 16) | (sub1FC40(0x1b6) << 8) | sub1FC40(0x1b7);
 	return 0;
 }
+
+char
+CMS::EraseBlock(short block_address)
+{
+	char rc = 0;
+
+	regs.param.block_address[2] = block_address & 0xff;
+	regs.param.block_address[1] = (block_address >> 8) & 0xff;
+	regs.param.block_address[0] = 0;
+	regs.param.cp = 0x20;
+	regs.param.system = var_x104 ? 0x80 : 0x88;
+	if(WriteRegisters()) return 0x81;
+	write32(base_addr + 0x190, 0x2707 | var_x104);
+	write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+	write32(base_addr + 0x188, 0x0099);
+	write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+	write32(base_addr + 0x188, 0);
+	int t_val = read32(base_addr + 0x190);
+	KeClearEvent(&ms_event_x0c8);
+	KeSynchronizeExecution(&CMemoryStick::ClearStatus, &dwMS_STATUS, card_int);
+	write32(base_addr + 0x190, (t_val & 0xfffeffff) | 0x0800);
+	write32(base_addr + 0x184, 0xe001);
+	rc = WaitForRDY();
+	write32(base_addr + 0x190, 0xfffeffff & read32(base_addr + 0x190));
+	if(rc || WaitForMSINT() || sub21DA0()) return 0x81;
+	if(regs.status.interrupt != 1) return 0x81; // no ack
+	if(!(regs.status.interrupt & 0x80)) return 0x81; // proc error
+	if(block_address >= 0x2000) return 0;
+	
+	this->off_x4172[(block_address >> 3)] &= ~((block_address >> 3) << (block_address & 7));
+	return 0;
+}
+
+char
+CMS::sub23BA0(short *arg_1, char arg_2)
+{
+	char lvar_r11 = arg_2;
+	short lvar_r12 = 0;
+
+	do
+	{
+		if(-1 != (lvar_r9 = var_x11e[lvar_r11]))
+		{
+			lvar_r10 = lvar_r11 << 9;
+			lvar_r8 = lvar_r10 + 0x200;
+			lvar_bx = lvar_r9 + 1 >=  lvar_r8 ? lvar_r8 : lvar_r9 + 1;
+			do
+			{
+				if(lvar_bx < 0x2000)
+				{
+					lvar_dl = this->off_x4172[lvar_bx >> 3] & (1 << (lvar_bx & 7));
+					if(!lvar_dl)
+					{
+						if(lvar_bx != lvar_r9)
+						{
+							var_x11e[lvar_r11] = lvar_bx;
+							EraseBlock(lvar_bx);
+							return 0;
+						}
+						else break;
+					}
+				}
+				if(lvar_bx == lvar_r9) break;
+				lvar_bx++;
+				if(lvar_bx < lvar_r8) continue;
+				lvar_bx = lvar_r10;
+			}while(1);
+
+		}
+		lvar_r11++;
+		lvar_r11 = lvar_r11 >= bySegments ? lvar_r12 : lvar_r11;
+		*arg_1 = var_x11e[lvar_r11];
+
+	}while(lvar_r11 != arg_2)
+	return 0x84;
+}
+
+char
+CMS::sub23CC0(short arg_1)
+{
+	char rc;
+
+	if(arg_1 != FFPhyBlock) return 0;
+	if((rc = sub23BA0(&lvar_x38, 0))) return rc;
+	FFPhyBlock = lvar_x38;
+	for(short cnt = 0; cnt < mwUserBlocks; cnt++)
+	{
+		lvar_cx = cnt < 0x2000 ? var_x172[cnt] ? 0xffff;
+		if(lvar_cx == arg_1 || cnt < 0x2000) var_x172[cnt] = FFPhyBlock;
+	}
+	return 0;
+}
+
+char
+CMS::WritePage(short arg_1, short block_address, char arg_3, char arg_4, char arg_5)
+{
+	char rc;
+
+	if(block_address == boot_blocks[0] || block_address == boot_blocks[1]) return 0x85;
+	if(arg_4 & 0x80)
+	{
+		regs.param.cp = 0x20;
+		regs.param.system = var_x104 ? 0x80 : 0x88;
+	}
+	if(arg_4 & 1)
+	{
+		regs.param.cp = 0;
+		regs.param.system = var_x104 ? 0x80 : 0x88;
+	}
+	if(!(arg_4 & 4))
+	{
+		regs.extra_data.overwrite_flag = 0xff;
+		regs.extra_data.management_flag = 0xff;
+		regs.extra_data.logical_address = cpu_to_be16(arg_1);
+		regs.param.block_address[2] = block_address & 0xff;
+		regs.param.block_address[1] = (block_address >> 8) & 0xff;
+		regs.param.block_address[0] = 0;
+		regs.param.page_address = arg_3;
+		if(vara_7)
+		{
+			if((rc = GetInt())) return rc;
+			//print ...
+		}
+		if((rc = WriteRegisters())) return rc;
+		write32(base_addr + 0x190, 0x2707 | var_x104);
+		write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+		write32(base_addr + 0x188, 0x0055);
+		write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+		write32(base_addr + 0x188, 0);
+		int t_val = read32(base_addr + 0x190);
+		KeClearEvent(&ms_event_x0c8);
+		KeSynchronizeExecution(&CMemoryStick::ClearStatus, &dwMS_STATUS, card_int);
+		write32(base_addr + 0x190, (t_val & 0xfffeffff) | 0x0800);
+		write32(base_addr + 0x184, 0xe001);
+		rc = WaitForRDY();
+		write32(base_addr + 0x190, 0xfffeffff & read32(base_addr + 0x190));
+		if(rc) return 0x81;
+		if((rc = WaitForMSINT())) return rc;
+	}
+	else
+	{
+		if((rc = WaitForMSINT())) return rc;
+	}
+	
+	if((rc = GetInt())) return rc;
+	if(1 & regs.status.interrupt) return 0x49; // no ack
+	if(0x40 & regs.status.interrupt) return 0x44; // int error
+	if(!arg_5) return 0;
+	write32(base_addr + 0x190, 0x10100 | (read32(base_addr + 0x190) & 0xffffefff));
+	if((rc = sub219F0(0x0d, 0x200))) return 0x81;
+	if(!(arg_4 & 8) & !(arg_4 & 0x20)) return 0;
+	if((rc = WaitForMSINT())) return rc;
+	if(arg_4)
+	{
+		if((rc = Cmd(0x33, 1, 0, 0))) return rc;
+	}
+	for(int cnt = 0; cnt < 1000; cnt++)
+	{
+		if((rc = GetInt())) return rc;
+		if(regs.status.interrupt & 0x80) return 0;
+	}
+	return 0x4f;
+}
+
+char
+CMS::CopyPages(short arg_1, short *arg_2, char arg_3, char arg_4, short arg_5)
+{
+	char rc;
+	if(var_x0e1 == 0)
+	{
+		var_x140 = *arg_2;
+		var_x142 = arg_1;
+		if(*arg_2 != var_x144 && byBlockSize > 0) memset(var_x148, 0, byBlockSize);
+		var_x144 = -1;
+		if(FFPhyBlock == *arg_2 || var_148[arg_3] == 0)
+		{
+			var_x0e1 = 1;
+			int lvar_ax = 0x1ed;
+			for(int cnt = 0; cnt < bySegments; cnt++)
+			{
+				if(arg_1 <= lvar_ax)
+				{
+					if((rc = sub23BA0(&var_x140, cnt))) return rc;
+					break;
+				}
+				lvar_ax += 0x1f0;
+			}
+			if(var_x140 < 0x2000)
+			{
+				bad_blocks[var_x140 >> 3] |= 1 << (var_x140 & 7);
+			}
+			if(byBlockSize > 0)
+			{
+				memset(var_x148, 1, byBlockSize);
+			}
+			if(var_x146 != -1) EraseBlock(var_x146);
+			var_x146 = -1;
+		}
+		var_x140 = *arg_2;
+		*arg_2 = var_x140;
+		var_x144 = var_x140;
+	}
+	if(var_x0e1 == 1)
+	{
+		var_x168 = arg_3;
+		var_x16a = byBlockSize;
+		var_x146 = *arg_2;
+		for(int cnt = 0; cnt < arg_3; cnt++)
+		{
+			if(0x81 == (rc = ReadPage(*arg_2, cnt, 0x20, 0))) break;
+			if((rc = WritePage(arg_1, var_x140, cnt, 0x20, 0)))
+			{
+				rc = 0x46;
+				break;
+			}
+		}
+		if(cnt == arg_3) rc = 0x45;
+		if(arg_3) memset(&var_x148, 0, arg_3);
+		var_x16a = byBlockSize > var_x168 + arg_5 ? byBlockSize : var_x168 + arg_5;
+		if(rc == 0x45 || rc == 0) var_x0e1 = 2;
+		
+	}
+	if(var_x0e1 == 3)
+	{
+		if(*arg_2 != var_x144) return 0x52;
+		if(arg_3 != var_x16c + 1) return 0x52;
+		var_x168 = arg_3;
+		var_x16a = arg_5 + arg_3 < byBlockSize ? byBlockSize : arg_5 + arg_3;
+		var_x0e1 = 2;
+		rc = 0;
+	}
+	if(var_x0e1 == 2)
+	{
+		char lvar_cl = !arg_5 || !arg_3 ? 4 : 1;
+		if(arg_3 == byBlockSize - 1 ||  
+	}
+	24699:
+	
+}
+
+char
+CMS::CloserWrite()
+{
+	if(var_x0e1 != 3)
+	{
+		vara_6 = 0;
+		return 0;
+	}
+
+	int lvar_x40;
+	vara_6 = 1;
+	var_x0e1 = 4;
+	char rc = CopyPages(0, &lvar_x40, 0, 0, 0); 
+	vara_6 = 0;
+	return rc;
+}
+
+char
+CMS::MakeLUT()
+{
+	char rc; 
+
+	if(var_x16e >= mwPhyBlocks)
+	{
+		var_x170 = 1;
+		return 0;
+	}
+	if(var_x16e < 0x2000 || bad_blocks[var_x16e >> 3] & (1 << (var_x16e & 7)))
+	{
+		write16(base_addr + 0x24, 1);
+		write16(base_addr + 0x10, 0x100);
+		rc = ReadPage(var_x16e, 0, 0x20, 1);
+		if(vara_4) return 0x86;
+		if(rc)
+		{
+			write32(base_addr + 0x190, var_x104 | 0x2707);
+			write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+			write32(base_addr + 0x188, 0x003c);
+			write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+			write32(base_addr + 0x188, 0);
+			int t_val = read32(base_addr + 0x190);
+			KeClearEvent(&ms_event_x0c8);
+			KeSynchronizeExecution(ClearStatus, &dwMS_STATUS, card_int);
+			write32(base_addr + 0x190, (t_val & 0xfffeffff) | 0x0800);
+			write32(base_addr + 0x184, 0xe001);
+			rc = WaitForRDY();
+			write32(base_addr + 0x190, 0xfffeffff & read32(base_addr + 0x190));
+			if(!rc) sub21DA0();
+			varx_x104 = 0x4010;
+			sub22370(0x1f001f00);
+		}
+		else
+		{
+			sub21DA0();
+			if((ms_regs.extra_data.overwrite_flag | 0x1f) != 0xff)
+			{
+				lvar_si = (ms_regs.extra_data.overwrite_flag >> 5) & 3
+				lvar_r13 = ms_regs.extra_data.overwrite_flag >> 7
+				if(!(rc = WriteRegisters()))
+				{
+					write32(base_addr + 0x190, var_x104 | 0x2707);
+					write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+					write32(base_addr + 0x188, 0x003c);
+					write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+					write32(base_addr + 0x188, 0);
+					int t_val = read32(base_addr + 0x190);
+					KeClearEvent(&ms_event_x0c8);
+					KeSynchronizeExecution(ClearStatus, &dwMS_STATUS, card_int);
+					write32(base_addr + 0x190, (t_val & 0xfffeffff) | 0x0800);
+					write32(base_addr + 0x184, 0xe001);
+					rc = WaitForRDY();
+					write32(base_addr + 0x190, 0xfffeffff & read32(base_addr + 0x190));
+					if(!rc) sub21DA0();
+				}
+				varx_x104 = 0x4010;
+				sub22370(0x1f001f00);
+				lvar_r12 = 0xff;
+			}
+		}
+		if(lvar_r13 || lvar_si != 3 || !lvar_r12)
+		{
+			lvar_x28 = logical_address[1] + (logical_address[0] << 8);
+			if(lvar_x28 == 0xffff)
+			{
+				if(var_x11e[var_x16e >> 9] == 0xffff) var_x11e[var_x16e >> 9] = var_x16e; 
+			}
+			else
+			{
+				if(lvar_x28 < 0x2000)
+				{
+					if(var_x172[lvar_x28] != 0xffff)
+					{
+						lvar_dx = var_x172[lvar_x28];
+						if(ms_regs.extra_data.overwrite_flag & 0x10) var_x172[lvar_x28] = var_x16e;
+						else
+						{
+							if(var_x16e <= lvar_dx) lvar_dx = var_x16e;
+							else var_x172[lvarx_28] = var_x16e; 
+						}
+						if((rc = EraseBlock(lvar_dx))) return rc;
+					}
+					else var_x172[lvar_x28] = var_x16e;
+				}
+				if(var_x16e < 0x2000) bad_blocks[var_x16e >> 3] |=  1 << (var_x16e & 3);
+			}
+		}
+		else
+		{
+			if(var_x16e < 0x2000) bad_blocks[var_x16e >> 3] |=  1 << (var_x16e & 3);
+		}
+	}
+
+	if(var_x16e + 1 != mwPhyBlocks) return 0;
+	int cnt;
+	for(cnt = 0; cnt < bySegments; cnt++)
+	{
+		FFPhyBlock = var_x11e[cnt];
+		if(FFPhyBlock != 0xffff) break;
+	}
+	if(FFPhyBlock == 0xffff || cnt == bySegments) return 0x84;
+	for(cnt = 0; cnt < mwUserBlocks; cnt++)
+	{
+		if(cnt < 0x2000 && var_x172[cnt] == 0xffff)
+		{
+			var_x172[cnt] = FFPhyBlock;
+		}
+	}
+	if(FFPhyBlock < 0x2000) bad_blocks[FFPhyBlock >> 3] |= 1 << (FFPhyBlock & 7);
+	var_x170 = 1;
+	var_x16e = 0;
+	return 0;
+}
+
+char
+CMS::GetCHS()
+{
+	write16(base_addr + 0x24, 1);
+	write16(base_addr + 0x10, 0x100);
+	char rc = ReadPage(boot_blocks[0], 2, 0x22, 1);
+	sub21DA0();
+	if(rc) return rc;
+	mwHeadCount = sub1FD00(0x83);
+	mwSectorsPerTrack = sub1FD00(0x86);
+	mwCylinders = (mwUserBlocks * byBlockSize) / (mwHeadCount * mwSectorsPerTrack);
+	return 0;  
+}
+
+char
+CMS::InitializeLUT()
+{
+	memset(var_x172, 0xff, 0x4000);
+	memset(bad_blocks, 0, 0x400);
+	memset(var_x11e, 0xff, 0x20);
+	var_x170 = 0;
+	write16(base_addr + 0x24, 1);
+	write16(base_addr + 0x10, 0x100);
+	if(ReadPage(boot_blocks[0], 1, 0x22, 1) || sub21DA0()) return 0xff;
+	//defective blocks:
+	for(int cnt = 0;  cnt < 0x200; cnt++)
+	{
+		lvar_x18 = be_to_cpu16(sub1FD00(cnt));
+		if(lvar_x18 == 0xffff) break;
+		if(mwPhyBlocks >= lvar_x18 && 0x2000 > lvar_x18)
+		{
+			bad_blocks[lvar_x18 >> 3] |= 1 << (lvar_x18 & 7);
+		}
+	}
+	if(boot_blocks[0] != 0xffff && boot_blocks[0] < 0x2000)
+	{
+		bad_blocks[boot_blocks[0] >> 3] |= 1 << (boot_blocks[0] & 7);
+	}
+	if(boot_blocks[1] != 0xffff && boot_blocks[1] < 0x2000)
+	{
+		bad_blocks[boot_blocks[1] >> 3] |= 1 << (boot_blocks[1] & 7);
+	}
+	return 0;
+}
+
+char
+CMS::SwitchToParallelIF()
+{
+	char rc;
+	var_x104 = 0x4010;
+	ms_regs.param.system = 0x88;
+	rc = WriteRegisters();
+	ms_regs.param.system = 0x88;
+	rc = WriteRegisters();
+	if(rc)
+	{
+		// parallel mode
+		write16(base_addr + 0x4, 0x100 | read16(base_addr + 0x4));
+		var_x104 = 0;
+		var_x029 = 0x80;
+	}
+	else
+	{
+		// serial mode
+		var_x104 = 0x4010;
+		var_x029 = 0x12;
+	}
+	return 0;
+}
+
+char
+CMS::InitializeCard()
+{
+	var_x170 = 0;
+	vara_2 = 0;
+	boot_blocks[0] = 0xffff; boot_blocks[1] = 0xffff;
+	FFPhyBlock = 0xffff;
+	write32(base_addr + 0x190, var_x104 | 0x2707);
+	write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+	write32(base_addr + 0x188, 0x003c);
+	write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+	write32(base_addr + 0x188, 0);
+	int t_val = read32(base_addr + 0x190);
+	KeClearEvent(&ms_event_x0c8);
+	KeSynchronizeExecution(ClearStatus, &dwMS_STATUS, card_int);
+	write32(base_addr + 0x190, (t_val & 0xfffeffff) | 0x0800);
+	write32(base_addr + 0x184, 0xe001);
+	rc = WaitForRDY();
+	write32(base_addr + 0x190, 0xfffeffff & read32(base_addr + 0x190));
+	if(rc)
+	{
+		write32(base_addr + 0x190, var_x104 | 0x2707);
+		write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+		write32(base_addr + 0x188, 0x003c);
+		write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+		write32(base_addr + 0x188, 0);
+		int t_val = read32(base_addr + 0x190);
+		KeClearEvent(&ms_event_x0c8);
+		KeSynchronizeExecution(ClearStatus, &dwMS_STATUS, card_int);
+		write32(base_addr + 0x190, (t_val & 0xfffeffff) | 0x0800);
+		write32(base_addr + 0x184, 0xe001);
+		rc = WaitForRDY();
+		write32(base_addr + 0x190, 0xfffeffff & read32(base_addr + 0x190));
+		if(rc) return 0x81;
+	}
+	if((rc = sub22370(0x1f001f00))) return rc;
+	if((rc = FindBootBlocks())) return rc;
+	if((rc = MediaModel())) return rc;
+	if((rc = GetCHS())) return rc;
+	if((rc = InitializeLUT())) return rc;
+	if((rc = sub21DA0())) return rc;
+	mbWriteProtected = (ms_regs.status.status0 & 1);
+	while(!(rc = MakeLUT() && !var_x170) {};
+	if(rc) return rc;
+	if(serial_mode) SwitchToParallelIF();
+	vara_2 = 1;
+	return 0;
+}
+
+char
+CMS::RescueRWFail()
+{
+	CFlash::RescueRWFail();
+	write32(base_addr + 0x190, 0x8000);
+	write32(base_addr + 0x190, 0x0a00);
+	dwMS_STATUS = 0;
+	write32(base_addr + 0x18c, 0xffffffff);
+	var_x104 = 0x4010;
+	dwMS_STATUS = 0;
+	write32(base_addr + 0x18c, 0xffffffff);
+	var_x104 = 0x4010;
+	return InitializeCard();
+}

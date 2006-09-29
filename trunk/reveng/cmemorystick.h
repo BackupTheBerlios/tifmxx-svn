@@ -35,9 +35,9 @@ protected:
 // MS extra data register:
 		struct
 		{
-			char   overwrite_flag;   // 0x0F9
-			char   management_flag;  // 0x0FA
-			short  logical_address;  // 0x0FB - 0x0FC
+			char   overwrite_flag;     // 0x0F9
+			char   management_flag;    // 0x0FA
+			char   logical_address[2]; // 0x0FB - 0x0FC
 		} extra_data;
 
 		char       var_x0fd;

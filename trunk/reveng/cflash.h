@@ -8,6 +8,7 @@ struct CFlash
 	int SMCISEnable;         // 0x020
 	int InsDelEnable;        // 0x024
 	char muiMediaID;         // 0x028
+	char var_x029;
 	int ClkFreq;             // 0x02C (var_1)
 	char is_xx12;            // 0x030
 
