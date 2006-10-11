@@ -1,4 +1,9 @@
-
+short
+CMS::sub21510(short arg_1)
+{
+	if(arg_1 >= 0x2000) return -1;
+	return var_x172[arg_1];
+}
 
 char
 CMS::WaitForMSINT()
@@ -123,7 +128,7 @@ CMS::GetInt()
 }
 
 CMS::CMS(char *_base_addr, int _serial_mode)
-    :CMemoryStick(_base_addr), dwMS_STATUS(0), serial_mode(_serial_mode), var_x0e1(0), var_x0e2(0),
+    :CMemoryStick(_base_addr), dwMS_STATUS(0), mbParallelInterface(_serial_mode), var_x0e1(0), var_x0e2(0),
      var_x104(0x4010), var_x108(0), var_x10c(0)
 {
 	KInitializeEvent(ms_event_x0c8);
@@ -855,7 +860,7 @@ CMS::InitializeCard()
 	mbWriteProtected = (ms_regs.status.status0 & 1);
 	while(!(rc = MakeLUT() && !var_x170) {};
 	if(rc) return rc;
-	if(serial_mode) SwitchToParallelIF();
+	if(mbParallelInterface) SwitchToParallelIF();
 	vara_2 = 1;
 	return 0;
 }
@@ -873,4 +878,145 @@ CMS::RescueRWFail()
 	write32(base_addr + 0x18c, 0xffffffff);
 	var_x104 = 0x4010;
 	return InitializeCard();
+}
+
+CMS::~CMS()
+{
+	write32(base_addr + 0x190, 0x0a00);
+	write32(base_addr + 0x18c, 0xffffffff);
+	dwMS_STATUS = 0;
+}
+
+char
+CMS::ReadSector(int dwSector, short arg_2, char arg_3)
+{
+	int wLogBlock; // si
+	long wPhyBlock; // bp
+	int byPage; //r13
+	char rc;
+
+	if(byBlockSize == 16)
+	{
+		wLogBlock = arg_1 >> 4;
+	}
+	else if(byBlockSize == 32)
+	{
+		wLogBlock = arg_1 >> 5;
+	}
+	else
+	{
+		wLogBlock = arg_1 / byBlockSize;
+	}
+	if(wLogBlock >=  mwUserBlocks) return 0x82;
+	byPage = arg_1 % byBlockSize;
+	wPhyBlock = wLogBlock < 0x2000 ? var_x172[lvar_esi] : -1;
+	lvar_r12 = !arg_3 || !byPage ? 1 : 4;
+	if(byPage == byBlockSize - 1 || arg_2 == 1) lvar_r12 |= 8;
+	if(!arg_3)
+	{
+		if(arg_2 == 1) lvar_r12 = 32;
+	}
+	int cnt = 0;
+	while(!var_x170)
+	{
+		if(cnt >= 0x800) return 0x4a;
+		if(wPhyBlock == -1) break;
+		MakeLUT();
+		wPhyBlock = sub21510(wLogBlock);
+	}
+	lvar_r12 = ReadPage(wPhyBlock, byPage, lvar_r12, 1);
+	if(!lvar_r12) return lvar_r12;
+	//Reset on read error:
+	rc = WriteRegisters();
+	if(!rc)
+	{
+		write32(base_addr + 0x190, var_x104 | 0x2707);
+		write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+		write32(base_addr + 0x188, 0x3c);
+		write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+		write32(base_addr + 0x188, 0);
+		int t_val = read32(base_addr + 0x190);
+		KeClearEvent(&ms_event_x0c8);
+		KeSynchronizeExecution(ClearStatus, &dwMS_STATUS, card_int);
+		write32(base_addr + 0x190, (t_val & 0xfffeffff) | 0x0800);
+		write32(base_addr + 0x184, 0xe001);
+		rc = WaitForRDY();
+		write32(base_addr + 0x190, 0xfffeffff & read32(base_addr + 0x190));
+		if(!rc) sub21DA0();
+	}
+	var_x104 = 0x4010;
+	sub22370(0x1f001f00);
+	if(lvar_r12 == 0x43 || lvar_r12 == 0x40) // data or extra data error
+	{
+		sub23CC0(wPhyBlock);
+		if(wLogBlock >= 0x2000) return lvar_r12;
+		var_x172[wLogBlock] = FFPhyBlock;
+	}
+	return lvar_r12;
+}
+
+char
+CMS::WriteSector(int arg_1, short arg_2, char arg_3)
+{
+	int wLogBlock; // ebx
+	long wPhyBlock, wPhyBlock_r; // bp
+	int byPage; //r12
+	char rc;
+
+	if(byBlockSize == 16)
+	{
+		wLogBlock = arg_1 >> 4;
+	}
+	else if(byBlockSize == 32)
+	{
+		wLogBlock = arg_1 >> 5;
+	}
+	else
+	{
+		wLogBlock = arg_1 / byBlockSize;
+	}
+	if(wLogBlock >=  mwUserBlocks) return 0x82;
+	byPage = arg_1 % byBlockSize;
+	wPhyBlock = wLogBlock < 0x2000 ? var_x172[lvar_esi] : -1;
+	while(!var_x170)
+	{
+		if(wPhyBlock == -1) break;
+		MakeLUT();
+		wPhyBlock = sub21510(wLogBlock);
+	}
+	wPhyBlock_r = wPhyBlock;
+	rc = CopyPages(wLogBlock, &wPhyBlock, byPage, arg_2, arg_3);
+	if(rc == 0x52)
+	{
+		rc = CloserWrite();
+		if(!rc) rc = CopyPages(wLogBlock, &wPhyBlock, byPage, arg_2, arg_3);
+	}
+	if(!rc)
+	{
+		if(wPhyBlock == wPhyBlock_r || wLogBlock >= 0x2000) return 0;
+		var_x172[wLogBlock] = wPhyBlock;
+		return 0;
+	}
+	//write error
+	if(rc != 0x81) return rc;
+	if(!WriteRegisters())
+	{
+		write32(base_addr + 0x190, var_x104 | 0x2707);
+		write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+		write32(base_addr + 0x188, 0x3c);
+		write32(base_addr + 0x190, 0x0100 | read32(base_addr + 0x190));
+		write32(base_addr + 0x188, 0);
+		int t_val = read32(base_addr + 0x190);
+		KeClearEvent(&ms_event_x0c8);
+		KeSynchronizeExecution(ClearStatus, &dwMS_STATUS, card_int);
+		write32(base_addr + 0x190, (t_val & 0xfffeffff) | 0x0800);
+		write32(base_addr + 0x184, 0xe001);
+		rc = WaitForRDY();
+		write32(base_addr + 0x190, 0xfffeffff & read32(base_addr + 0x190));
+		if(!rc) sub21DA0();
+
+	}
+	var_x104 = 0x4010;
+	sub22370(0x1f001f00);
+	return 0x81;
 }

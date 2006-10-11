@@ -157,3 +157,10 @@ CMemoryStick::InitializeCard()
 	muiMediaID = 0x22; // MSPro device
 	return 0;
 }
+
+CMemoryStick::~CMemoryStick()
+{
+	write32(base_addr + 0x190, 0x0a00);
+	write32(base_addr + 0x18c, 0xffffffff);
+	dwMS_STATUS = 0;
+}

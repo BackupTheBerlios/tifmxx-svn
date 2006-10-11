@@ -3,9 +3,9 @@ bool ClearStatus(int *status_var);
 class CMemoryStick : public CFlash
 {
 protected:
-	int        dwMS_STATUS;      // 0x0C0;
+	int        dwMS_STATUS;         // 0x0C0;
 	KEVENT     ms_event_x0c8;
-	char       serial_mode;      // 0x0E0
+	char       mbParallelInterface; // 0x0E0
 	char       var_x0e1;
 	char       var_x0e2;
 

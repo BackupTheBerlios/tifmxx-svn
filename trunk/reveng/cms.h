@@ -23,6 +23,7 @@ class CMS : public CMemoryStick
 	short var_x2172[0x2000]; // 0x2172
 	char bad_blocks[0x400];  // 0x4172
 
+	short sub21510(short arg_1);
 	char WaitForMSINT();
 	char sub219F0();
 	char WriteRegisters();
@@ -41,7 +42,11 @@ class CMS : public CMemoryStick
 	char SwitchToParallelIF();
 
 	CMS(char *_base_addr, char arg_2);
+	~CMS();
 	char CloseWrite();
 	char RescueRWFail();
 	char InitializeCard();
+	char ReadSector(int dwSector, short arg_2, char arg_3);
+	char WriteSector(int arg_1, short arg_2, char arg_3)
+
 }
