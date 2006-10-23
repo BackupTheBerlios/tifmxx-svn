@@ -2,13 +2,17 @@
 class CSM : public CFlash
 {
 	char var_x0a4;
-	int dwSM_STATUS; // 0x0c0
+	int dwSM_STATUS;      // 0x0c0
 	int var_x0c4;
 	int var_x0c8;
 	KEVENT sm_event_x0d0;
 
-	char var_x0e8;
-	short var_x0ec;
+	char mbyZones;        // 0x0e8
+	short mwPhyBlocks;    // 0x0ea
+	short mwLogBlocks;    // 0x0ec
+	char mbyPhyBlockSize; // 0x0ee
+	char mbyLogBlockSize; // 0x0ef
+	short mwPageSize;     // 0x0f0
 
 	char var_x0f8[16];
 	char var_x10a;
@@ -48,6 +52,10 @@ class CSM : public CFlash
 	static char CheckCorrEcc(int *status_var);
 	static char CheckUnCorrEcc(int *status_var);
 	static char CheckFlashErr(int *status_var);
+	char WaitForCMD(char arg_1, char arg_2, char arg_3)
+	void ResetCard();
+	char ReadXDId();
+	char ReadID();
 
 	CSM(char *_base_addr);
 	char Isr(char arg_1, char arg_2);
