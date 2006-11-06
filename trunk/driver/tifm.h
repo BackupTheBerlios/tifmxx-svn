@@ -20,8 +20,8 @@
 
 /* Host registers (relative to pci base address): */
 enum { 
-	FM_SET_INTERRUPT_ENABLE   = 0x008, 
-	FM_CLEAR_INTERRUPT_ENABLE = 0x00c, 
+	FM_SET_INTERRUPT_ENABLE   = 0x008,
+	FM_CLEAR_INTERRUPT_ENABLE = 0x00c,
 	FM_INTERRUPT_STATUS       = 0x014 };
 
 /* Socket registers (relative to socket base address): */
@@ -35,6 +35,10 @@ enum {
 	SOCK_DMA_FIFO_STATUS           = 0x020,
 	SOCK_FIFO_CONTROL              = 0x024,
 	SOCK_FIFO_PAGE_SIZE            = 0x028,
+	SOCK_SM_COMMAND                = 0x094,
+	SOCK_SM_STATUS                 = 0x098,
+	SOCK_SM_BLOCK_ADDR             = 0x0a0,
+	SOCM_SM_DATA                   = 0x0b0, /* 0x0b0 - 0x0bc */
 	SOCK_MMCSD_COMMAND             = 0x104,
 	SOCK_MMCSD_ARG_LOW             = 0x108,
 	SOCK_MMCSD_ARG_HIGH            = 0x10c,
@@ -49,7 +53,7 @@ enum {
 	SOCK_MMCSD_BUFFER_CONFIG       = 0x130,
 	SOCK_MMCSD_SPI_CONFIG          = 0x134,
 	SOCK_MMCSD_SDIO_MODE_CONFIG    = 0x138,
-	SOCK_MMCSD_RESPONSE            = 0x144,
+	SOCK_MMCSD_RESPONSE            = 0x144, /* 0x144 - 0x160 */
 	SOCK_MMCSD_SDIO_SR             = 0x164,
 	SOCK_MMCSD_SYSTEM_CONTROL      = 0x168,
 	SOCK_MMCSD_SYSTEM_STATUS       = 0x16c,
