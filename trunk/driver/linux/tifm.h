@@ -95,7 +95,7 @@ struct tifm_dev {
 	char                    wq_name[KOBJ_NAME_LEN];
 	struct workqueue_struct *wq;
 
-	unsigned int            (*signal_irq)(struct tifm_dev *sock,
+	void                    (*signal_irq)(struct tifm_dev *sock,
 					      unsigned int sock_irq_status);
 
 	struct tifm_driver      *drv;
@@ -106,6 +106,8 @@ struct tifm_driver {
 	tifm_media_id        *id_table;	
 	int                  (*probe)(struct tifm_dev *dev);
 	void                 (*remove)(struct tifm_dev *dev);
+	int                  (*suspend)(struct tifm_dev *dev, pm_message_t state);
+        int                  (*resume)(struct tifm_dev *dev);
 	
 	struct device_driver driver;
 };
@@ -113,17 +115,15 @@ struct tifm_driver {
 struct tifm_adapter {
 	char __iomem            *addr;
 	unsigned int            irq_status;
-	unsigned int            insert_mask;
-	unsigned int            remove_mask;
+	unsigned int            socket_mask;
+	struct tifm_dev         **sockets;
 	spinlock_t              lock;
 	unsigned int            id;
 	unsigned int            max_sockets;
 	char                    wq_name[KOBJ_NAME_LEN];
 	unsigned int            inhibit_new_cards;
 	struct workqueue_struct *wq;
-	struct work_struct      media_inserter;
-	struct work_struct      media_remover;
-	struct tifm_dev         **sockets;
+	struct work_struct      media_switcher;
 	struct class_device     cdev;
 	struct device           *dev;
 
@@ -143,7 +143,7 @@ int tifm_map_sg(struct tifm_dev *sock, struct scatterlist *sg, int nents,
 		int direction);
 void tifm_unmap_sg(struct tifm_dev *sock, struct scatterlist *sg, int nents,
 		   int direction);
-
+void tifm_dummy_signal_irq(struct tifm_dev *sock, unsigned int sock_irq_status);
 
 static inline void* tifm_get_drvdata(struct tifm_dev *dev)
 {

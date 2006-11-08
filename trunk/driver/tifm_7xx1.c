@@ -9,7 +9,7 @@
  *
  */
 
-#include <linux/tifm.h>
+#include "linux/tifm.h"
 #include <linux/dma-mapping.h>
 
 #define DRIVER_NAME "tifm_7xx1"
@@ -21,55 +21,20 @@ static void tifm_7xx1_eject(struct tifm_adapter *fm, struct tifm_dev *sock)
 	unsigned long flags;
 
 	spin_lock_irqsave(&fm->lock, flags);
-	if (!fm->inhibit_new_cards) {
-		for (cnt = 0; cnt < fm->max_sockets; cnt++) {
-			if (fm->sockets[cnt] == sock) {
-				fm->remove_mask |= (1 << cnt);
-				queue_work(fm->wq, &fm->media_remover);
-				break;
-			}
-		}
-	}
-	spin_unlock_irqrestore(&fm->lock, flags);
-}
-
-static void tifm_7xx1_remove_media(void *adapter)
-{
-	struct tifm_adapter *fm = adapter;
-	unsigned long flags;
-	int cnt;
-	struct tifm_dev *sock;
-
-	if (!class_device_get(&fm->cdev))
-		return;
-	spin_lock_irqsave(&fm->lock, flags);
 	for (cnt = 0; cnt < fm->max_sockets; cnt++) {
-		if (fm->sockets[cnt] && (fm->remove_mask & (1 << cnt))) {
-			printk(KERN_INFO DRIVER_NAME
-			       ": demand removing card from socket %d\n", cnt);
-			sock = fm->sockets[cnt];
-			fm->sockets[cnt] = NULL;
-			fm->remove_mask &= ~(1 << cnt);
-
-			writel(0x0e00, sock->addr + SOCK_CONTROL);
-
-			writel((TIFM_IRQ_FIFOMASK | TIFM_IRQ_CARDMASK) << cnt,
-				fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
-			writel((TIFM_IRQ_FIFOMASK | TIFM_IRQ_CARDMASK) << cnt,
-				fm->addr + FM_SET_INTERRUPT_ENABLE);
-
-			spin_unlock_irqrestore(&fm->lock, flags);
-			device_unregister(&sock->dev);
-			spin_lock_irqsave(&fm->lock, flags);
+		if (fm->sockets[cnt] == sock) {
+			fm->socket_mask |= (1 << cnt);
+			queue_work(fm->wq, &fm->media_switcher);
+			break;
 		}
 	}
 	spin_unlock_irqrestore(&fm->lock, flags);
-	class_device_put(&fm->cdev);
 }
 
 static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id)
 {
 	struct tifm_adapter *fm = dev_id;
+	struct tifm_dev *sock;
 	unsigned int irq_status;
 	unsigned int sock_irq_status, cnt;
 
@@ -84,33 +49,26 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id)
 		writel(TIFM_IRQ_ENABLE, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 
 		for (cnt = 0; cnt <  fm->max_sockets; cnt++) {
-			sock_irq_status = (irq_status >> cnt) &
-					(TIFM_IRQ_FIFOMASK | TIFM_IRQ_CARDMASK);
+			sock = fm->sockets[cnt];
+			sock_irq_status = (irq_status >> cnt)
+					  & (TIFM_IRQ_FIFOMASK
+					     | TIFM_IRQ_CARDMASK);
 
-			if (fm->sockets[cnt]) {
-				if (sock_irq_status &&
-						fm->sockets[cnt]->signal_irq)
-					sock_irq_status = fm->sockets[cnt]->
-						signal_irq(fm->sockets[cnt],
-							sock_irq_status);
+			if (sock && sock_irq_status)
+				sock->signal_irq(fm->sockets[cnt],
+						 sock_irq_status);
 
-				if (irq_status & (1 << cnt))
-					fm->remove_mask |= 1 << cnt;
-			} else {
-				if (irq_status & (1 << cnt))
-					fm->insert_mask |= 1 << cnt;
-			}
+			fm->socket_mask |= 1 << cnt;
 		}
 	}
 	writel(irq_status, fm->addr + FM_INTERRUPT_STATUS);
 
 	if (!fm->inhibit_new_cards) {
-		if (!fm->remove_mask && !fm->insert_mask) {
+		if (!fm->socket_mask) {
 			writel(TIFM_IRQ_ENABLE,
-				fm->addr + FM_SET_INTERRUPT_ENABLE);
+			       fm->addr + FM_SET_INTERRUPT_ENABLE);
 		} else {
-			queue_work(fm->wq, &fm->media_remover);
-			queue_work(fm->wq, &fm->media_inserter);
+			queue_work(fm->wq, &fm->media_switcher);
 		}
 	}
 
@@ -150,8 +108,8 @@ static tifm_media_id tifm_7xx1_toggle_sock_power(char __iomem *sock_addr, int is
 	}
 
 	for (cnt = 0; cnt < 100; cnt++) {
-		if ((TIFM_SOCK_STATE_POWERED &
-				readl(sock_addr + SOCK_PRESENT_STATE)))
+		if ((TIFM_SOCK_STATE_POWERED
+		     & readl(sock_addr + SOCK_PRESENT_STATE)))
 			break;
 		msleep(10);
 	}
@@ -169,103 +127,109 @@ tifm_7xx1_sock_addr(char __iomem *base_addr, unsigned int sock_num)
 	return base_addr + ((sock_num + 1) << 10);
 }
 
-static void tifm_7xx1_insert_media(void *adapter)
+static void tifm_7xx1_switch_media(void *adapter)
 {
 	struct tifm_adapter *fm = adapter;
 	unsigned long flags;
 	tifm_media_id media_id;
 	char *card_name = "xx";
 	int cnt, ok_to_register;
-	unsigned int insert_mask;
-	struct tifm_dev *new_sock = NULL;
+	struct tifm_dev *sock = NULL;
 
 	if (!class_device_get(&fm->cdev))
 		return;
 	spin_lock_irqsave(&fm->lock, flags);
-	insert_mask = fm->insert_mask;
-	fm->insert_mask = 0;
-	if (fm->inhibit_new_cards) {
-		spin_unlock_irqrestore(&fm->lock, flags);
-		class_device_put(&fm->cdev);
-		return;
-	}
-	spin_unlock_irqrestore(&fm->lock, flags);
 
 	for (cnt = 0; cnt < fm->max_sockets; cnt++) {
-		if (!(insert_mask & (1 << cnt)))
-			continue;
-
-		media_id = tifm_7xx1_toggle_sock_power(tifm_7xx1_sock_addr(fm->addr, cnt),
-						       fm->max_sockets == 2);
-		if (media_id) {
-			ok_to_register = 0;
-			new_sock = tifm_alloc_device(fm, cnt);
-			if (new_sock) {
-				new_sock->addr = tifm_7xx1_sock_addr(fm->addr,
-									cnt);
-				new_sock->media_id = media_id;
-				switch (media_id) {
-				case 1:
-					card_name = "xd";
-					break;
-				case 2:
-					card_name = "ms";
-					break;
-				case 3:
-					card_name = "sd";
-					break;
-				default:
-					break;
-				}
-				snprintf(new_sock->dev.bus_id, BUS_ID_SIZE,
-					"tifm_%s%u:%u", card_name, fm->id, cnt);
+		if (fm->socket_mask & (1 << cnt)) {
+			fm->socket_mask &= ~(1 << cnt);
+			if (fm->sockets[cnt]) {
 				printk(KERN_INFO DRIVER_NAME
-					": %s card detected in socket %d\n",
-					card_name, cnt);
-				spin_lock_irqsave(&fm->lock, flags);
-				if (!fm->sockets[cnt]) {
-					fm->sockets[cnt] = new_sock;
-					ok_to_register = 1;
-				}
+				       ": demand removing card from socket %d\n", cnt);
+				sock = fm->sockets[cnt];
+				fm->sockets[cnt] = NULL;
+
+				writel(0x0e00, sock->addr + SOCK_CONTROL);
+
+				writel((TIFM_IRQ_FIFOMASK | TIFM_IRQ_CARDMASK) << cnt,
+				       fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
+				writel((TIFM_IRQ_FIFOMASK | TIFM_IRQ_CARDMASK) << cnt,
+				        fm->addr + FM_SET_INTERRUPT_ENABLE);
+
 				spin_unlock_irqrestore(&fm->lock, flags);
-				if (!ok_to_register ||
-					    device_register(&new_sock->dev)) {
+				device_unregister(&sock->dev);
+				spin_lock_irqsave(&fm->lock, flags);
+			}
+			if (fm->inhibit_new_cards)
+				continue;
+
+			spin_unlock_irqrestore(&fm->lock, flags);
+
+			media_id = tifm_7xx1_toggle_sock_power(tifm_7xx1_sock_addr(fm->addr, cnt),
+							       fm->max_sockets == 2);
+			if (media_id) {
+				ok_to_register = 0;
+				sock = tifm_alloc_device(fm, cnt);
+				if (sock) {
+					sock->addr = tifm_7xx1_sock_addr(fm->addr, cnt);
+					sock->media_id = media_id;
+
+					switch (media_id) {
+					case 1:
+						card_name = "xd";
+						break;
+					case 2:
+						card_name = "ms";
+						break;
+					case 3:
+						card_name = "sd";
+						break;
+					default:
+						break;
+					}
+					snprintf(sock->dev.bus_id, BUS_ID_SIZE,
+						 "tifm_%s%u:%u", card_name,
+						 fm->id, cnt);
+					printk(KERN_INFO DRIVER_NAME
+					       ": %s card detected in socket %d\n",
+					       card_name, cnt);
+
 					spin_lock_irqsave(&fm->lock, flags);
-					fm->sockets[cnt] = NULL;
-					spin_unlock_irqrestore(&fm->lock,
-								flags);
-					tifm_free_device(&new_sock->dev);
+					if (!fm->sockets[cnt]) {
+						fm->sockets[cnt] = sock;
+						ok_to_register = 1;
+					}
+					spin_unlock_irqrestore(&fm->lock, flags);
+					if (!ok_to_register ||
+					    device_register(&sock->dev)) {
+						spin_lock_irqsave(&fm->lock, flags);
+						fm->sockets[cnt] = NULL;
+						spin_unlock_irqrestore(&fm->lock,
+								       flags);
+						tifm_free_device(&sock->dev);
+					}
 				}
 			}
+			spin_lock_irqsave(&fm->lock, flags);
+			writel((TIFM_IRQ_FIFOMASK | TIFM_IRQ_CARDMASK) << cnt,
+			       fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
+			writel((TIFM_IRQ_FIFOMASK | TIFM_IRQ_CARDMASK) << cnt,
+			       fm->addr + FM_SET_INTERRUPT_ENABLE);
 		}
-		writel((TIFM_IRQ_FIFOMASK | TIFM_IRQ_CARDMASK) << cnt,
-		       fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
-		writel((TIFM_IRQ_FIFOMASK | TIFM_IRQ_CARDMASK) << cnt,
-		       fm->addr + FM_SET_INTERRUPT_ENABLE);
 	}
 
-	writel(TIFM_IRQ_ENABLE, fm->addr + FM_SET_INTERRUPT_ENABLE);
+	if (!fm->inhibit_new_cards)
+		writel(TIFM_IRQ_ENABLE, fm->addr + FM_SET_INTERRUPT_ENABLE);
+	spin_unlock_irqrestore(&fm->lock, flags);
 	class_device_put(&fm->cdev);
 }
 
 static int tifm_7xx1_suspend(struct pci_dev *dev, pm_message_t state)
 {
-	struct tifm_adapter *fm = pci_get_drvdata(dev);
-	unsigned long flags;
-
-	spin_lock_irqsave(&fm->lock, flags);
-	fm->inhibit_new_cards = 1;
-	fm->remove_mask = 0xf;
-	fm->insert_mask = 0;
-	writel(TIFM_IRQ_ENABLE, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
-	spin_unlock_irqrestore(&fm->lock, flags);
-	flush_workqueue(fm->wq);
-
-	tifm_7xx1_remove_media(fm);
-
-	pci_set_power_state(dev, PCI_D3hot);
-        pci_disable_device(dev);
-        pci_save_state(dev);
+	pci_save_state(dev);
+	pci_enable_wake(dev, pci_choose_state(dev, state), 0);
+	pci_disable_device(dev);
+	pci_set_power_state(dev, pci_choose_state(dev, state));
 	return 0;
 }
 
@@ -273,25 +237,36 @@ static int tifm_7xx1_resume(struct pci_dev *dev)
 {
 	struct tifm_adapter *fm = pci_get_drvdata(dev);
 	unsigned long flags;
+	int cnt;
+	tifm_media_id new_ids[fm->max_sockets];
 
+	pci_set_power_state(dev, PCI_D0);
 	pci_restore_state(dev);
-        pci_enable_device(dev);
-        pci_set_power_state(dev, PCI_D0);
-        pci_set_master(dev);
+	pci_enable_device(dev);
+	pci_set_master(dev);
+
+	for (cnt = 0; cnt < fm->max_sockets; cnt++) {
+		new_ids[cnt] = tifm_7xx1_toggle_sock_power(tifm_7xx1_sock_addr(fm->addr, cnt),
+							   fm->max_sockets == 2);
+	}
 
 	spin_lock_irqsave(&fm->lock, flags);
+	for (cnt = 0; cnt < fm->max_sockets; cnt++) {
+		if (fm->sockets[cnt])
+			fm->sockets[cnt]->media_id = new_ids[cnt];
+		else if (new_ids[cnt] != FM_NULL)
+			fm->socket_mask |= 1 << cnt;
+	}
 	fm->inhibit_new_cards = 0;
-	writel(TIFM_IRQ_SETALL, fm->addr + FM_INTERRUPT_STATUS);
-	writel(TIFM_IRQ_SETALL, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
-	writel(TIFM_IRQ_ENABLE | TIFM_IRQ_SETALLSOCK,
-		fm->addr + FM_SET_INTERRUPT_ENABLE);
-	fm->insert_mask = 0xf;
+	if (fm->socket_mask)
+		queue_work(fm->wq, &fm->media_switcher);
+
 	spin_unlock_irqrestore(&fm->lock, flags);
 	return 0;
 }
 
 static int tifm_7xx1_probe(struct pci_dev *dev,
-			const struct pci_device_id *dev_id)
+			   const struct pci_device_id *dev_id)
 {
 	struct tifm_adapter *fm;
 	int pci_dev_busy = 0;
@@ -328,13 +303,12 @@ static int tifm_7xx1_probe(struct pci_dev *dev,
 	if (!fm->sockets)
 		goto err_out_free;
 
-	INIT_WORK(&fm->media_inserter, tifm_7xx1_insert_media, fm);
-	INIT_WORK(&fm->media_remover, tifm_7xx1_remove_media, fm);
+	INIT_WORK(&fm->media_switcher, tifm_7xx1_switch_media, fm);
 	fm->eject = tifm_7xx1_eject;
 	pci_set_drvdata(dev, fm);
 
 	fm->addr = ioremap(pci_resource_start(dev, 0),
-				pci_resource_len(dev, 0));
+			   pci_resource_len(dev, 0));
 	if (!fm->addr)
 		goto err_out_free;
 
@@ -350,7 +324,8 @@ static int tifm_7xx1_probe(struct pci_dev *dev,
 	writel(TIFM_IRQ_ENABLE | TIFM_IRQ_SETALLSOCK,
 		fm->addr + FM_SET_INTERRUPT_ENABLE);
 
-	fm->insert_mask = 0xf;
+	fm->socket_mask = (1 << fm->max_sockets) - 1;
+	queue_work(fm->wq, &fm->media_switcher);
 
 	return 0;
 
@@ -377,14 +352,13 @@ static void tifm_7xx1_remove(struct pci_dev *dev)
 
 	spin_lock_irqsave(&fm->lock, flags);
 	fm->inhibit_new_cards = 1;
-	fm->remove_mask = 0xf;
-	fm->insert_mask = 0;
+	fm->socket_mask = (1 << fm->max_sockets) - 1;
 	writel(TIFM_IRQ_ENABLE, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 	spin_unlock_irqrestore(&fm->lock, flags);
 
 	flush_workqueue(fm->wq);
 
-	tifm_7xx1_remove_media(fm);
+	tifm_7xx1_switch_media(fm);
 
 	writel(TIFM_IRQ_SETALL, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 	free_irq(dev->irq, fm);

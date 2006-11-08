@@ -1,11 +1,12 @@
-EXTRA_CFLAGS = -DDEBUG
 obj-m	    += tifm_core.o tifm_7xx1.o tifm_sd.o
 
 KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 PWD       := $(shell pwd)
 MODULE_INSTALLDIR = /lib/modules/$(shell uname -r)/misc
+EXTRA_CFLAGS = -DDEBUG
 
 all:
+	echo $(PWD)
 	$(MAKE) -C $(KERNELDIR) M=$(PWD)
 
 clean:

@@ -9,7 +9,7 @@
  *
  */
 
-#include <linux/tifm.h>
+#include "linux/tifm.h"
 #include <linux/init.h>
 #include <linux/idr.h>
 
@@ -149,6 +149,12 @@ void tifm_free_device(struct device *dev)
 }
 EXPORT_SYMBOL(tifm_free_device);
 
+void tifm_dummy_signal_irq(struct tifm_dev *sock, unsigned int sock_irq_status)
+{
+	return;
+}
+EXPORT_SYMBOL(tifm_dummy_signal_irq);
+
 struct tifm_dev *tifm_alloc_device(struct tifm_adapter *fm, unsigned int id)
 {
 	struct tifm_dev *dev = kzalloc(sizeof(struct tifm_dev), GFP_KERNEL);
@@ -164,6 +170,7 @@ struct tifm_dev *tifm_alloc_device(struct tifm_adapter *fm, unsigned int id)
 		dev->dev.parent = fm->dev;
 		dev->dev.bus = &tifm_bus_type;
 		dev->dev.release = tifm_free_device;
+		dev->signal_irq = tifm_dummy_signal_irq;
 	}
 	return dev;
 }
@@ -230,11 +237,38 @@ static int tifm_device_remove(struct device *dev)
 	return 0;
 }
 
+static int tifm_device_suspend(struct device *dev, pm_message_t state)
+{
+	struct tifm_dev *fm_dev = container_of(dev, struct tifm_dev, dev);
+	struct tifm_driver *drv = fm_dev->drv;
+	int rc = 0;
+
+	if (drv && drv->suspend) {
+		rc = drv->suspend(fm_dev, state);
+		suspend_report_result(drv->suspend, rc);
+	}
+	return rc;
+}
+
+static int tifm_device_resume(struct device *dev)
+{
+	struct tifm_dev *fm_dev = container_of(dev, struct tifm_dev, dev);
+	struct tifm_driver *drv = fm_dev->drv;
+	int rc = 0;
+
+	if (drv && drv->resume)
+		rc = drv->resume(fm_dev);
+
+	return rc;
+}
+
 int tifm_register_driver(struct tifm_driver *drv)
 {
 	drv->driver.bus = &tifm_bus_type;
 	drv->driver.probe = tifm_device_probe;
 	drv->driver.remove = tifm_device_remove;
+	drv->driver.suspend = tifm_device_suspend;
+	drv->driver.resume = tifm_device_resume;
 
 	return driver_register(&drv->driver);
 }
