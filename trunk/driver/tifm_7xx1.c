@@ -57,9 +57,8 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id)
 			if (sock && sock_irq_status)
 				sock->signal_irq(fm->sockets[cnt],
 						 sock_irq_status);
-
-			fm->socket_mask |= 1 << cnt;
 		}
+		fm->socket_mask = irq_status & TIFM_IRQ_SETALLSOCK;
 	}
 	writel(irq_status, fm->addr + FM_INTERRUPT_STATUS);
 
@@ -185,7 +184,8 @@ static void tifm_7xx1_switch_media(void *adapter)
 						card_name = "sd";
 						break;
 					default:
-						break;
+						spin_lock_irqsave(&fm->lock, flags);
+						continue;
 					}
 					snprintf(sock->dev.bus_id, BUS_ID_SIZE,
 						 "tifm_%s%u:%u", card_name,
@@ -378,7 +378,7 @@ static void tifm_7xx1_remove(struct pci_dev *dev)
 static struct pci_device_id tifm_7xx1_pci_tbl [] = {
 	{ PCI_VENDOR_ID_TI, 0x8033, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
 	  0 }, /* xx21 - the one I have */
-        { PCI_VENDOR_ID_TI, 0x803B, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+	{ PCI_VENDOR_ID_TI, 0x803B, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
 	  0 }, /* xx12 - should be also supported */
 	{ }
 };
