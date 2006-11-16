@@ -122,17 +122,25 @@ static int tifm_7xx1_switch_media(struct tifm_adapter *fm)
 	unsigned long flags;
 	tifm_media_id media_id;
 	char *card_name = "xx";
-	int cnt;
+	int cnt, rc;
 	struct tifm_dev *sock;
 	unsigned int socket_claimed_set;
 
 	while (1) {
-		if (wait_event_interruptible(fm->change_set_notify,
-					     fm->socket_change_set))
+		rc = wait_event_interruptible_timeout(fm->change_set_notify,
+						      fm->socket_change_set,
+						      msecs_to_jiffies(1000));
+		if (rc == -ERESTARTSYS)
 			try_to_freeze();
+
 		spin_lock_irqsave(&fm->lock, flags);
 		socket_claimed_set = fm->socket_change_set;
 		fm->socket_change_set = 0;
+
+		for (cnt = 0; cnt < fm->num_sockets; cnt++)
+			socket_claimed_set |= fm->sockets[cnt]
+					      ? (fm->sockets[cnt]->is_stalled(fm->sockets[cnt])
+						 ? 1 << cnt : 0) : 0;
 		spin_unlock_irqrestore(&fm->lock, flags);
 		dev_dbg(fm->dev, "checking media set %x\n",
 			socket_claimed_set);
