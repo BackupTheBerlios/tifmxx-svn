@@ -59,7 +59,7 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id)
 	if (!fm->socket_change_set)
 		writel(TIFM_IRQ_ENABLE, fm->addr + FM_SET_INTERRUPT_ENABLE);
 	else
-		wake_up(&fm->change_set_notify);
+		wake_up_all(&fm->change_set_notify);
 
 	spin_unlock(&fm->lock);
 	return IRQ_HANDLED;
@@ -74,8 +74,8 @@ static tifm_media_id tifm_7xx1_toggle_sock_power(char __iomem *sock_addr,
 	writel(0x0e00, sock_addr + SOCK_CONTROL);
 
 	for (cnt = 0; cnt < 100; cnt++) {
-		if (!(TIFM_SOCK_STATE_POWERED &
-				readl(sock_addr + SOCK_PRESENT_STATE)))
+		if (!(TIFM_SOCK_STATE_POWERED
+		      &	readl(sock_addr + SOCK_PRESENT_STATE)))
 			break;
 		msleep(10);
 	}
@@ -124,34 +124,31 @@ static int tifm_7xx1_switch_media(struct tifm_adapter *fm)
 	char *card_name = "xx";
 	int cnt, rc;
 	struct tifm_dev *sock;
-	unsigned int socket_claimed_set;
+	unsigned int socket_change_set;
 
 	while (1) {
-		rc = wait_event_interruptible_timeout(fm->change_set_notify,
-						      fm->socket_change_set,
-						      msecs_to_jiffies(1000));
+		rc = wait_event_interruptible(fm->change_set_notify,
+					      fm->socket_change_set);
 		if (rc == -ERESTARTSYS)
 			try_to_freeze();
 
 		spin_lock_irqsave(&fm->lock, flags);
-		socket_claimed_set = fm->socket_change_set;
+		socket_change_set = fm->socket_change_set;
 		fm->socket_change_set = 0;
-
-		for (cnt = 0; cnt < fm->num_sockets; cnt++)
-			socket_claimed_set |= fm->sockets[cnt]
-					      ? (fm->sockets[cnt]->is_stalled(fm->sockets[cnt])
-						 ? 1 << cnt : 0) : 0;
 		spin_unlock_irqrestore(&fm->lock, flags);
+
+
 		dev_dbg(fm->dev, "checking media set %x\n",
-			socket_claimed_set);
+			socket_change_set);
 
 		if (kthread_should_stop())
-			socket_claimed_set = (1 << fm->num_sockets) - 1;
-		if (!socket_claimed_set)
+			socket_change_set = (1 << fm->num_sockets) - 1;
+
+		if (!socket_change_set)
 			continue;
 
 		for (cnt = 0; cnt < fm->num_sockets; cnt++) {
-			if (!(socket_claimed_set & (1 << cnt)))
+			if (!(socket_change_set & (1 << cnt)))
 				continue;
 			sock = fm->sockets[cnt];
 			if (sock) {
@@ -206,11 +203,11 @@ static int tifm_7xx1_switch_media(struct tifm_adapter *fm)
 			}
 		}
 		if (!kthread_should_stop()) {
-			writel(TIFM_IRQ_FIFOMASK(socket_claimed_set)
-			       | TIFM_IRQ_CARDMASK(socket_claimed_set),
+			writel(TIFM_IRQ_FIFOMASK(socket_change_set)
+			       | TIFM_IRQ_CARDMASK(socket_change_set),
 			       fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
-			writel(TIFM_IRQ_FIFOMASK(socket_claimed_set)
-			       | TIFM_IRQ_CARDMASK(socket_claimed_set),
+			writel(TIFM_IRQ_FIFOMASK(socket_change_set)
+			       | TIFM_IRQ_CARDMASK(socket_change_set),
 			       fm->addr + FM_SET_INTERRUPT_ENABLE);	
 			writel(TIFM_IRQ_ENABLE,
 			       fm->addr + FM_SET_INTERRUPT_ENABLE);
@@ -220,9 +217,13 @@ static int tifm_7xx1_switch_media(struct tifm_adapter *fm)
 				if (fm->sockets[cnt])
 					fm->socket_change_set |= 1 << cnt;
 			}
-			spin_unlock_irqrestore(&fm->lock, flags);
-			if (!fm->socket_change_set)
+			
+			if (!fm->socket_change_set) {
+				spin_unlock_irqrestore(&fm->lock, flags);
 				return 0;
+			} else {
+				spin_unlock_irqrestore(&fm->lock, flags);
+			}
 		}
 	}
 	return 0;
@@ -231,7 +232,7 @@ static int tifm_7xx1_switch_media(struct tifm_adapter *fm)
 static int tifm_7xx1_suspend(struct pci_dev *dev, pm_message_t state)
 {
 	dev_dbg(&dev->dev, "suspending host\n");
-		
+
 	pci_save_state(dev);
 	pci_enable_wake(dev, pci_choose_state(dev, state), 0);
 	pci_disable_device(dev);
@@ -241,13 +242,56 @@ static int tifm_7xx1_suspend(struct pci_dev *dev, pm_message_t state)
 
 static int tifm_7xx1_resume(struct pci_dev *dev)
 {
-	dev_dbg(&dev->dev, "resuming host\n");
+	struct tifm_adapter *fm = pci_get_drvdata(dev);
+	int cnt;
+	unsigned long flags;
+	tifm_media_id new_ids[fm->num_sockets];
 
 	pci_set_power_state(dev, PCI_D0);
 	pci_restore_state(dev);
 	pci_enable_device(dev);
 	pci_set_master(dev);
+	
+	dev_dbg(&dev->dev, "resuming host\n");
 
+	for (cnt = 0; cnt < fm->num_sockets; cnt++)
+		new_ids[cnt] = tifm_7xx1_toggle_sock_power(tifm_7xx1_sock_addr(fm->addr, cnt),
+							   fm->num_sockets == 2);
+	spin_lock_irqsave(&fm->lock, flags);
+	fm->socket_change_set = 0;
+	for (cnt = 0; cnt < fm->num_sockets; cnt++) {
+		if (fm->sockets[cnt]) {
+			if (fm->sockets[cnt]->media_id == new_ids[cnt])
+				fm->socket_change_set |= 1 << cnt;
+
+			fm->sockets[cnt]->media_id = new_ids[cnt];
+		}
+	}
+
+	writel(TIFM_IRQ_ENABLE
+	       | TIFM_IRQ_SOCKMASK((1 << fm->num_sockets) - 1),
+	       fm->addr + FM_SET_INTERRUPT_ENABLE);
+	if (!fm->socket_change_set) {
+		spin_unlock_irqrestore(&fm->lock, flags);
+		return 0;
+	} else {
+		fm->socket_change_set = 0;
+		spin_unlock_irqrestore(&fm->lock, flags);
+	}
+
+	wait_event_timeout(fm->change_set_notify, fm->socket_change_set, HZ);
+
+	spin_lock_irqsave(&fm->lock, flags);
+	writel(TIFM_IRQ_FIFOMASK(fm->socket_change_set)
+	       | TIFM_IRQ_CARDMASK(fm->socket_change_set),
+	       fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
+	writel(TIFM_IRQ_FIFOMASK(fm->socket_change_set)
+	       | TIFM_IRQ_CARDMASK(fm->socket_change_set),
+	       fm->addr + FM_SET_INTERRUPT_ENABLE);	
+	writel(TIFM_IRQ_ENABLE,
+	       fm->addr + FM_SET_INTERRUPT_ENABLE);
+	fm->socket_change_set = 0;
+	spin_unlock_irqrestore(&fm->lock, flags);
 	return 0;
 }
 
@@ -283,7 +327,7 @@ static int tifm_7xx1_probe(struct pci_dev *dev,
 	}
 
 	fm->dev = &dev->dev;
-	fm->num_sockets = (dev->device == 0x803B) ? 2 : 4;
+	fm->num_sockets = (dev->device == 0x8033) ? 4 : 2;
 	fm->sockets = kzalloc(sizeof(struct tifm_dev*) * fm->num_sockets,
 			      GFP_KERNEL);
 	if (!fm->sockets)
@@ -309,7 +353,6 @@ static int tifm_7xx1_probe(struct pci_dev *dev,
 	writel(TIFM_IRQ_SETALL, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 	writel(TIFM_IRQ_ENABLE | TIFM_IRQ_SOCKMASK((1 << fm->num_sockets) - 1),
 	       fm->addr + FM_SET_INTERRUPT_ENABLE);
-	fm->socket_change_set = (1 << fm->num_sockets) - 1;
 	wake_up_process(fm->media_switcher);
 	return 0;
 
@@ -359,7 +402,9 @@ static struct pci_device_id tifm_7xx1_pci_tbl [] = {
 	{ PCI_VENDOR_ID_TI, 0x8033, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
 	  0 }, /* xx21 - the one I have */
 	{ PCI_VENDOR_ID_TI, 0x803B, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
-	  0 }, /* xx12 - should be also supported */
+	  0 },
+	{ PCI_VENDOR_ID_TI, 0xAC8F, PCI_ANY_ID, PCI_ANY_ID, 0, 0,
+	  0 },
 	{ }
 };
 

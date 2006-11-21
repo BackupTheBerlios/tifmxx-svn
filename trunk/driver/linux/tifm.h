@@ -96,7 +96,6 @@ struct tifm_dev {
 
 	void                    (*signal_irq)(struct tifm_dev *sock,
 					      unsigned int sock_irq_status);
-	int                     (*is_stalled)(struct tifm_dev *sock);
 
 	struct tifm_driver      *drv;
 	struct device           dev;
@@ -142,8 +141,6 @@ int tifm_map_sg(struct tifm_dev *sock, struct scatterlist *sg, int nents,
 		int direction);
 void tifm_unmap_sg(struct tifm_dev *sock, struct scatterlist *sg, int nents,
 		   int direction);
-void tifm_dummy_signal_irq(struct tifm_dev *sock, unsigned int sock_irq_status);
-int tifm_dummy_is_stalled(struct tifm_dev *sock);
 
 static inline void* tifm_get_drvdata(struct tifm_dev *dev)
 {

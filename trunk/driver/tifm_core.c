@@ -120,7 +120,7 @@ int tifm_add_adapter(struct tifm_adapter *fm,
 	if (!rc) {
 		snprintf(fm->cdev.class_id, BUS_ID_SIZE, "tifm%u", fm->id);
 		fm->media_switcher = kthread_create((int (*)(void *data))mediathreadfn,
-						    fm, "tifm%u", fm->id);
+						    fm, "tifm/%u", fm->id);
 
 		if (fm->media_switcher != ERR_PTR(-ENOMEM))
 			return class_device_add(&fm->cdev);
@@ -151,17 +151,11 @@ void tifm_free_device(struct device *dev)
 }
 EXPORT_SYMBOL(tifm_free_device);
 
-void tifm_dummy_signal_irq(struct tifm_dev *sock, unsigned int sock_irq_status)
+static void tifm_dummy_signal_irq(struct tifm_dev *sock,
+				  unsigned int sock_irq_status)
 {
 	return;
 }
-EXPORT_SYMBOL(tifm_dummy_signal_irq);
-
-int tifm_dummy_is_stalled(struct tifm_dev *sock)
-{
-	return 0;
-}
-EXPORT_SYMBOL(tifm_dummy_is_stalled);
 
 struct tifm_dev *tifm_alloc_device(struct tifm_adapter *fm)
 {
@@ -230,8 +224,10 @@ static int tifm_device_remove(struct device *dev)
 	struct tifm_driver *drv = fm_dev->drv;
 
 	if (drv) {
-		if (drv->remove)
+		if (drv->remove) {
+			fm_dev->signal_irq = tifm_dummy_signal_irq;
 			drv->remove(fm_dev);
+		}
 		fm_dev->drv = 0;
 	}
 
