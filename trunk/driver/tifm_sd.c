@@ -10,7 +10,7 @@
  */
 
 
-#include "linux/tifm.h"
+#include <linux/tifm.h>
 #include <linux/mmc/protocol.h>
 #include <linux/mmc/host.h>
 #include <linux/highmem.h>
@@ -270,7 +270,7 @@ change_state:
 					}
 				} else {
 					host->state = FIFO;
-				}	
+				}
 			}
 			goto change_state;
 		}
@@ -359,7 +359,7 @@ static void tifm_sd_signal_irq(struct tifm_dev *sock,
 			if (host->req->stop) {
 				if (host->state == SCMD) {
 					host->req->stop->error = error_code;
-				} else if(host->state == BRS) {
+				} else if (host->state == BRS) {
 					host->req->cmd->error = error_code;
 					tifm_sd_exec(host, host->req->stop);
 					host->state = SCMD;
@@ -460,23 +460,19 @@ static void tifm_sd_set_data_timeout(struct tifm_sd *host,
 	data_timeout += data->timeout_ns /
 			((1000000000UL / host->clk_freq) * host->clk_div);
 
-	data_timeout *= 10; // call it fudge factor for now
-
 	if (data_timeout < 0xffff) {
+		writel(data_timeout, sock->addr + SOCK_MMCSD_DATA_TO);
 		writel((~TIFM_MMCSD_DPE)
 		       & readl(sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG),
 		       sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG);
-		dev_dbg(&sock->dev, "setting timeout %u\n", data_timeout);
-		writel(data_timeout, sock->addr + SOCK_MMCSD_DATA_TO);
 	} else {
+		data_timeout = (data_timeout >> 10) + 1;
+		if (data_timeout > 0xffff)
+			data_timeout = 0;	/* set to unlimited */
+		writel(data_timeout, sock->addr + SOCK_MMCSD_DATA_TO);
 		writel(TIFM_MMCSD_DPE
 		       | readl(sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG),
 			sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG);
-		data_timeout = (data_timeout >> 10) + 1;
-		if(data_timeout > 0xffff)
-			data_timeout = 0;	/* set to unlimited */
-		dev_dbg(&sock->dev, "setting timeout %u K\n", data_timeout);
-		writel(data_timeout, sock->addr + SOCK_MMCSD_DATA_TO);
 	}
 }
 
@@ -519,7 +515,7 @@ static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	}
 
 	host->req = mrq;
-	mod_timer(&host->timer, jiffies + host->timeout_jiffies); 
+	mod_timer(&host->timer, jiffies + host->timeout_jiffies);
 	host->state = CMD;
 	writel(TIFM_CTRL_LED | readl(sock->addr + SOCK_CONTROL),
 	       sock->addr + SOCK_CONTROL);
@@ -622,7 +618,7 @@ static void tifm_sd_request_nodma(struct mmc_host *mmc, struct mmc_request *mrq)
 	}
 
 	host->req = mrq;
-	mod_timer(&host->timer, jiffies + host->timeout_jiffies); 
+	mod_timer(&host->timer, jiffies + host->timeout_jiffies);
 	host->state = CMD;
 	writel(TIFM_CTRL_LED | readl(sock->addr + SOCK_CONTROL),
 	       sock->addr + SOCK_CONTROL);
@@ -813,15 +809,15 @@ static int tifm_sd_initialize_host(struct tifm_sd *host)
 	writel(TIFM_MMCSD_RXDE, sock->addr + SOCK_MMCSD_BUFFER_CONFIG);
 
 	// command timeout fixed to 64 clocks for now
-	writel(64, sock->addr + SOCK_MMCSD_COMMAND_TO); 
+	writel(64, sock->addr + SOCK_MMCSD_COMMAND_TO);
 	writel(TIFM_MMCSD_INAB, sock->addr + SOCK_MMCSD_COMMAND);
 
 	/* INAB should take much less than reset */
 	for (rc = 1; rc <= 16; rc <<= 1) {
 		host_status = readl(sock->addr + SOCK_MMCSD_STATUS);
 		writel(host_status, sock->addr + SOCK_MMCSD_STATUS);
-		if(!(host_status & TIFM_MMCSD_ERRMASK)
-		   && (host_status & TIFM_MMCSD_EOC)) {
+		if (!(host_status & TIFM_MMCSD_ERRMASK)
+		    && (host_status & TIFM_MMCSD_EOC)) {
 			rc = 0;
 			break;
 		}
@@ -901,7 +897,7 @@ static void tifm_sd_remove(struct tifm_dev *sock)
 	struct tifm_sd *host = mmc_priv(mmc);
 
 	del_timer_sync(&host->timer);
-	tifm_sd_terminate(host);	
+	tifm_sd_terminate(host);
 	wait_event_timeout(host->notify, host->flags & EJECT_DONE,
 			   host->timeout_jiffies);
 	tasklet_kill(&host->finish_tasklet);

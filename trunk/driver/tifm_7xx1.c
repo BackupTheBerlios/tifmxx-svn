@@ -9,7 +9,7 @@
  *
  */
 
-#include "linux/tifm.h"
+#include <linux/tifm.h>
 #include <linux/dma-mapping.h>
 
 #define DRIVER_NAME "tifm_7xx1"
@@ -167,8 +167,9 @@ static int tifm_7xx1_switch_media(struct tifm_adapter *fm)
 
 			if (kthread_should_stop())
 				continue;
-			media_id = tifm_7xx1_toggle_sock_power(tifm_7xx1_sock_addr(fm->addr, cnt),
-							       fm->num_sockets == 2);
+			media_id = tifm_7xx1_toggle_sock_power(
+					tifm_7xx1_sock_addr(fm->addr, cnt),
+					fm->num_sockets == 2);
 			if (media_id) {
 				sock = tifm_alloc_device(fm);
 				if (sock) {
@@ -208,7 +209,7 @@ static int tifm_7xx1_switch_media(struct tifm_adapter *fm)
 			       fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 			writel(TIFM_IRQ_FIFOMASK(socket_change_set)
 			       | TIFM_IRQ_CARDMASK(socket_change_set),
-			       fm->addr + FM_SET_INTERRUPT_ENABLE);	
+			       fm->addr + FM_SET_INTERRUPT_ENABLE);
 			writel(TIFM_IRQ_ENABLE,
 			       fm->addr + FM_SET_INTERRUPT_ENABLE);
 		} else {
@@ -217,7 +218,7 @@ static int tifm_7xx1_switch_media(struct tifm_adapter *fm)
 				if (fm->sockets[cnt])
 					fm->socket_change_set |= 1 << cnt;
 			}
-			
+
 			if (!fm->socket_change_set) {
 				spin_unlock_irqrestore(&fm->lock, flags);
 				return 0;
@@ -251,12 +252,13 @@ static int tifm_7xx1_resume(struct pci_dev *dev)
 	pci_restore_state(dev);
 	pci_enable_device(dev);
 	pci_set_master(dev);
-	
+
 	dev_dbg(&dev->dev, "resuming host\n");
 
 	for (cnt = 0; cnt < fm->num_sockets; cnt++)
-		new_ids[cnt] = tifm_7xx1_toggle_sock_power(tifm_7xx1_sock_addr(fm->addr, cnt),
-							   fm->num_sockets == 2);
+		new_ids[cnt] = tifm_7xx1_toggle_sock_power(
+			tifm_7xx1_sock_addr(fm->addr, cnt),
+			fm->num_sockets == 2);
 	spin_lock_irqsave(&fm->lock, flags);
 	fm->socket_change_set = 0;
 	for (cnt = 0; cnt < fm->num_sockets; cnt++) {
@@ -287,7 +289,7 @@ static int tifm_7xx1_resume(struct pci_dev *dev)
 	       fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 	writel(TIFM_IRQ_FIFOMASK(fm->socket_change_set)
 	       | TIFM_IRQ_CARDMASK(fm->socket_change_set),
-	       fm->addr + FM_SET_INTERRUPT_ENABLE);	
+	       fm->addr + FM_SET_INTERRUPT_ENABLE);
 	writel(TIFM_IRQ_ENABLE,
 	       fm->addr + FM_SET_INTERRUPT_ENABLE);
 	fm->socket_change_set = 0;
@@ -385,7 +387,7 @@ static void tifm_7xx1_remove(struct pci_dev *dev)
 	spin_unlock_irqrestore(&fm->lock, flags);
 
 	kthread_stop(fm->media_switcher);
-	
+
 	tifm_remove_adapter(fm);
 
 	pci_set_drvdata(dev, NULL);

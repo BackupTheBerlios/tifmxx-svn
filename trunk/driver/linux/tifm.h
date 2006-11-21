@@ -85,7 +85,12 @@ enum {
 #define TIFM_DMA_TX               0x00008000 /* Meaning of this constant is unverified */
 #define TIFM_DMA_EN               0x00000001 /* Meaning of this constant is unverified */
 
-typedef enum {FM_NULL = 0, FM_XD = 0x01, FM_MS = 0x02, FM_SD = 0x03} tifm_media_id;
+typedef enum {
+	FM_NULL = 0,
+	FM_XD = 0x01,
+	FM_MS = 0x02,
+	FM_SD = 0x03
+} tifm_media_id;
 
 struct tifm_driver;
 struct tifm_dev {
@@ -102,10 +107,11 @@ struct tifm_dev {
 };
 
 struct tifm_driver {
-	tifm_media_id        *id_table;	
+	tifm_media_id        *id_table;
 	int                  (*probe)(struct tifm_dev *dev);
 	void                 (*remove)(struct tifm_dev *dev);
-	int                  (*suspend)(struct tifm_dev *dev, pm_message_t state);
+	int                  (*suspend)(struct tifm_dev *dev,
+					pm_message_t state);
 	int                  (*resume)(struct tifm_dev *dev);
 
 	struct device_driver driver;
@@ -124,7 +130,8 @@ struct tifm_adapter {
 	struct class_device     cdev;
 	struct device           *dev;
 
-	void                    (*eject)(struct tifm_adapter *fm, struct tifm_dev *sock);
+	void                    (*eject)(struct tifm_adapter *fm,
+					 struct tifm_dev *sock);
 };
 
 struct tifm_adapter* tifm_alloc_adapter(void);
