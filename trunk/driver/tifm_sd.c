@@ -131,7 +131,8 @@ static int tifm_sd_transfer_data(struct tifm_dev *sock, struct tifm_sd *host,
 			while (host->buffer_size > host->buffer_pos) {
 				t_val = readl(sock->addr + SOCK_MMCSD_DATA);
 				buffer[host->buffer_pos++] = t_val & 0xff;
-				buffer[host->buffer_pos++] = (t_val >> 8) & 0xff;
+				buffer[host->buffer_pos++] =
+							(t_val >> 8) & 0xff;
 			}
 			tifm_sd_kunmap_atomic(buffer, host->req->data);
 		}
@@ -143,18 +144,22 @@ static int tifm_sd_transfer_data(struct tifm_dev *sock, struct tifm_sd *host,
 			for (cnt = 0; cnt < TIFM_MMCSD_FIFO_SIZE; cnt++) {
 				t_val = readl(sock->addr + SOCK_MMCSD_DATA);
 				if (host->buffer_size > host->buffer_pos) {
-					buffer[host->buffer_pos++] = t_val & 0xff;
-					buffer[host->buffer_pos++] = (t_val >> 8) & 0xff;
+					buffer[host->buffer_pos++] =
+							t_val & 0xff;
+					buffer[host->buffer_pos++] =
+							(t_val >> 8) & 0xff;
 				}
 			}
 		} else if ((cmd->data->flags & MMC_DATA_WRITE)
 			   && (host_status & TIFM_MMCSD_AE)) {
 			for (cnt = 0; cnt < TIFM_MMCSD_FIFO_SIZE; cnt++) {
 				if (host->buffer_size > host->buffer_pos) {
-					t_val = buffer[host->buffer_pos++] & 0x00ff;
-					t_val |= ((buffer[host->buffer_pos++]) << 8)
-						 & 0xff00;
-					writel(t_val, sock->addr + SOCK_MMCSD_DATA);
+					t_val = buffer[host->buffer_pos++]
+						& 0x00ff;
+					t_val |= ((buffer[host->buffer_pos++])
+						  << 8) & 0xff00;
+					writel(t_val,
+					       sock->addr + SOCK_MMCSD_DATA);
 				}
 			}
 		}
@@ -251,8 +256,9 @@ change_state:
 			tifm_sd_fetch_resp(cmd, sock);
 			if (cmd->data) {
 				host->state = BRS;
-			} else
+			} else {
 				host->state = READY;
+			}
 			goto change_state;
 		}
 		break;
@@ -316,6 +322,7 @@ change_state:
 		tasklet_schedule(&host->finish_tasklet);
 		return;
 	}
+
 }
 
 /* Called from interrupt handler */
@@ -332,6 +339,7 @@ static void tifm_sd_signal_irq(struct tifm_dev *sock,
 	if (sock_irq_status & FIFO_EVENT) {
 		fifo_status = readl(sock->addr + SOCK_DMA_FIFO_STATUS);
 		writel(fifo_status, sock->addr + SOCK_DMA_FIFO_STATUS);
+
 		host->flags |= fifo_status & FIFO_RDY;
 	}
 
@@ -359,7 +367,9 @@ static void tifm_sd_signal_irq(struct tifm_dev *sock,
 			if (host->req->stop) {
 				if (host->state == SCMD) {
 					host->req->stop->error = error_code;
-				} else if (host->state == BRS) {
+				} else if (host->state == BRS
+					   || host->state == CARD
+					   || host->state == FIFO) {
 					host->req->cmd->error = error_code;
 					tifm_sd_exec(host, host->req->stop);
 					host->state = SCMD;
@@ -390,31 +400,6 @@ done:
 	spin_unlock(&sock->lock);
 }
 
-static void tifm_sd_terminate(struct tifm_sd *host)
-{
-	struct tifm_dev *sock = host->dev;
-	unsigned long flags;
-
-	writel(0, sock->addr + SOCK_MMCSD_INT_ENABLE);
-	spin_lock_irqsave(&sock->lock, flags);
-	host->flags |= EJECT;
-	if (host->req) {
-		writel(TIFM_FIFO_INT_SETALL,
-		       sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
-		writel(0, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_SET);
-		tasklet_schedule(&host->finish_tasklet);
-	}
-	spin_unlock_irqrestore(&sock->lock, flags);
-}
-
-static void tifm_sd_timeout(struct tifm_sd *host)
-{
-	printk(KERN_ERR DRIVER_NAME
-	       ": card failed to respond for a long period of time\n");
-	tifm_sd_terminate(host);
-	tifm_eject(host->dev);
-}
-
 static void tifm_sd_prepare_data(struct tifm_sd *host, struct mmc_command *cmd)
 {
 	struct tifm_dev *sock = host->dev;
@@ -423,11 +408,10 @@ static void tifm_sd_prepare_data(struct tifm_sd *host, struct mmc_command *cmd)
 	/* DMA style IO */
 	dev_dbg(&sock->dev, "setting dma for %d blocks\n",
 		cmd->data->blocks);
-
 	writel(TIFM_FIFO_INT_SETALL,
-		sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
-	writel(long_log2(cmd->data->blksz) - 2,
-			sock->addr + SOCK_FIFO_PAGE_SIZE);
+	       sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
+	writel(ilog2(cmd->data->blksz) - 2,
+	       sock->addr + SOCK_FIFO_PAGE_SIZE);
 	writel(TIFM_FIFO_ENABLE, sock->addr + SOCK_FIFO_CONTROL);
 	writel(TIFM_FIFO_INTMASK, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_SET);
 
@@ -441,7 +425,7 @@ static void tifm_sd_prepare_data(struct tifm_sd *host, struct mmc_command *cmd)
 	if (cmd->data->flags & MMC_DATA_WRITE) {
 		writel(TIFM_MMCSD_TXDE, sock->addr + SOCK_MMCSD_BUFFER_CONFIG);
 		writel(dest_cnt | TIFM_DMA_TX | TIFM_DMA_EN,
-			sock->addr + SOCK_DMA_CONTROL);
+		       sock->addr + SOCK_DMA_CONTROL);
 	} else {
 		writel(TIFM_MMCSD_RXDE, sock->addr + SOCK_MMCSD_BUFFER_CONFIG);
 		writel(dest_cnt | TIFM_DMA_EN, sock->addr + SOCK_DMA_CONTROL);
@@ -472,7 +456,7 @@ static void tifm_sd_set_data_timeout(struct tifm_sd *host,
 		writel(data_timeout, sock->addr + SOCK_MMCSD_DATA_TO);
 		writel(TIFM_MMCSD_DPE
 		       | readl(sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG),
-			sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG);
+		       sock->addr + SOCK_MMCSD_SDIO_MODE_CONFIG);
 	}
 }
 
@@ -533,8 +517,9 @@ err_out:
 	mmc_request_done(mmc, mrq);
 }
 
-static void tifm_sd_end_cmd(struct tifm_sd *host)
+static void tifm_sd_end_cmd(unsigned long data)
 {
+	struct tifm_sd *host = (struct tifm_sd*)data;
 	struct tifm_dev *sock = host->dev;
 	struct mmc_host *mmc = tifm_get_drvdata(sock);
 	struct mmc_request *mrq;
@@ -557,8 +542,8 @@ static void tifm_sd_end_cmd(struct tifm_sd *host)
 	r_data = mrq->cmd->data;
 	if (r_data) {
 		if (r_data->flags & MMC_DATA_WRITE) {
-			r_data->bytes_xfered = host->written_blocks *
-						r_data->blksz;
+			r_data->bytes_xfered = host->written_blocks
+					       * r_data->blksz;
 		} else {
 			r_data->bytes_xfered = r_data->blocks -
 				readl(sock->addr + SOCK_MMCSD_NUM_BLOCKS) - 1;
@@ -572,7 +557,7 @@ static void tifm_sd_end_cmd(struct tifm_sd *host)
 	}
 
 	writel((~TIFM_CTRL_LED) & readl(sock->addr + SOCK_CONTROL),
-			sock->addr + SOCK_CONTROL);
+	       sock->addr + SOCK_CONTROL);
 
 	spin_unlock_irqrestore(&sock->lock, flags);
 	mmc_request_done(mmc, mrq);
@@ -631,8 +616,9 @@ err_out:
 	mmc_request_done(mmc, mrq);
 }
 
-static void tifm_sd_end_cmd_nodma(struct tifm_sd *host)
+static void tifm_sd_end_cmd_nodma(unsigned long data)
 {
+	struct tifm_sd *host = (struct tifm_sd*)data;
 	struct tifm_dev *sock = host->dev;
 	struct mmc_host *mmc = tifm_get_drvdata(sock);
 	struct mmc_request *mrq;
@@ -673,11 +659,40 @@ static void tifm_sd_end_cmd_nodma(struct tifm_sd *host)
 	}
 
 	writel((~TIFM_CTRL_LED) & readl(sock->addr + SOCK_CONTROL),
-			sock->addr + SOCK_CONTROL);
+	       sock->addr + SOCK_CONTROL);
 
 	spin_unlock_irqrestore(&sock->lock, flags);
 
 	mmc_request_done(mmc, mrq);
+}
+
+static void tifm_sd_terminate(struct tifm_sd *host)
+{
+	struct tifm_dev *sock = host->dev;
+	unsigned long flags;
+
+	writel(0, sock->addr + SOCK_MMCSD_INT_ENABLE);
+	mmiowb();
+	spin_lock_irqsave(&sock->lock, flags);
+	host->flags |= EJECT;
+	if (host->req) {
+		writel(TIFM_FIFO_INT_SETALL,
+		       sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
+		writel(0, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_SET);
+		tasklet_schedule(&host->finish_tasklet);
+	}
+	spin_unlock_irqrestore(&sock->lock, flags);
+}
+
+static void tifm_sd_abort(unsigned long data)
+{
+	struct tifm_sd *host = (struct tifm_sd*)data;
+
+	printk(KERN_ERR DRIVER_NAME
+	       ": card failed to respond for a long period of time");
+
+	tifm_sd_terminate(host);
+	tifm_eject(host->dev);
 }
 
 static void tifm_sd_ios(struct mmc_host *mmc, struct mmc_ios *ios)
@@ -782,6 +797,7 @@ static int tifm_sd_initialize_host(struct tifm_sd *host)
 	struct tifm_dev *sock = host->dev;
 
 	writel(0, sock->addr + SOCK_MMCSD_INT_ENABLE);
+	mmiowb();
 	host->clk_div = 61;
 	host->clk_freq = 20000000;
 	writel(TIFM_MMCSD_RESET, sock->addr + SOCK_MMCSD_SYSTEM_CONTROL);
@@ -795,7 +811,7 @@ static int tifm_sd_initialize_host(struct tifm_sd *host)
 			break;
 		}
 		msleep(rc);
-        }
+	}
 
 	if (rc) {
 		printk(KERN_ERR DRIVER_NAME
@@ -822,7 +838,7 @@ static int tifm_sd_initialize_host(struct tifm_sd *host)
 			break;
 		}
 		msleep(rc);
-        }
+	}
 
 	if (rc) {
 		printk(KERN_ERR DRIVER_NAME
@@ -832,6 +848,7 @@ static int tifm_sd_initialize_host(struct tifm_sd *host)
 
 	writel(TIFM_MMCSD_DATAMASK | TIFM_MMCSD_ERRMASK,
 	       sock->addr + SOCK_MMCSD_INT_ENABLE);
+	mmiowb();
 
 	return 0;
 }
@@ -840,11 +857,10 @@ static int tifm_sd_probe(struct tifm_dev *sock)
 {
 	struct mmc_host *mmc;
 	struct tifm_sd *host;
-
 	int rc = -EIO;
 
 	if (!(TIFM_SOCK_STATE_OCCUPIED
-	      &	readl(sock->addr + SOCK_PRESENT_STATE))) {
+	      & readl(sock->addr + SOCK_PRESENT_STATE))) {
 		printk(KERN_WARNING DRIVER_NAME ": card gone, unexpectedly\n");
 		return rc;
 	}
@@ -857,17 +873,14 @@ static int tifm_sd_probe(struct tifm_dev *sock)
 	tifm_set_drvdata(sock, mmc);
 	host->dev = sock;
 	host->timeout_jiffies = msecs_to_jiffies(1000);
-	init_waitqueue_head(&host->notify);
 
+	init_waitqueue_head(&host->notify);
 	tasklet_init(&host->finish_tasklet,
-		     no_dma ? (void (*)(unsigned long))tifm_sd_end_cmd_nodma
-			    : (void (*)(unsigned long))tifm_sd_end_cmd,
+		     no_dma ? tifm_sd_end_cmd_nodma : tifm_sd_end_cmd,
 		     (unsigned long)host);
-	setup_timer(&host->timer, (void (*)(unsigned long))tifm_sd_timeout,
-		    (unsigned long)host);
+	setup_timer(&host->timer, tifm_sd_abort, (unsigned long)host);
 
 	tifm_sd_ops.request = no_dma ? tifm_sd_request_nodma : tifm_sd_request;
-
 	mmc->ops = &tifm_sd_ops;
 	mmc->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
 	mmc->caps = MMC_CAP_4_BIT_DATA | MMC_CAP_MULTIWRITE;
@@ -901,7 +914,6 @@ static void tifm_sd_remove(struct tifm_dev *sock)
 	wait_event_timeout(host->notify, host->flags & EJECT_DONE,
 			   host->timeout_jiffies);
 	tasklet_kill(&host->finish_tasklet);
-
 	mmc_remove_host(mmc);
 
 	/* The meaning of the bit majority in this constant is unknown. */
@@ -911,6 +923,8 @@ static void tifm_sd_remove(struct tifm_dev *sock)
 	tifm_set_drvdata(sock, NULL);
 	mmc_free_host(mmc);
 }
+
+#ifdef CONFIG_PM
 
 static int tifm_sd_suspend(struct tifm_dev *sock, pm_message_t state)
 {
@@ -937,6 +951,13 @@ static int tifm_sd_resume(struct tifm_dev *sock)
 		return mmc_resume_host(mmc);
 	}
 }
+
+#else
+
+#define tifm_sd_suspend NULL
+#define tifm_sd_resume NULL
+
+#endif /* CONFIG_PM */
 
 static tifm_media_id tifm_sd_id_tbl[] = {
 	FM_SD, 0

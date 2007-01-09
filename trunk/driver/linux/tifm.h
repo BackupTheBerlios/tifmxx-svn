@@ -36,10 +36,6 @@ enum {
 	SOCK_DMA_FIFO_STATUS           = 0x020,
 	SOCK_FIFO_CONTROL              = 0x024,
 	SOCK_FIFO_PAGE_SIZE            = 0x028,
-	SOCK_SM_COMMAND                = 0x094,
-	SOCK_SM_STATUS                 = 0x098,
-	SOCK_SM_BLOCK_ADDR             = 0x0a0,
-	SOCM_SM_DATA                   = 0x0b0, /* 0x0b0 - 0x0bc */
 	SOCK_MMCSD_COMMAND             = 0x104,
 	SOCK_MMCSD_ARG_LOW             = 0x108,
 	SOCK_MMCSD_ARG_HIGH            = 0x10c,
@@ -54,7 +50,7 @@ enum {
 	SOCK_MMCSD_BUFFER_CONFIG       = 0x130,
 	SOCK_MMCSD_SPI_CONFIG          = 0x134,
 	SOCK_MMCSD_SDIO_MODE_CONFIG    = 0x138,
-	SOCK_MMCSD_RESPONSE            = 0x144, /* 0x144 - 0x160 */
+	SOCK_MMCSD_RESPONSE            = 0x144,
 	SOCK_MMCSD_SDIO_SR             = 0x164,
 	SOCK_MMCSD_SYSTEM_CONTROL      = 0x168,
 	SOCK_MMCSD_SYSTEM_STATUS       = 0x16c,
@@ -85,12 +81,7 @@ enum {
 #define TIFM_DMA_TX               0x00008000 /* Meaning of this constant is unverified */
 #define TIFM_DMA_EN               0x00000001 /* Meaning of this constant is unverified */
 
-typedef enum {
-	FM_NULL = 0,
-	FM_XD = 0x01,
-	FM_MS = 0x02,
-	FM_SD = 0x03
-} tifm_media_id;
+typedef enum {FM_NULL = 0, FM_XD = 0x01, FM_MS = 0x02, FM_SD = 0x03} tifm_media_id;
 
 struct tifm_driver;
 struct tifm_dev {
@@ -111,7 +102,7 @@ struct tifm_driver {
 	int                  (*probe)(struct tifm_dev *dev);
 	void                 (*remove)(struct tifm_dev *dev);
 	int                  (*suspend)(struct tifm_dev *dev,
-					pm_message_t state);
+                                        pm_message_t state);
 	int                  (*resume)(struct tifm_dev *dev);
 
 	struct device_driver driver;
@@ -123,24 +114,22 @@ struct tifm_adapter {
 	unsigned int            irq_status;
 	unsigned int            socket_change_set;
 	wait_queue_head_t       change_set_notify;
-	struct tifm_dev         **sockets;
-	unsigned int            num_sockets;
 	unsigned int            id;
+	unsigned int            num_sockets;
+	struct tifm_dev         **sockets;
 	struct task_struct      *media_switcher;
 	struct class_device     cdev;
 	struct device           *dev;
 
-	void                    (*eject)(struct tifm_adapter *fm,
-					 struct tifm_dev *sock);
+	void                    (*eject)(struct tifm_adapter *fm, struct tifm_dev *sock);
 };
 
-struct tifm_adapter* tifm_alloc_adapter(void);
+struct tifm_adapter *tifm_alloc_adapter(void);
 void tifm_free_device(struct device *dev);
 void tifm_free_adapter(struct tifm_adapter *fm);
-int tifm_add_adapter(struct tifm_adapter *fm,
-		     int (*mediathreadfn)(struct tifm_adapter *fm));
+int tifm_add_adapter(struct tifm_adapter *fm, int (*mediathreadfn)(void *data));
 void tifm_remove_adapter(struct tifm_adapter *fm);
-struct tifm_dev* tifm_alloc_device(struct tifm_adapter *fm);
+struct tifm_dev *tifm_alloc_device(struct tifm_adapter *fm);
 int tifm_register_driver(struct tifm_driver *drv);
 void tifm_unregister_driver(struct tifm_driver *drv);
 void tifm_eject(struct tifm_dev *sock);
@@ -149,9 +138,10 @@ int tifm_map_sg(struct tifm_dev *sock, struct scatterlist *sg, int nents,
 void tifm_unmap_sg(struct tifm_dev *sock, struct scatterlist *sg, int nents,
 		   int direction);
 
-static inline void* tifm_get_drvdata(struct tifm_dev *dev)
+
+static inline void *tifm_get_drvdata(struct tifm_dev *dev)
 {
-	return dev_get_drvdata(&dev->dev);
+        return dev_get_drvdata(&dev->dev);
 }
 
 static inline void tifm_set_drvdata(struct tifm_dev *dev, void *data)

@@ -34,13 +34,13 @@ struct CFlash
 	short muiReadSectorCountStart;  // 0x086 (var_3)
 	int muiSMReadSector;     // 0x088 (var_4)
 	int var_5;               // 0x08C
-	int var_x90;             // 0x090
-	char var_x94[16];        // 0x094
-	char var_xa4;	         // 0x0A4
-	int var_xa8;             // 0x0A8
-	int var_xb0;             // 0x0B0
-	int var_xb4;             // 0x0B4
-	int var_7;               // 0x0B8
+	int var_x90;              // 0x090
+	short mwWrittenBlocks[8]; // 0x094 (var_x94)
+	char var_xa4;	          // 0x0A4
+	int var_xa8;              // 0x0A8
+	int var_xb0;              // 0x0B0
+	int var_xb4;              // 0x0B4
+	int var_7;                // 0x0B8
 	
 	CFlash(char *_base_addr);
 	virtual ~CFlash();

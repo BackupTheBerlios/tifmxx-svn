@@ -319,7 +319,7 @@ void
 CFlash::InitializeWriteBlocks()
 {
 	var_xa4 = 0;
-	sub_0_2ECE0(&var_x94, 0, 2 * ((mwSize < 16) ? 8 : 4));
+	sub_0_2ECE0(&mwWrittenBlocks, 0, 2 * ((mwSize < 16) ? 4 : 8));
 	// sub_0_2ECE0 - memset
 }
 

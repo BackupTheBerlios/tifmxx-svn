@@ -1,6 +1,7 @@
 obj-m	    += tifm_core.o tifm_7xx1.o tifm_sd.o
 
-KERNELDIR ?= /lib/modules/$(shell uname -r)/build
+#KERNELDIR ?= /lib/modules/$(shell uname -r)/build
+KERNELDIR ?= ~/linux-2.6
 PWD       := $(shell pwd)
 MODULE_INSTALLDIR = /lib/modules/$(shell uname -r)/misc
 EXTRA_CFLAGS = -DDEBUG
