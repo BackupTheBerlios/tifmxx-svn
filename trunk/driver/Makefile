@@ -1,4 +1,4 @@
-obj-m	    += tifm_core.o tifm_7xx1.o tifm_sd.o
+obj-m	    += tifm_core.o tifm_7xx1.o tifm_sd.o tifm_ms.o memstick.o
 
 #KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 KERNELDIR ?= ~/linux-2.6

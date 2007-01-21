@@ -21,7 +21,7 @@ CMS::WaitForMSINT()
 }
 
 char
-CMS::sub219F0(char arg_1, short arg_2)
+CMS::sub219F0(char arg_1, short arg_2) // exec_tpc: arg1 - tpc, arg2 - length
 {
 	int t_val = read32(base_addr + 0x190) & 0xfffeffff;
 
@@ -45,7 +45,7 @@ CMS::WriteRegisters()
 	write32(base_addr + 0x190, var_x104 | 0x2707);
 	for(cnt = 0; cnt < 32; cnt++)
 	{
-		if(cnt == 0x10 || muiMediaID == 0x12)
+		if(cnt == 0x10 && muiMediaID == 0x12)
 		{
 			lvar_x48[0x10] = (ms_regs.param.system == 0x88 || !var_x104) ? 0x88 : 0x80; // status.system
 		}

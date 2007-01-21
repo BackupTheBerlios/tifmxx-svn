@@ -74,7 +74,7 @@ CMemoryStick::IsrDpc()
 }
 
 char
-CMemoryStick::sub21DA0()
+CMemoryStick::sub21DA0() // read registers
 {
 	char lvar_x38[32];
 
@@ -97,7 +97,7 @@ CMemoryStick::sub21DA0()
 }
 
 char
-CMemoryStick::sub22370(int arg_1)
+CMemoryStick::sub22370(int arg_1) // set rw reg address
 {
 	write32(base_addr + 0x190, var_x104 | 0x2707);
 	write32(base_addr + 0x190, read32(base_addr + 0x190) | 0x0100);
@@ -151,11 +151,27 @@ CMemoryStick::InitializeCard()
 	if((rc = sub22370(0x1f001f00))) return rc;
 	if((rc = sub21DA0())) return rc;
 	muiMediaID = 0x12; var_x029 = 0x12;
-	if(ms_regs.status.type & 1) return 0;
-	if(ms_regs.status.category) return 0;
-	if(ms_regs.status.class > 3) return 0;
+	if (!(ms_regs.status.type & 1)) return 0;
+	if (ms_regs.status.category) return 0;
+	if (ms_regs.status.class > 3) return 0;
 	muiMediaID = 0x22; // MSPro device
 	return 0;
+}
+
+CMemoryStick::CMemoryStick(char *_base_addr, char serial_mode)
+	     : CFlash(_base_addr)
+{
+	sub1FEE50(&ms_event_x0c8); // initialize
+	var_x104 = 0x4010;
+	var_x0e1 = 0;
+	var_x0e2 = 0;
+	var_x108 = 0;
+	var_x10c = 0;
+	mbParallelInterface = serial_mode;
+	write32(base_addr + 0x190, 0x8000);
+	write32(base_addr + 0x190, 0x0a00);
+	write32(base_addr + 0x18c, 0xffffffff);
+	dwMS_STATUS = 0;
 }
 
 CMemoryStick::~CMemoryStick()

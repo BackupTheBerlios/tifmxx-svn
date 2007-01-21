@@ -62,7 +62,7 @@ protected:
 	char sub22370(int arg_1);
 
 public:
-	CMemoryStick(char *_base_addr) : CFlash(_base_addr) {};
+	CMemoryStick(char *_base_addr, char serial_mode);
 	virtual ~CMemoryStick(); //     vtable slot 0
 	virtual int IsrDpc();    //                 2
 	virtual int Isr(char arg_1, char arg_2); // 3
