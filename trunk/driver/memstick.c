@@ -261,12 +261,13 @@ memstick_error_t memstick_get_int(struct memstick_host *host,
 	memset(&mrq, 0, sizeof(struct memstick_request));
 
 	mrq.tpc = MS_TPC_GET_INT;
-	mrq.tpc_val_len = 1;
+	mrq.short_data_len = 1;
+	mrq.short_data_dir = READ;
 	mrq.retries = cmd_retries;
 	memstick_wait_for_req(host, &mrq);
 
 	if (!mrq.error)
-		*int_reg = mrq.tpc_data[0];
+		*int_reg = mrq.short_data[0];
 
 	return mrq.error;
 }
@@ -283,11 +284,12 @@ memstick_error_t memstick_set_rw_reg_adrs(struct memstick_host *host,
 	memset(&mrq, 0, sizeof(struct memstick_request));
 
 	mrq.tpc = MS_TPC_SET_RW_REG_ADRS;
-	mrq.tpc_arg_len = 4;
-	mrq.tpc_data[0] = read_off;
-	mrq.tpc_data[1] = read_len;
-	mrq.tpc_data[2] = write_off;
-	mrq.tpc_data[3] = write_len;
+	mrq.short_data_len = 4;
+	mrq.short_data[0] = read_off;
+	mrq.short_data[1] = read_len;
+	mrq.short_data[2] = write_off;
+	mrq.short_data[3] = write_len;
+	mrq.short_data_dir = WRITE;
 
 	mrq.retries = cmd_retries;
 	memstick_wait_for_req(host, &mrq);
@@ -304,9 +306,10 @@ memstick_error_t memstick_read_reg(struct memstick_host *host,
 	memset(&mrq, 0, sizeof(struct memstick_request));
 
 	mrq.tpc = MS_TPC_SET_RW_REG_ADRS;
-	mrq.tpc_arg_len = 4;
-	mrq.tpc_data[1] = sizeof(struct ms_register) - 1;
-	mrq.tpc_data[3] = sizeof(struct ms_register) - 1;
+	mrq.short_data_len = 4;
+	mrq.short_data[1] = sizeof(struct ms_register) - 1;
+	mrq.short_data[3] = sizeof(struct ms_register) - 1;
+	mrq.short_data_dir = WRITE;
 
 	mrq.retries = cmd_retries;
 	memstick_wait_for_req(host, &mrq);
@@ -316,13 +319,14 @@ memstick_error_t memstick_read_reg(struct memstick_host *host,
 	memset(&mrq, 0, sizeof(struct memstick_request));
 
 	mrq.tpc = MS_TPC_READ_REG;
-	mrq.tpc_val_len = sizeof(struct ms_register) - 1;
+	mrq.short_data_len = sizeof(struct ms_register) - 1;
+	mrq.short_data_dir = READ;
 
 	mrq.retries = cmd_retries;
 	memstick_wait_for_req(host, &mrq);
 
 	if (!mrq.error)
-		memcpy(ms_reg, mrq.tpc_data, sizeof(struct ms_register));
+		memcpy(ms_reg, mrq.short_data, sizeof(struct ms_register));
 
 	return mrq.error;
 }

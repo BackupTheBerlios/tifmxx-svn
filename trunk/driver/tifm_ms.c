@@ -20,44 +20,249 @@
 #define DRIVER_NAME "tifm_ms"
 #define DRIVER_VERSION "0.1"
 
+/* The meaning of the bit majority in this constant is unknown. */
+#define TIFM_MS_SERIAL       0x04010
+
+#define TIFM_MS_SYS_LATCH    0x00100
+#define TIFM_MS_SYS_NOT_RDY  0x00800
+#define TIFM_MS_SYS_DATA     0x10000
+
+/* Hardware flags */
+enum {
+	FIFO_RDY = 0x0001, /* fifo operation finished  */
+	EJECT    = 0x0002, /* drop all commands        */
+	ERR_TO   = 0x0100, /* command time-out         */
+	ERR_CRC  = 0x0200, /* crc error                */
+	READY    = 0x1000, /* TPC completed            */
+	CARD_INT = 0x2000  /* card operation completed */
+};
+
 struct tifm_ms {
 	struct tifm_dev     *dev;
-
-	unsigned int        cmd_tr_mode_mask;
-	unsigned int        flags;
-
+	unsigned int        state;
+	unsigned int        desired_state;
+	unsigned int        mode_mask;
 	unsigned long       timeout_jiffies;
 
-//	struct tasklet_struct finish_tasklet;
-	struct timer_list     timer;
-//	struct memstick_request    *req;
+	struct tasklet_struct finish_tasklet;
+	struct timer_list         timer;
+	struct memstick_request   *req;
 //	wait_queue_head_t     notify;
 
-//	size_t                written_blocks;
-//	size_t                buffer_size;
-//	size_t                buffer_pos;
 };
 
 /* Called from interrupt handler */
 static void tifm_ms_signal_irq(struct tifm_dev *sock,
 			       unsigned int sock_irq_status)
 {
+	struct tifm_ms *host;
+	unsigned int host_status = 0, fifo_status = 0;
+
+	spin_lock(&sock->lock);
+	host = memstick_priv((struct memstick_host*)tifm_get_drvdata(sock));
+
+	if (sock_irq_status & TIFM_IRQ_FIFOMASK(1)) {
+		fifo_status = readl(sock->addr + SOCK_DMA_FIFO_STATUS);
+		writel(fifo_status, sock->addr + SOCK_DMA_FIFO_STATUS);
+
+		host->state |= fifo_status & FIFO_RDY;
+	}
+
+	if (sock_irq_status & TIFM_IRQ_CARDMASK(1)) {
+		host_status = readl(sock->addr + SOCK_MS_STATUS);
+		writel(TIFM_MS_SYS_NOT_RDY | readl(sock->addr + SOCK_MS_SYSTEM),
+		       sock->addr + SOCK_MS_SYSTEM);
+
+		if (!host->req)
+			goto done;
+
+		if (host_status & ERR_TO)
+			host->req->error = MEMSTICK_ERR_TIMEOUT;
+		else if (host_status & ERR_CRC)
+			host->req->error = MEMSTICK_ERR_TIMEOUT;
+
+		if (host->req->error) {
+			writel(TIFM_FIFO_INT_SETALL,
+			       sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
+			writel(TIFM_DMA_RESET, sock->addr + SOCK_DMA_CONTROL);
+			goto done;
+		}
+		host->state |= host_status & (READY | CARD_INT);	
+	}
+
+	if ((host->state & host->desired_state) != host->desired_state) {
+		spin_unlock(&sock->lock);
+		return;
+	}
+done:
+	tasklet_schedule(&host->finish_tasklet);
+	spin_unlock(&sock->lock);
+	return;
 }
 
-static void tifm_ms_request(struct memstick_host *host,
+static void tifm_ms_request(struct memstick_host *msh,
 			    struct memstick_request *req)
 {
+	struct tifm_ms *host = memstick_priv(msh);
+	struct tifm_dev *sock = host->dev;
+	unsigned int cnt;
+	unsigned int *data_ptr = (unsigned int*)req->short_data;
+	unsigned int cmd = (req->tpc & 0xf) << 12;
+	unsigned long flags;
+
+	spin_lock_irqsave(&sock->lock, flags);
+
+	if (host->state & EJECT) {
+		spin_unlock_irqrestore(&sock->lock, flags);
+		goto err_out;
+	}
+
+	if (host->req) {
+		printk(KERN_ERR DRIVER_NAME ": unfinished request detected\n");
+		spin_unlock_irqrestore(&sock->lock, flags);
+		goto err_out;
+	}
+
+	host->state = 0;
+	host->desired_state = READY;
+	host->desired_state |= req->need_card_int ? CARD_INT : 0;
+
+	/* The meaning of the bit majority in this constant is unknown. */
+	writel(host->mode_mask | 0x2607, sock->addr + SOCK_MS_SYSTEM);
+
+	if (req->sg) {
+		if (req->data_dir == WRITE) {
+		} else {
+		}
+
+		writel(TIFM_MS_SYS_DATA | readl(sock->addr + SOCK_MS_SYSTEM),
+		       sock->addr + SOCK_MS_SYSTEM);
+		host->desired_state |= FIFO_RDY;
+	}
+
+	if (req->short_data_dir == WRITE) {
+		for (cnt = 0; cnt < req->short_data_len; cnt += 4) {
+			writel(TIFM_MS_SYS_LATCH
+			       | readl(sock->addr + SOCK_MS_SYSTEM),
+			       sock->addr + SOCK_MS_SYSTEM);
+			writel(data_ptr[cnt >> 2], sock->addr + SOCK_MS_DATA);
+		}
+	} else {
+		cmd |= req->short_data_len & 0x3ff;
+	}
+
+	host->req = req;
+	mod_timer(&host->timer, jiffies + host->timeout_jiffies);
+
+	writel(TIFM_CTRL_LED | readl(sock->addr + SOCK_CONTROL),
+	       sock->addr + SOCK_CONTROL);
+
+	writel(TIFM_MS_SYS_NOT_RDY | readl(sock->addr + SOCK_MS_SYSTEM),
+	       sock->addr + SOCK_MS_SYSTEM);
+
+	writel(cmd, sock->addr + SOCK_MS_COMMAND);
+	spin_unlock_irqrestore(&sock->lock, flags);
+	return;
+
+err_out:
+	req->error = MEMSTICK_ERR_TIMEOUT;
+	memstick_request_done(msh, req);
 }
 
-static void tifm_ms_ios(struct memstick_host *host, struct memstick_ios *ios)
+static void tifm_ms_end_request(unsigned long data)
 {
+	struct tifm_ms *host = (struct tifm_ms*)data;
+	struct tifm_dev *sock = host->dev;
+	struct memstick_host *msh = tifm_get_drvdata(sock);
+	struct memstick_request *req;
+	unsigned int *data_ptr;
+	unsigned int cnt;
+	unsigned long flags;
+
+	spin_lock_irqsave(&sock->lock, flags);
+
+	del_timer(&host->timer);
+	req = host->req;
+	host->req = NULL;
+
+	if (!req) {
+		printk(KERN_ERR DRIVER_NAME ": no request to complete?\n");
+		spin_unlock_irqrestore(&sock->lock, flags);
+		return;
+	}
+
+	if (req->short_data_dir == READ) {
+		data_ptr = (unsigned int*)req->short_data;
+		for (cnt = 0; cnt < req->short_data_len; cnt += 4)
+			data_ptr[cnt >> 2] = readl(sock->addr + SOCK_MS_DATA);
+	}
+
+	if (req->sg) {
+		writel((~TIFM_MS_SYS_DATA) & readl(sock->addr + SOCK_MS_SYSTEM),
+		       sock->addr + SOCK_MS_SYSTEM);
+
+	}
+	writel((~TIFM_CTRL_LED) & readl(sock->addr + SOCK_CONTROL),
+	       sock->addr + SOCK_CONTROL);
+
+	spin_unlock_irqrestore(&sock->lock, flags);
+
+	memstick_request_done(msh, req);
+}
+
+static void tifm_ms_ios(struct memstick_host *msh, struct memstick_ios *ios)
+{
+	struct tifm_ms *host = memstick_priv(msh);
+	struct tifm_dev *sock = host->dev;
+	unsigned long flags;
+
+	spin_lock_irqsave(&sock->lock, flags);
+	if (ios->interface == MEMSTICK_SERIAL) {
+		host->mode_mask = TIFM_MS_SERIAL;
+		writel((~TIFM_CTRL_FAST_CLK)
+		       & readl(sock->addr + SOCK_CONTROL),
+		       sock->addr + SOCK_CONTROL);
+	} else if (ios->interface == MEMSTICK_PARALLEL) {
+		host->mode_mask = 0;
+		writel(TIFM_CTRL_FAST_CLK
+		       | readl(sock->addr + SOCK_CONTROL),
+		       sock->addr + SOCK_CONTROL);
+	}
+	spin_unlock_irqrestore(&sock->lock, flags);
+}
+
+static void tifm_ms_terminate(struct tifm_ms *host)
+{
+	struct tifm_dev *sock = host->dev;
+	unsigned long flags;
+
+	spin_lock_irqsave(&sock->lock, flags);
+	host->state |= EJECT;
+	if (host->req) {
+		writel(TIFM_FIFO_INT_SETALL,
+		       sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
+		writel(0, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_SET);
+		tasklet_schedule(&host->finish_tasklet);
+	}
+	spin_unlock_irqrestore(&sock->lock, flags);
+}
+
+static void tifm_ms_abort(unsigned long data)
+{
+	struct tifm_ms *host = (struct tifm_ms*)data;
+
+	printk(KERN_ERR DRIVER_NAME
+	       ": card failed to respond for a long period of time");
+
+	tifm_ms_terminate(host);
+	tifm_eject(host->dev);
 }
 
 static int tifm_ms_initialize_host(struct tifm_ms *host)
 {
 	struct tifm_dev *sock = host->dev;
 
-	host->cmd_tr_mode_mask = 0x4010;
+	host->mode_mask = 0x4010;
 	writel(0x8000, sock->addr + SOCK_MS_SYSTEM);
 	writel(0x0a00, sock->addr + SOCK_MS_SYSTEM);
 	writel(0xffffffff, sock->addr + SOCK_MS_STATUS);
@@ -84,8 +289,11 @@ static int tifm_ms_probe(struct tifm_dev *sock)
 	tifm_set_drvdata(sock, msh);
 	host->dev = sock;
 	host->timeout_jiffies = msecs_to_jiffies(1000);
+	tasklet_init(&host->finish_tasklet,
+		     tifm_ms_end_request,
+		     (unsigned long)host);
 
-	//setup_timer(&host->timer, tifm_ms_abort, (unsigned long)host);
+	setup_timer(&host->timer, tifm_ms_abort, (unsigned long)host);
 
 	msh->request = tifm_ms_request;
 	msh->set_ios = tifm_ms_ios;
@@ -109,10 +317,10 @@ static void tifm_ms_remove(struct tifm_dev *sock)
 	struct tifm_ms *host = memstick_priv(msh);
 
 	del_timer_sync(&host->timer);
-//	tifm_sd_terminate(host);
+	tifm_ms_terminate(host);
 //	wait_event_timeout(host->notify, host->flags & EJECT_DONE,
 //			   host->timeout_jiffies);
-//	tasklet_kill(&host->finish_tasklet);
+	tasklet_kill(&host->finish_tasklet);
 	memstick_remove_host(msh);
 
 	writel(0x0a00, sock->addr + SOCK_MS_SYSTEM);

@@ -120,19 +120,20 @@ struct memstick_device_id {
 };
 
 struct memstick_request {
-	memstick_tpc_t   tpc;
-	unsigned int     tpc_arg_len;
-	unsigned int     tpc_val_len;
-	unsigned char    tpc_data[32];
-	unsigned int     retries;
-	memstick_error_t error;
+	memstick_tpc_t     tpc;
+	unsigned char      short_data[32];
+	unsigned int       short_data_len;
+	struct scatterlist *sg;
+	unsigned int       sg_len;
+	unsigned int       bytes_xfered;
+	unsigned int       data_dir:1,
+			   short_data_dir:1,
+			   need_card_int:1;
+	unsigned int       retries;
+	memstick_error_t   error;
 
-	unsigned int     data_blocks;
-	unsigned int     data_dir:1;
-
-	unsigned int     bytes_xfered;
-	void             *done_data;
-	void             (*done)(struct memstick_request *req);
+	void               *done_data;
+	void               (*done)(struct memstick_request *req);
 };
 
 struct memstick_dev {
@@ -183,6 +184,9 @@ void memstick_free_host(struct memstick_host *host);
 void memstick_detect_change(struct memstick_host *host, unsigned long delay);
 
 void memstick_wait_for_req(struct memstick_host *host,
+			   struct memstick_request *mrq);
+
+void memstick_request_done(struct memstick_host *host,
 			   struct memstick_request *mrq);
 
 memstick_error_t memstick_get_int(struct memstick_host *host,
