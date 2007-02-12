@@ -119,13 +119,15 @@ struct memstick_device_id {
 	unsigned char class;
 };
 
+/* block size is always 512B (?) */
 struct memstick_request {
 	memstick_tpc_t     tpc;
 	unsigned char      short_data[32];
 	unsigned int       short_data_len;
 	struct scatterlist *sg;
 	unsigned int       sg_len;
-	unsigned int       bytes_xfered;
+	unsigned int       blocks;
+	unsigned int       blocks_transfered;
 	unsigned int       data_dir:1,
 			   short_data_dir:1,
 			   need_card_int:1;
@@ -175,6 +177,9 @@ struct memstick_driver {
 	struct device_driver      driver;
 };
 
+int memstick_register_driver(struct memstick_driver *drv);
+void memstick_unregister_driver(struct memstick_driver *drv);
+
 struct memstick_host *memstick_alloc_host(unsigned int extra,
 					  struct device *dev);
 
@@ -189,6 +194,15 @@ void memstick_wait_for_req(struct memstick_host *host,
 void memstick_request_done(struct memstick_host *host,
 			   struct memstick_request *mrq);
 
+static inline void *memstick_priv(struct memstick_host *host)
+{
+        return (void *)host->private;
+}
+
+/* canned commands */
+memstick_error_t memstick_read_reg(struct memstick_host *host,
+				   struct ms_register *ms_reg);
+
 memstick_error_t memstick_get_int(struct memstick_host *host,
 				  unsigned char *int_reg);
 
@@ -198,12 +212,8 @@ memstick_error_t memstick_set_rw_reg_adrs(struct memstick_host *host,
 					  unsigned char write_off,
 					  unsigned char write_len);
 
-memstick_error_t memstick_read_reg(struct memstick_host *host,
-				   struct ms_register *ms_reg);
+memstick_error_t memstick_set_cmd(struct memstick_host *host,
+				  memstick_cmd_t cmd, int req_ms_int);
 
-static inline void *memstick_priv(struct memstick_host *host)
-{
-        return (void *)host->private;
-}
 
 #endif
