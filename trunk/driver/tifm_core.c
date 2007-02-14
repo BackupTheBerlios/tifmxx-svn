@@ -89,8 +89,7 @@ static int tifm_device_probe(struct device *dev)
 	return rc;
 }
 
-static void tifm_dummy_signal_irq(struct tifm_dev *sock,
-				  unsigned int sock_irq_status)
+static void tifm_dummy_event(struct tifm_dev *sock)
 {
 	return;
 }
@@ -102,7 +101,8 @@ static int tifm_device_remove(struct device *dev)
 					       driver);
 
 	if (dev->driver && drv->remove) {
-		sock->signal_irq = tifm_dummy_signal_irq;
+		sock->event = tifm_dummy_event;
+		sock->data_event = tifm_dummy_event;
 		drv->remove(sock);
 		sock->dev.driver = NULL;
 	}
@@ -264,7 +264,8 @@ struct tifm_dev *tifm_alloc_device(struct tifm_adapter *fm, unsigned int id,
 		spin_lock_init(&sock->lock);
 		sock->type = type;
 		sock->socket_id = id;
-		sock->signal_irq = tifm_dummy_signal_irq;
+		sock->event = tifm_dummy_event;
+		sock->data_event = tifm_dummy_event;
 
 		sock->dev.parent = fm->cdev.dev;
 		sock->dev.bus = &tifm_bus_type;

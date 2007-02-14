@@ -34,8 +34,7 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id)
 {
 	struct tifm_adapter *fm = dev_id;
 	struct tifm_dev *sock;
-	unsigned int irq_status;
-	unsigned int sock_irq_status, cnt;
+	unsigned int irq_status, cnt;
 
 	spin_lock(&fm->lock);
 	irq_status = readl(fm->addr + FM_INTERRUPT_STATUS);
@@ -49,12 +48,12 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id)
 
 		for (cnt = 0; cnt < fm->num_sockets; cnt++) {
 			sock = fm->sockets[cnt].dev;
-			sock_irq_status = (irq_status >> cnt)
-					  & (TIFM_IRQ_FIFOMASK(1)
-					     | TIFM_IRQ_CARDMASK(1));
-
-			if (sock && sock_irq_status)
-				sock->signal_irq(sock, sock_irq_status);
+			if (sock) {
+				if ((irq_status >> cnt) & TIFM_IRQ_FIFOMASK(1))
+					sock->data_event(sock);
+				if ((irq_status >> cnt) & TIFM_IRQ_CARDMASK(1))
+					sock->event(sock);
+			}
 		}
 
 		fm->socket_change_set |= irq_status
