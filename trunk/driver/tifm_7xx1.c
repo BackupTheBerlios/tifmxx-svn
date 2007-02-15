@@ -15,6 +15,12 @@
 #define DRIVER_NAME "tifm_7xx1"
 #define DRIVER_VERSION "0.8"
 
+#define TIFM_IRQ_ENABLE           0x80000000
+#define TIFM_IRQ_SOCKMASK(x)      (x)
+#define TIFM_IRQ_CARDMASK(x)      ((x) << 8)
+#define TIFM_IRQ_FIFOMASK(x)      ((x) << 16)
+#define TIFM_IRQ_SETALL           0xffffffff
+
 static void tifm_7xx1_dummy_eject(struct tifm_adapter *fm,
 				  struct tifm_dev *sock)
 {
@@ -147,15 +153,15 @@ static void tifm_7xx1_switch_media(struct work_struct *work)
 			continue;
 		sock = fm->sockets[cnt].dev;
 		if (sock) {
-			printk(KERN_INFO DRIVER_NAME
-			       ": demand removing card from socket %u:%u\n",
-			       fm->id, cnt);
+			printk(KERN_INFO
+			       "%s : demand removing card from socket %u:%u\n",
+			       fm->cdev.class_id, fm->id, cnt);
 			fm->sockets[cnt].dev = NULL;
 			spin_unlock_irqrestore(&fm->lock, flags);
 			device_unregister(&sock->dev);
 			spin_lock_irqsave(&fm->lock, flags);
 			writel(0x0e00, tifm_7xx1_sock_addr(fm->addr, cnt)
-				       + SOCK_CONTROL);
+			       + SOCK_CONTROL);
 		}
 
 		spin_unlock_irqrestore(&fm->lock, flags);

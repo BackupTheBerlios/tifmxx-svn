@@ -277,20 +277,27 @@ static void tifm_sd_fetch_resp(struct mmc_command *cmd, struct tifm_dev *sock)
 static int tifm_sd_set_dma(struct tifm_sd *host, struct mmc_data *r_data)
 {
 	struct tifm_dev *sock = host->dev;
-	unsigned int dma_cnt;
+	unsigned int dma_cnt = sg_dma_len(&r_data->sg[host->sg_pos])
+			       / r_data->blksz;
+	unsigned int dma_off = host->block_pos * r_data->blksz;
 
+	if ((dma_cnt - host->block_pos) <= TIFM_DMA_TSIZE) {
+		dma_cnt -= host->block_pos;
+		host->block_pos = 0;
+	} else {
+		dma_cnt = TIFM_DMA_TSIZE;
+		host->block_pos += TIFM_DMA_TSIZE;
+	}
+	
 	if (host->sg_pos < host->sg_len) {
-		dma_cnt = r_data->sg[host->sg_pos].length;
-		dev_dbg(&sock->dev, "setting dma for %d blocks\n",
-			dma_cnt / r_data->blksz);
-		dma_cnt = ((dma_cnt / r_data->blksz) << 8) & TIFM_DMA_SZMASK;
-		writel(sg_dma_address(&r_data->sg[host->sg_pos]),
+		dev_dbg(&sock->dev, "setting dma for %d blocks\n", dma_cnt);
+		writel(sg_dma_address(&r_data->sg[host->sg_pos]) + dma_off,
 		       sock->addr + SOCK_DMA_ADDRESS);
 		if (r_data->flags & MMC_DATA_WRITE)
-			writel(dma_cnt | TIFM_DMA_TX | TIFM_DMA_EN,
+			writel((dma_cnt << 8) | TIFM_DMA_TX | TIFM_DMA_EN,
 			       sock->addr + SOCK_DMA_CONTROL);
 		else
-			writel(dma_cnt | TIFM_DMA_EN,
+			writel((dma_cnt << 8) | TIFM_DMA_EN,
 			       sock->addr + SOCK_DMA_CONTROL);
 
 		return 0;
@@ -366,8 +373,10 @@ static void tifm_sd_data_event(struct tifm_dev *sock)
 
 	if (host->req) {
 		cmd = host->req->cmd;
+		
 		if (cmd->data && (fifo_status & TIFM_FIFO_READY)) {
-			host->sg_pos++;
+			if (!host->block_pos)
+				host->sg_pos++;
 			if (tifm_sd_set_dma(host, cmd->data)) {
 				host->cmd_flags |= FIFO_READY;
 				tifm_sd_check_status(host);
@@ -392,6 +401,7 @@ static void tifm_sd_event(struct tifm_dev *sock)
 	spin_lock(&sock->lock);
 	host = mmc_priv((struct mmc_host*)tifm_get_drvdata(sock));
 	host_status = readl(sock->addr + SOCK_MMCSD_STATUS);
+	writel(host_status, sock->addr + SOCK_MMCSD_STATUS);
 	
 	if (host->req) {
 		cmd = host->req->cmd;
@@ -454,7 +464,7 @@ static void tifm_sd_event(struct tifm_dev *sock)
 done:
 	dev_dbg(&sock->dev, "host event: host_status %x, flags %x\n",
 		host_status, host->cmd_flags);
-	writel(host_status, sock->addr + SOCK_MMCSD_STATUS);
+//	writel(host_status, sock->addr + SOCK_MMCSD_STATUS);
 	spin_unlock(&sock->lock);
 }
 
@@ -643,8 +653,8 @@ static void tifm_sd_abort(unsigned long data)
 	struct tifm_sd *host = (struct tifm_sd*)data;
 
 	printk(KERN_ERR
-	       "%s : card failed to respond for a long period of time\n",
-	       host->dev->dev.bus_id);
+	       "%s : card failed to respond for a long period of time (%x, %x)\n",
+	       host->dev->dev.bus_id, host->req->cmd->opcode, host->cmd_flags);
 
 	tifm_eject(host->dev);
 }

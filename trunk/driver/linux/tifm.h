@@ -58,14 +58,8 @@ enum {
 	SOCK_MS_DATA                   = 0x188,
 	SOCK_MS_STATUS                 = 0x18c,
 	SOCK_MS_SYSTEM                 = 0x190,
-	SOCK_FIFO_ACCESS               = 0x200 };
-
-
-#define TIFM_IRQ_ENABLE           0x80000000
-#define TIFM_IRQ_SOCKMASK(x)      (x)
-#define TIFM_IRQ_CARDMASK(x)      ((x) << 8)
-#define TIFM_IRQ_FIFOMASK(x)      ((x) << 16)
-#define TIFM_IRQ_SETALL           0xffffffff
+	SOCK_FIFO_ACCESS               = 0x200
+};
 
 #define TIFM_CTRL_LED             0x00000040
 #define TIFM_CTRL_FAST_CLK        0x00000100
@@ -81,10 +75,7 @@ enum {
 #define TIFM_DMA_RESET            0x00000002 /* Meaning of this constant is unverified */
 #define TIFM_DMA_TX               0x00008000 /* Meaning of this constant is unverified */
 #define TIFM_DMA_EN               0x00000001 /* Meaning of this constant is unverified */
-#define TIFM_DMA_SZMASK           0x00007f00 /* Meaning of this constant is unverified */
-
-#define TIFM_SOCK_HAS_PAR_MS
-
+#define TIFM_DMA_TSIZE            0x0000007f /* Meaning of this constant is unverified */
 
 #define TIFM_TYPE_XD 1
 #define TIFM_TYPE_MS 2
