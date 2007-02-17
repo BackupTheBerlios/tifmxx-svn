@@ -122,6 +122,7 @@ struct tifm_adapter {
 	unsigned int            socket_change_set;
 	unsigned int            id;
 	unsigned int            num_sockets;
+	struct completion       *finish_me;
 
 	struct work_struct      media_switcher;
 	struct class_device     cdev;

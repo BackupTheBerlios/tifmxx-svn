@@ -78,7 +78,7 @@ static int tifm_device_probe(struct device *dev)
 	struct tifm_driver *drv = container_of(dev->driver, struct tifm_driver,
 					       driver);
 	int rc = -ENODEV;
- 
+
 	get_device(dev);
 	if (dev->driver && drv->probe) {
 		rc = drv->probe(sock);
@@ -328,7 +328,7 @@ static int __init tifm_init(void)
 {
 	int rc;
 
-	workqueue = create_workqueue("tifm");
+	workqueue = create_freezeable_workqueue("tifm");
 	if (!workqueue)
 		return -ENOMEM;
 
@@ -336,7 +336,7 @@ static int __init tifm_init(void)
 
 	if (rc)
 		goto err_out_wq;
-	
+
 	rc = class_register(&tifm_adapter_class);
 	if (!rc)
 		return 0;

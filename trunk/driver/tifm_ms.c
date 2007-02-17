@@ -61,8 +61,8 @@ static void tifm_ms_fifo_write(struct tifm_ms *host)
 	unsigned char *orig, *src;
 
 	orig = kmap_atomic(host->req->sg->page, KM_BIO_SRC_IRQ);
-	src = orig + host->req->sg->offset + (host->blocks << 9); 
-	
+	src = orig + host->req->sg->offset + (host->blocks << 9);
+
 	for (cnt = 0; cnt < 512; cnt += 4)
 		writel(*(unsigned int*)(src + cnt),
 		       sock->addr + SOCK_FIFO_ACCESS + cnt);
@@ -108,7 +108,6 @@ static void tifm_ms_data_event(struct tifm_dev *sock)
 				host->state |= fifo_status & FIFO_RDY;
 		} else
 			host->state |= fifo_status & FIFO_RDY;
-		
 	}
 	writel(fifo_status, sock->addr + SOCK_DMA_FIFO_STATUS);
 	spin_unlock(&sock->lock);
@@ -142,8 +141,7 @@ static void tifm_ms_event(struct tifm_dev *sock)
 		writel(TIFM_DMA_RESET, sock->addr + SOCK_DMA_CONTROL);
 		goto done;
 	}
-	host->state |= host_status & (READY | CARD_INT);	
-
+	host->state |= host_status & (READY | CARD_INT);
 
 	if ((host->state & host->desired_state) != host->desired_state) {
 		spin_unlock(&sock->lock);
@@ -171,7 +169,7 @@ static int tifm_ms_prepare_data(struct tifm_ms *host)
 	if (no_dma) {
 		if (req->data_dir == WRITE) {
 			tifm_ms_fifo_write(host);
-				
+
 			writel(dest_cnt | TIFM_DMA_TX,
 			       sock->addr + SOCK_DMA_CONTROL);
 		} else {
