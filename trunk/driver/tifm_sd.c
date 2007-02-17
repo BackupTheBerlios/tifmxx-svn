@@ -424,8 +424,11 @@ static void tifm_sd_event(struct tifm_dev *sock)
 		cmd = host->req->cmd;
 
 		if (host_status & TIFM_MMCSD_ERRMASK) {
-			if (host_status & TIFM_MMCSD_CTO)
+			if (host_status & TIFM_MMCSD_CTO) {
 				cmd_error = MMC_ERR_TIMEOUT;
+				writel(TIFM_MMCSD_CTO,
+				       sock->addr + SOCK_MMCSD_STATUS);
+			}
 			else if (host_status & TIFM_MMCSD_CCRC)
 				cmd_error = MMC_ERR_BADCRC;
 
@@ -928,12 +931,14 @@ static void tifm_sd_remove(struct tifm_dev *sock)
 static int tifm_sd_suspend(struct tifm_dev *sock, pm_message_t state)
 {
 	struct mmc_host *mmc = tifm_get_drvdata(sock);
+	struct tifm_sd *host = mmc_priv(mmc);
 	int rc;
 
 	rc = mmc_suspend_host(mmc, state);
 	/* The meaning of the bit majority in this constant is unknown. */
 	writel(0xfff8 & readl(sock->addr + SOCK_CONTROL),
 	       sock->addr + SOCK_CONTROL);
+	host->eject = 1;
 	return rc;
 }
 
@@ -946,8 +951,10 @@ static int tifm_sd_resume(struct tifm_dev *sock)
 	rc = tifm_sd_initialize_host(host);
 	dev_dbg(&sock->dev, "resume initialize %d\n", rc);
 
-	if (!rc)
+	if (!rc) {
+		host->eject = 0;
 		rc = mmc_resume_host(mmc);
+	}
 
 	return rc;
 }

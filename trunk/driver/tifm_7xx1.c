@@ -270,15 +270,13 @@ static int tifm_7xx1_resume(struct pci_dev *dev)
 		fm->socket_change_set ^= good_sockets & fm->socket_change_set;
 	}
 
-	if (bad_sockets) {
-		fm->socket_change_set |= bad_sockets;
-		spin_unlock_irqrestore(&fm->lock, flags);
-		tifm_7xx1_switch_media(&fm->media_switcher);
-	} else {
-		spin_unlock_irqrestore(&fm->lock, flags);
-		writel(TIFM_IRQ_ENABLE,
-		       fm->addr + FM_SET_INTERRUPT_ENABLE);
-	}
+	fm->socket_change_set |= bad_sockets;
+	if (fm->socket_change_set)		
+		tifm_queue_work(&fm->media_switcher);
+
+	spin_unlock_irqrestore(&fm->lock, flags);
+	writel(TIFM_IRQ_ENABLE,
+	       fm->addr + FM_SET_INTERRUPT_ENABLE);
 
 	return 0;
 }

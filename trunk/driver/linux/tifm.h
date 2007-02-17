@@ -111,8 +111,8 @@ struct tifm_driver {
 
 /* Socket caps: */
 enum {
-	TIFM_SOCK_XD_CAP = 0x0001, // socket supports xD cards
-	TIFM_SOCK_MS_PIF = 0x0002  // socket has Memorystick parallel i/f
+	TIFM_SOCK_XD_CAP   = 0x0001,  // socket supports xD cards
+	TIFM_SOCK_MS_PIF   = 0x0002   // socket has Memorystick parallel i/f
 };
 
 struct tifm_adapter {
