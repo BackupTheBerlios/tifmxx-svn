@@ -932,7 +932,7 @@ static int tifm_sd_resume(struct tifm_dev *sock)
 	rc = tifm_sd_initialize_host(host);
 	dev_dbg(&sock->dev, "resume initialize %d\n", rc);
 
-	if (!rc)
+	if (rc)
 		host->eject = 1;
 	else
 		rc = mmc_resume_host(mmc);
