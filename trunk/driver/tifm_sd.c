@@ -107,7 +107,7 @@ struct tifm_sd {
 };
 
 /* for some reason, host won't respond correctly to readw/writew */
-static void tifm_sd_read_fifo(struct tifm_dev *sock, struct scatterlist *sg,
+static void tifm_sd_read_fifo(struct tifm_dev *sock, struct page *pg,
 			      unsigned int off, unsigned int cnt)
 {
 	unsigned char *buf;
@@ -116,7 +116,7 @@ static void tifm_sd_read_fifo(struct tifm_dev *sock, struct scatterlist *sg,
 //	dev_dbg(&sock->dev, "read %d from %d\n", w_cnt, w_off);
 	if (!cnt)
 		return;
-	buf = kmap_atomic(sg->page, KM_BIO_SRC_IRQ) + off;
+	buf = kmap_atomic(pg, KM_BIO_SRC_IRQ) + off;
 	while (pos < cnt) {
 		val = readl(sock->addr + SOCK_MMCSD_DATA);
 		buf[pos++] = val & 0xff;
@@ -127,7 +127,7 @@ static void tifm_sd_read_fifo(struct tifm_dev *sock, struct scatterlist *sg,
 	kunmap_atomic(buf - off, KM_BIO_SRC_IRQ);
 }
 
-static void tifm_sd_write_fifo(struct tifm_dev *sock, struct scatterlist *sg,
+static void tifm_sd_write_fifo(struct tifm_dev *sock, struct page *pg,
 			       unsigned int off, unsigned int cnt)
 {
 	unsigned char *buf;
@@ -135,7 +135,7 @@ static void tifm_sd_write_fifo(struct tifm_dev *sock, struct scatterlist *sg,
 
 	if (!cnt)
 		return;
-	buf = kmap_atomic(sg->page, KM_BIO_DST_IRQ) + off;
+	buf = kmap_atomic(pg, KM_BIO_DST_IRQ) + off;
 	while (pos < cnt) {
 		val = buf[pos++];
 		if (pos < cnt)
@@ -146,59 +146,40 @@ static void tifm_sd_write_fifo(struct tifm_dev *sock, struct scatterlist *sg,
 	kunmap_atomic(buf - off, KM_BIO_DST_IRQ);
 }
 
-static void tifm_sd_read_data(struct tifm_sd *host, unsigned int host_status)
+static void tifm_sd_transfer_data(struct tifm_sd *host,
+				  unsigned int host_status)
 {
 	struct tifm_dev *sock = host->dev;
 	struct mmc_command *cmd = host->req->cmd;
 	struct scatterlist *sg = cmd->data->sg;
 	unsigned int off, cnt, t_size = TIFM_MMCSD_FIFO_SIZE * 2;
+	unsigned int p_off, p_cnt;
+	struct page *pg;
 
-	if (host_status & (TIFM_MMCSD_AF | TIFM_MMCSD_BRS)) {
-		while (host->sg_pos < host->sg_len) {
-			off = sg[host->sg_pos].offset + host->block_pos;
+	while (t_size) {
+		cnt = sg[host->sg_pos].length - host->block_pos;
+		if (!cnt) {
+			host->block_pos = 0;
+			host->sg_pos++;
+			if (host->sg_pos == host->sg_len)
+				return;
 			cnt = sg[host->sg_pos].length - host->block_pos;
-			if (cnt < t_size) {
-				t_size -= cnt;
-				tifm_sd_read_fifo(sock, &sg[host->sg_pos],
-						  off, cnt);
-				host->sg_pos++;
-				host->block_pos = 0;
-				continue;
-			} else {
-				tifm_sd_read_fifo(sock, &sg[host->sg_pos],
-						  off, t_size);
-				host->block_pos += t_size;
-				break;
-			}
 		}
-	}
-}
+		off = sg[host->sg_pos].offset + host->block_pos;
 
-static void tifm_sd_write_data(struct tifm_sd *host, unsigned int host_status)
-{
-	struct tifm_dev *sock = host->dev;
-	struct mmc_command *cmd = host->req->cmd;
-	struct scatterlist *sg = cmd->data->sg;
-	unsigned int off, cnt, t_size = TIFM_MMCSD_FIFO_SIZE * 2;
+		pg = nth_page(sg[host->sg_pos].page, off >> PAGE_SHIFT);
+		p_off = offset_in_page(off);
+		p_cnt = PAGE_SIZE - p_off;
+		p_cnt = min(cnt, p_cnt);
+		p_cnt = min(p_cnt, t_size);
 
-	if (host_status & TIFM_MMCSD_AE) {
-		while (host->sg_pos < host->sg_len) {
-			off = sg[host->sg_pos].offset + host->block_pos;
-			cnt = sg[host->sg_pos].length - host->block_pos;
-			if (cnt < t_size) {
-				t_size -= cnt;
-				tifm_sd_write_fifo(sock, &sg[host->sg_pos],
-						   off, cnt);
-				host->sg_pos++;
-				host->block_pos = 0;
-				continue;
-			} else {
-				tifm_sd_write_fifo(sock, &sg[host->sg_pos],
-						   off, t_size);
-				host->block_pos += t_size;
-				break;
-			}
-		}
+		if (host_status & (TIFM_MMCSD_AF | TIFM_MMCSD_BRS))
+			tifm_sd_read_fifo(sock, pg, p_off, p_cnt);
+		else if (host_status & TIFM_MMCSD_AE)
+			tifm_sd_write_fifo(sock, pg, p_off, p_cnt);
+
+		t_size -= p_cnt;
+		host->block_pos += p_cnt;
 	}
 }
 
@@ -413,6 +394,7 @@ static void tifm_sd_event(struct tifm_dev *sock)
 	unsigned int host_status = 0;
 	int cmd_error = MMC_ERR_NONE;
 	struct mmc_command *cmd = 0;
+	unsigned long flags;
 
 	spin_lock(&sock->lock);
 	host = mmc_priv((struct mmc_host*)tifm_get_drvdata(sock));
@@ -424,11 +406,8 @@ static void tifm_sd_event(struct tifm_dev *sock)
 		cmd = host->req->cmd;
 
 		if (host_status & TIFM_MMCSD_ERRMASK) {
-			if (host_status & TIFM_MMCSD_CTO) {
+			if (host_status & TIFM_MMCSD_CTO)
 				cmd_error = MMC_ERR_TIMEOUT;
-				writel(TIFM_MMCSD_CTO,
-				       sock->addr + SOCK_MMCSD_STATUS);
-			}
 			else if (host_status & TIFM_MMCSD_CCRC)
 				cmd_error = MMC_ERR_BADCRC;
 
@@ -471,13 +450,17 @@ static void tifm_sd_event(struct tifm_dev *sock)
 		}
 
 		if (host->no_dma && cmd->data) {
-			if (cmd->data->flags & MMC_DATA_WRITE) {
+			local_irq_save(flags);
+			if (host_status & TIFM_MMCSD_AE) {
 				writel(host_status & TIFM_MMCSD_AE,
 				       sock->addr + SOCK_MMCSD_STATUS);
-				tifm_sd_write_data(host, host_status);
+				tifm_sd_transfer_data(host, host_status);
 				host_status &= ~TIFM_MMCSD_AE;
-			} else
-				tifm_sd_read_data(host, host_status);
+			} else if (host_status
+				   & (TIFM_MMCSD_AF | TIFM_MMCSD_BRS)) {
+				tifm_sd_transfer_data(host, host_status);
+			}
+			local_irq_restore(flags);
 		}
 
 		if (host_status & TIFM_MMCSD_EOFB)
@@ -931,14 +914,12 @@ static void tifm_sd_remove(struct tifm_dev *sock)
 static int tifm_sd_suspend(struct tifm_dev *sock, pm_message_t state)
 {
 	struct mmc_host *mmc = tifm_get_drvdata(sock);
-	struct tifm_sd *host = mmc_priv(mmc);
 	int rc;
 
 	rc = mmc_suspend_host(mmc, state);
 	/* The meaning of the bit majority in this constant is unknown. */
 	writel(0xfff8 & readl(sock->addr + SOCK_CONTROL),
 	       sock->addr + SOCK_CONTROL);
-	host->eject = 1;
 	return rc;
 }
 
@@ -951,10 +932,10 @@ static int tifm_sd_resume(struct tifm_dev *sock)
 	rc = tifm_sd_initialize_host(host);
 	dev_dbg(&sock->dev, "resume initialize %d\n", rc);
 
-	if (!rc) {
-		host->eject = 0;
+	if (!rc)
+		host->eject = 1;
+	else
 		rc = mmc_resume_host(mmc);
-	}
 
 	return rc;
 }

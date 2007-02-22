@@ -119,7 +119,7 @@ struct memstick_device_id {
 	unsigned char class;
 };
 
-/* block size is always 512B (?) */
+/* block size is always 512B */
 struct memstick_request {
 	memstick_tpc_t     tpc;
 	unsigned char      short_data[32];
@@ -127,7 +127,6 @@ struct memstick_request {
 	struct scatterlist *sg;
 	unsigned int       sg_len;
 	unsigned int       blocks;
-	unsigned int       blocks_transfered;
 	unsigned int       data_dir:1,
 			   short_data_dir:1,
 			   need_card_int:1;
@@ -158,7 +157,7 @@ struct memstick_host {
 	struct class_device    cdev;
 
 	struct memstick_ios    ios;
-	struct memstick_dev   *card;
+	struct memstick_dev    *card;
 	void                   (*request)(struct memstick_host *host,
 					  struct memstick_request *req);
 	void                   (*set_ios)(struct memstick_host *host,

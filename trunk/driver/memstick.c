@@ -44,7 +44,7 @@ static int memstick_null_id(struct memstick_device_id *id)
 static int memstick_bus_match(struct device *dev, struct device_driver *drv)
 {
 	struct memstick_dev *card = container_of(dev, struct memstick_dev,
-						  dev);
+						 dev);
 	struct memstick_driver *ms_drv = container_of(drv,
 						      struct memstick_driver,
 						      driver);
@@ -84,7 +84,7 @@ static int memstick_uevent(struct device *dev, char **envp, int num_envp,
 static int memstick_device_probe(struct device *dev)
 {
 	struct memstick_dev *card = container_of(dev, struct memstick_dev,
-						  dev);
+						 dev);
 	struct memstick_driver *drv = container_of(dev->driver,
 						   struct memstick_driver,
 						   driver);
@@ -200,7 +200,7 @@ static struct class memstick_host_class = {
 static void memstick_free_card(struct device *dev)
 {
 	struct memstick_dev *card = container_of(dev, struct memstick_dev,
-						  dev);
+						 dev);
 	kfree(card);
 }
 
@@ -247,6 +247,8 @@ void memstick_wait_for_req(struct memstick_host *host,
 	mrq->done_data = &complete;
 	mrq->done = memstick_wait_done;
 
+	dev_dbg(host->cdev.dev, "issuing request %x, %d\n", mrq->tpc,
+		mrq->short_data_len);
 	host->request(host, mrq);
 
 	wait_for_completion(&complete);
@@ -366,6 +368,7 @@ static void memstick_check(struct work_struct *work)
 	struct memstick_device_id media_id;
 	struct memstick_dev *card;
 
+	dev_dbg(host->cdev.dev, "memstick_check started\n");
 	mutex_lock(&host->lock);
 	if (MEMSTICK_POWER_ON != host->ios.power_mode)
 		memstick_power_on(host);
@@ -413,6 +416,7 @@ static void memstick_check(struct work_struct *work)
 	if (!host->card)
 		memstick_power_off(host);
 	mutex_unlock(&host->lock);
+	dev_dbg(host->cdev.dev, "memstick_check finished\n");
 }
 
 void memstick_request_done(struct memstick_host *host,
@@ -491,6 +495,7 @@ EXPORT_SYMBOL(memstick_remove_host);
 
 void memstick_free_host(struct memstick_host *host)
 {
+	mutex_destroy(&host->lock);
 	class_device_put(&host->cdev);
 }
 EXPORT_SYMBOL(memstick_free_host);
@@ -519,17 +524,13 @@ static int __init memstick_init(void)
 		return -ENOMEM;
 
 	rc = bus_register(&memstick_bus_type);
-	if (rc)
-		goto err_out_wq;
-
-	rc = class_register(&memstick_host_class);
+	if (!rc)
+		rc = class_register(&memstick_host_class);
 
 	if (!rc)
 		return 0;
 
 	bus_unregister(&memstick_bus_type);
-
-err_out_wq:
 	destroy_workqueue(workqueue);
 
 	return rc;
