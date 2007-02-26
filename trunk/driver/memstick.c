@@ -26,11 +26,8 @@ static DEFINE_SPINLOCK(memstick_host_lock);
 static int memstick_dev_match(struct memstick_dev *card,
 			      struct memstick_device_id *id)
 {
-	const unsigned char any_id = MEMSTICK_ANY_ID;
-
-	if ((id->type == any_id || id->type == card->type)
-	    && (id->category == any_id || id->category == card->category)
-	    && (id->class == any_id || id->class == card->class))
+	if ((id->type == card->type) && (id->category == card->category)
+	    && (id->class == card->class))
 		return 1;
 	else
 		return 0;
@@ -376,9 +373,15 @@ static void memstick_check(struct work_struct *work)
 	err = memstick_read_reg(host, &ms_reg);
 
 	if (!err) {
-		media_id.type = ms_reg.status.type;
-		media_id.category = ms_reg.status.category;
-		media_id.class = ms_reg.status.class;
+		dev_dbg(host->cdev.dev, "memstick media type %x, category %x, "
+			"class %x\n", ms_reg.status.type,
+			ms_reg.status.category, ms_reg.status.class);
+
+		media_id.type = ms_reg.status.type ? ms_reg.status.type : 0xff;
+		media_id.category = ms_reg.status.category
+				    ? ms_reg.status.category : 0xff;
+		media_id.class = ms_reg.status.class
+				 ? ms_reg.status.class : 0xff;
 
 		if (host->card && (!memstick_dev_match(host->card, &media_id)
 				   || host->card->check(host->card))) {

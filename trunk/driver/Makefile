@@ -1,12 +1,12 @@
 obj-m += tifm_core.o tifm_7xx1.o tifm_sd.o
-#obj-m += tifm_ms.o memstick.o ms_block.o
+obj-m += tifm_ms.o memstick.o ms_block.o
 
 
 KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 #KERNELDIR ?= ~/linux-2.6
 PWD       := $(shell pwd)
 MODULE_INSTALLDIR = /lib/modules/$(shell uname -r)/misc
-EXTRA_CFLAGS = #-DDEBUG
+EXTRA_CFLAGS = -DDEBUG
 
 all:
 	echo $(PWD)

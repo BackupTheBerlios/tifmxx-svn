@@ -111,7 +111,12 @@ typedef enum { MEMSTICK_ERR_NONE = 0,
 	       MEMSTICK_ERR_BADMEDIA = 3
 } memstick_error_t;
 
-#define MEMSTICK_ANY_ID (~0)
+/* I believe 0xff type/category/class is equivalent to 0x00 one */ 
+#define MEMSTICK_TYPE_LEGACY      0xff
+#define MEMSTICK_TYPE_PRO         0x01
+
+#define MEMSTICK_CATEGORY_STORAGE 0xff
+#define MEMSTICK_CLASS_GENERIC    0xff
 
 struct memstick_device_id {
 	unsigned char type;

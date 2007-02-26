@@ -227,9 +227,8 @@ static void tifm_ms_request(struct memstick_host *msh,
 	struct tifm_ms *host = memstick_priv(msh);
 	struct tifm_dev *sock = host->dev;
 	int sg_count = 0;
-	unsigned int *data_ptr = (unsigned int*)req->short_data;
 	unsigned int cmd = (req->tpc & 0xf) << 12;
-	unsigned int cnt, cmd_mask;
+	unsigned int cnt = 0, val, cmd_mask;
 	unsigned long flags;
 
 	spin_lock_irqsave(&sock->lock, flags);
@@ -281,16 +280,35 @@ static void tifm_ms_request(struct memstick_host *msh,
 	       sock->addr + SOCK_CONTROL);
 
 	/* The meaning of the bit majority in this constant is unknown. */
-	writel(host->mode_mask | 0x2607, sock->addr + SOCK_MS_SYSTEM);
+	writel(host->mode_mask | 0x2607
+	       | (req->short_data_dir == WRITE ? TIFM_MS_SYS_LATCH : 0),
+	       sock->addr + SOCK_MS_SYSTEM);
 
 	if (req->short_data_dir == WRITE) {
-		for (cnt = 0; cnt < req->short_data_len; cnt += 4) {
+		while (cnt < req->short_data_len) {
 			writel(TIFM_MS_SYS_LATCH
 			       | readl(sock->addr + SOCK_MS_SYSTEM),
 			       sock->addr + SOCK_MS_SYSTEM);
-			__raw_writel(data_ptr[cnt >> 2],
-				     sock->addr + SOCK_MS_DATA);
+			if (req->short_data_len - cnt >= 4) {
+				val = *(unsigned int*)(req->short_data + cnt);
+				__raw_writel(val, sock->addr + SOCK_MS_DATA);
+				cnt += 4;
+			} else {
+				val = req->short_data[cnt++];
+				if (cnt < req->short_data_len)
+					val = (val << 8)
+					      | req->short_data[cnt++];
+				if (cnt < req->short_data_len)
+					val = (val << 8)
+					      | req->short_data[cnt++];
+				writel(val, sock->addr + SOCK_MS_DATA);
+			}
 		}
+
+		writel(TIFM_MS_SYS_LATCH
+		       | readl(sock->addr + SOCK_MS_SYSTEM),
+		       sock->addr + SOCK_MS_SYSTEM);
+		writel(0, sock->addr + SOCK_MS_DATA);
 	}
 
 	cmd |= req->short_data_len;
@@ -321,8 +339,7 @@ static void tifm_ms_end_request(unsigned long data)
 	struct tifm_dev *sock = host->dev;
 	struct memstick_host *msh = tifm_get_drvdata(sock);
 	struct memstick_request *req;
-	unsigned int *data_ptr;
-	unsigned int cnt;
+	unsigned int cnt = 0, val = 0;
 	unsigned long flags;
 
 	spin_lock_irqsave(&sock->lock, flags);
@@ -338,16 +355,30 @@ static void tifm_ms_end_request(unsigned long data)
 		return;
 	}
 
+	writel((~TIFM_MS_SYS_DATA) & readl(sock->addr + SOCK_MS_SYSTEM),
+	       sock->addr + SOCK_MS_SYSTEM);
+
 	if ((req->short_data_dir == READ) && !req->error) {
-		data_ptr = (unsigned int*)req->short_data;
-		for (cnt = 0; cnt < req->short_data_len; cnt += 4)
-			data_ptr[cnt >> 2]
-				= __raw_readl(sock->addr + SOCK_MS_DATA);
+		while (cnt < req->short_data_len) {
+			val = readl(sock->addr + SOCK_MS_DATA);
+			if (req->short_data_len - cnt >= 4) {
+				*(unsigned int*)(req->short_data + cnt)
+					= cpu_to_le32(val);
+				cnt += 4;
+			} else {
+				req->short_data[cnt++] = val & 0xff;
+				if (cnt == req->short_data_len)
+					break;
+				req->short_data[cnt++] = (val >> 8) & 0xff;
+				if (cnt == req->short_data_len)
+					break;
+				req->short_data[cnt++] = (val >> 16) & 0xff;
+					break;
+			}
+		}
 	}
 
 	if (req->blocks) {
-		writel((~TIFM_MS_SYS_DATA) & readl(sock->addr + SOCK_MS_SYSTEM),
-		       sock->addr + SOCK_MS_SYSTEM);
 		if (!host->no_dma)
 			tifm_unmap_sg(sock, req->sg, req->sg_len,
 				      req->data_dir == WRITE
