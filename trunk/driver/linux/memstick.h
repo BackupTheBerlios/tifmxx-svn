@@ -203,6 +203,16 @@ static inline void *memstick_priv(struct memstick_host *host)
         return (void *)host->private;
 }
 
+inline void *memstick_get_drvdata(struct memstick_dev *card)
+{
+	return dev_get_drvdata(&card->dev);
+}
+
+inline void memstick_set_drvdata(struct memstick_dev *card, void *data)
+{
+	dev_set_drvdata(&card->dev, data);
+}
+
 /* canned commands */
 memstick_error_t memstick_read_reg(struct memstick_host *host,
 				   struct ms_register *ms_reg);

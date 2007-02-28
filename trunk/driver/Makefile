@@ -6,7 +6,7 @@ KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 #KERNELDIR ?= ~/linux-2.6
 PWD       := $(shell pwd)
 MODULE_INSTALLDIR = /lib/modules/$(shell uname -r)/misc
-EXTRA_CFLAGS = -DDEBUG
+#EXTRA_CFLAGS = -DDEBUG
 
 all:
 	echo $(PWD)

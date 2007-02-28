@@ -282,6 +282,34 @@ memstick_error_t memstick_read_reg(struct memstick_host *host,
 }
 EXPORT_SYMBOL(memstick_read_reg);
 
+memstick_error_t memstick_write_reg(struct memstick_host *host,
+				    struct ms_register *ms_reg)
+{
+	struct memstick_request mrq = {0};
+
+	mrq.tpc = MS_TPC_SET_RW_REG_ADRS;
+	mrq.short_data_len = 4;
+	mrq.short_data[1] = sizeof(struct ms_register) - 1;
+	mrq.short_data[3] = sizeof(struct ms_register) - 1;
+	mrq.short_data_dir = WRITE;
+
+	mrq.retries = cmd_retries;
+	memstick_wait_for_req(host, &mrq);
+	if (mrq.error)
+		return mrq.error;
+
+	memcpy(mrq.short_data, ms_reg, sizeof(struct ms_register));
+	mrq.tpc = MS_TPC_WRITE_REG;
+	mrq.short_data_len = sizeof(struct ms_register) - 1;
+	mrq.short_data_dir = WRITE;
+
+	mrq.retries = cmd_retries;
+	memstick_wait_for_req(host, &mrq);
+
+	return mrq.error;
+}
+EXPORT_SYMBOL(memstick_write_reg);
+
 memstick_error_t memstick_get_int(struct memstick_host *host,
 				  unsigned char *int_reg)
 {

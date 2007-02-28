@@ -74,6 +74,7 @@ module_param(fixed_timeout, bool, 0644);
 #define TIFM_MMCSD_CMD_AC     0x2000
 #define TIFM_MMCSD_CMD_ADTC   0x3000
 
+#define TIFM_MMCSD_MAX_BLOCK_SIZE  0x0800
 enum {
 	CMD_READY    = 0x0001,
 	FIFO_READY   = 0x0002,
@@ -104,7 +105,7 @@ struct tifm_sd {
 	int                   sg_pos;
 	unsigned int          block_pos;
 	struct scatterlist    bounce_buf;
-	unsigned int          io_word;
+	char                  bounce_buf_data[TIFM_MMCSD_MAX_BLOCK_SIZE];
 };
 
 /* for some reason, host won't respond correctly to readw/writew */
@@ -113,22 +114,23 @@ static void tifm_sd_read_fifo(struct tifm_sd *host, struct page *pg,
 {
 	struct tifm_dev *sock = host->dev;
 	unsigned char *buf;
-	unsigned int pos = 0;
+	unsigned int pos = 0, val;
 
 	buf = kmap_atomic(pg, KM_BIO_DST_IRQ) + off;
 	if (host->cmd_flags & DATA_CARRY) {
-		buf[pos++] = (host->io_word >> 8) & 0xff;
+		buf[pos++] = host->bounce_buf_data[0];
 		host->cmd_flags &= ~DATA_CARRY;
 	}
 
 	while (pos < cnt) {
-		host->io_word = readl(sock->addr + SOCK_MMCSD_DATA);
-		buf[pos++] = host->io_word & 0xff;
+		val = readl(sock->addr + SOCK_MMCSD_DATA);
+		buf[pos++] = val & 0xff;
 		if (pos == cnt) {
+			host->bounce_buf_data[0] = (val >> 8) & 0xff;
 			host->cmd_flags |= DATA_CARRY;
 			break;
 		}
-		buf[pos++] = (host->io_word >> 8) & 0xff;
+		buf[pos++] = (val >> 8) & 0xff;
 	}
 	kunmap_atomic(buf - off, KM_BIO_DST_IRQ);
 }
@@ -138,23 +140,24 @@ static void tifm_sd_write_fifo(struct tifm_sd *host, struct page *pg,
 {
 	struct tifm_dev *sock = host->dev;
 	unsigned char *buf;
-	unsigned int pos = 0;
+	unsigned int pos = 0, val;
 
 	buf = kmap_atomic(pg, KM_BIO_SRC_IRQ) + off;
 	if (host->cmd_flags & DATA_CARRY) {
-		host->io_word |= (buf[pos++] << 8) & 0xff00;
-		writel(host->io_word, sock->addr + SOCK_MMCSD_DATA);
+		val = host->bounce_buf_data[0] | ((buf[pos++] << 8) & 0xff00);
+		writel(val, sock->addr + SOCK_MMCSD_DATA);
 		host->cmd_flags &= ~DATA_CARRY;
 	}
 
 	while (pos < cnt) {
-		host->io_word = buf[pos++];
+		val = buf[pos++];
 		if (pos == cnt) {
+			host->bounce_buf_data[0] = val & 0xff;
 			host->cmd_flags |= DATA_CARRY;
 			break;
 		}
-		host->io_word |= (buf[pos++] << 8) & 0xff00;
-		writel(host->io_word, sock->addr + SOCK_MMCSD_DATA);
+		val |= (buf[pos++] << 8) & 0xff00;
+		writel(val, sock->addr + SOCK_MMCSD_DATA);
 	}
 	kunmap_atomic(buf - off, KM_BIO_SRC_IRQ);
 }
@@ -174,8 +177,15 @@ static void tifm_sd_transfer_data(struct tifm_sd *host)
 		if (!cnt) {
 			host->block_pos = 0;
 			host->sg_pos++;
-			if (host->sg_pos == host->sg_len)
+			if (host->sg_pos == host->sg_len) {
+				if ((r_data->flags & MMC_DATA_WRITE)
+				    && DATA_CARRY)
+					writel(host->bounce_buf_data[0],
+					       host->dev->addr
+					       + SOCK_MMCSD_DATA);
+				
 				return;
+			}
 			cnt = sg[host->sg_pos].length;
 		}
 		off = sg[host->sg_pos].offset + host->block_pos;
@@ -646,7 +656,8 @@ static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 
 			host->sg_len = r_data->sg_len;
 		} else {
-			host->bounce_buf.offset = 0;
+			host->bounce_buf.offset
+				= offset_in_page(host->bounce_buf_data);
 			host->bounce_buf.length = r_data->blksz;
 
 			if(1 != tifm_map_sg(sock, &host->bounce_buf, 1,
@@ -950,9 +961,7 @@ static int tifm_sd_probe(struct tifm_dev *sock)
 	host->dev = sock;
 	host->timeout_jiffies = msecs_to_jiffies(1000);
 
-	host->bounce_buf.page = alloc_page(GFP_KERNEL);
-	if (!host->bounce_buf.page)
-		goto out_free_mmc;
+	host->bounce_buf.page = virt_to_page(host->bounce_buf_data);
 
 	tasklet_init(&host->finish_tasklet, tifm_sd_end_cmd,
 		     (unsigned long)host);
@@ -982,13 +991,9 @@ static int tifm_sd_probe(struct tifm_dev *sock)
 
 	if (!rc)
 		rc = mmc_add_host(mmc);
-	if (rc)
-		goto out_free_mmc;
+	if (!rc)
+		return 0;
 
-	return 0;
-
-	__free_page(host->bounce_buf.page);
-out_free_mmc:
 	mmc_free_host(mmc);
 	return rc;
 }
@@ -1024,7 +1029,6 @@ static void tifm_sd_remove(struct tifm_dev *sock)
 	writel(0xfff8 & readl(sock->addr + SOCK_CONTROL),
 	       sock->addr + SOCK_CONTROL);
 
-	__free_page(host->bounce_buf.page);
 	mmc_free_host(mmc);
 }
 
