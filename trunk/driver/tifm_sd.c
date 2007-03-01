@@ -38,7 +38,7 @@ module_param(fixed_timeout, bool, 0644);
 #define TIFM_MMCSD_INAB       0x0080   /* abort / initialize command */
 #define TIFM_MMCSD_READ       0x8000
 
-#define TIFM_MMCSD_ERRMASK    0x01e0   /* set bits: CCRC, CTO, DCRC, DTO     */
+#define TIFM_MMCSD_ERRMASK    0x01e0   /* set bits: CCRC, CTO, DCRC, DTO */
 #define TIFM_MMCSD_EOC        0x0001   /* end of command phase  */
 #define TIFM_MMCSD_CD         0x0002   /* card detect           */
 #define TIFM_MMCSD_CB         0x0004   /* card enter busy state */
@@ -75,6 +75,7 @@ module_param(fixed_timeout, bool, 0644);
 #define TIFM_MMCSD_CMD_ADTC   0x3000
 
 #define TIFM_MMCSD_MAX_BLOCK_SIZE  0x0800
+
 enum {
 	CMD_READY    = 0x0001,
 	FIFO_READY   = 0x0002,
@@ -105,7 +106,7 @@ struct tifm_sd {
 	int                   sg_pos;
 	unsigned int          block_pos;
 	struct scatterlist    bounce_buf;
-	char                  bounce_buf_data[TIFM_MMCSD_MAX_BLOCK_SIZE];
+	unsigned char         bounce_buf_data[TIFM_MMCSD_MAX_BLOCK_SIZE];
 };
 
 /* for some reason, host won't respond correctly to readw/writew */
@@ -183,7 +184,7 @@ static void tifm_sd_transfer_data(struct tifm_sd *host)
 					writel(host->bounce_buf_data[0],
 					       host->dev->addr
 					       + SOCK_MMCSD_DATA);
-				
+
 				return;
 			}
 			cnt = sg[host->sg_pos].length;
@@ -286,7 +287,7 @@ int tifm_sd_set_dma_data(struct tifm_sd *host, struct mmc_data *r_data)
 		host->block_pos = 0;
 		host->sg_pos++;
 		if (host->sg_pos == host->sg_len)
-			return 1;		
+			return 1;
 	}
 
 	if (dma_len < t_size) {
@@ -475,7 +476,7 @@ static void tifm_sd_data_event(struct tifm_dev *sock)
 {
 	struct tifm_sd *host;
 	unsigned int fifo_status = 0;
-	struct mmc_data *r_data = 0;
+	struct mmc_data *r_data = NULL;
 
 	spin_lock(&sock->lock);
 	host = mmc_priv((struct mmc_host*)tifm_get_drvdata(sock));
@@ -504,7 +505,7 @@ static void tifm_sd_event(struct tifm_dev *sock)
 	struct tifm_sd *host;
 	unsigned int host_status = 0;
 	int cmd_error = MMC_ERR_NONE;
-	struct mmc_command *cmd = 0;
+	struct mmc_command *cmd = NULL;
 	unsigned long flags;
 
 	spin_lock(&sock->lock);
@@ -633,7 +634,7 @@ static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 		spin_unlock_irqrestore(&sock->lock, flags);
 		goto err_out;
 	}
-	
+
 	host->cmd_flags = 0;
 	host->block_pos = 0;
 	host->sg_pos = 0;
