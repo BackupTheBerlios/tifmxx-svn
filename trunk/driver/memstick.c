@@ -406,10 +406,8 @@ static void memstick_check(struct work_struct *work)
 			ms_reg.status.category, ms_reg.status.class);
 
 		media_id.type = ms_reg.status.type ? ms_reg.status.type : 0xff;
-		media_id.category = ms_reg.status.category
-				    ? ms_reg.status.category : 0xff;
-		media_id.class = ms_reg.status.class
-				 ? ms_reg.status.class : 0xff;
+		media_id.category = ms_reg.status.category;
+		media_id.class = ms_reg.status.class;
 
 		if (host->card && (!memstick_dev_match(host->card, &media_id)
 				   || host->card->check(host->card))) {

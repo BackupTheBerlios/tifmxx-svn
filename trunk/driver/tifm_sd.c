@@ -518,11 +518,11 @@ static void tifm_sd_event(struct tifm_dev *sock)
 		cmd = host->req->cmd;
 
 		if (host_status & TIFM_MMCSD_ERRMASK) {
-			if (host_status & TIFM_MMCSD_CTO) {
+			writel(host_status & TIFM_MMCSD_ERRMASK,
+			       sock->addr + SOCK_MMCSD_STATUS);
+			if (host_status & TIFM_MMCSD_CTO)
 				cmd_error = MMC_ERR_TIMEOUT;
-				writel(TIFM_MMCSD_CTO,
-				       sock->addr + SOCK_MMCSD_STATUS);
-			} else if (host_status & TIFM_MMCSD_CCRC)
+			else if (host_status & TIFM_MMCSD_CCRC)
 				cmd_error = MMC_ERR_BADCRC;
 
 			if (cmd->data) {

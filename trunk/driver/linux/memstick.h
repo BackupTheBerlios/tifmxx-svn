@@ -34,9 +34,9 @@ struct ms_param_register {
 } __attribute__((packed));
 
 struct ms_extra_data_register {
-	unsigned char overwrite_flag;
-	unsigned char management_flag;
-	unsigned char logical_address[2];
+	unsigned char  overwrite_flag;
+	unsigned char  management_flag;
+	unsigned short logical_address;
 } __attribute__((packed));
 
 struct ms_register {
@@ -47,10 +47,10 @@ struct ms_register {
 } __attribute__((packed));
 
 struct mspro_param_register {
-	unsigned char system;
-	unsigned char data_count[2];
-	unsigned char data_address[4];
-	unsigned char cmd_param;
+	unsigned char  system;
+	unsigned short data_count;
+	unsigned int   data_address;
+	unsigned char  cmd_param;
 } __attribute__((packed));
 
 struct mspro_register {
@@ -59,20 +59,22 @@ struct mspro_register {
 	unsigned char                reserved[8];
 } __attribute__((packed));
 
-typedef enum {
+enum {
 	MS_TPC_READ_LONG_DATA   = 0x02,
 	MS_TPC_READ_SHORT_DATA  = 0x03,
 	MS_TPC_READ_REG         = 0x04,
+	MS_TPC_READ_IO_DATA     = 0x05, // unverified
 	MS_TPC_GET_INT          = 0x07,
 	MS_TPC_SET_RW_REG_ADRS  = 0x08,
 	MS_TPC_EX_SET_CMD       = 0x09,
+	MS_TPC_WRITE_IO_DATA    = 0x0a, // unverified
 	MS_TPC_WRITE_REG        = 0x0b,
 	MS_TPC_WRITE_SHORT_DATA = 0x0c,
 	MS_TPC_WRITE_LONG_DATA  = 0x0d,
 	MS_TPC_SET_CMD          = 0x0e
-} memstick_tpc_t;
+};
 
-typedef enum {
+enum {
 	MS_CMD_BLOCK_END     = 0x33,
 	MS_CMD_RESET         = 0x3c,
 	MS_CMD_BLOCK_WRITE   = 0x55,
@@ -90,7 +92,18 @@ typedef enum {
 	MSPRO_CMD_ERASE      = 0x26,
 	MSPRO_CMD_SET_IBA    = 0x46,
 	MSPRO_CMD_SET_IBD    = 0x47
-} memstick_cmd_t;
+//	MSPRO_CMD_RESET
+//	MSPRO_CMD_WAKEUP
+//	MSPRO_CMD_IN_IO_DATA
+//	MSPRO_CMD_OUT_IO_DATA
+//	MSPRO_CMD_READ_IO_ATRB
+//	MSPRO_CMD_IN_IO_FIFO
+//	MSPRO_CMD_OUT_IO_FIFO
+//	MSPRO_CMD_IN_IOM
+//	MSPRO_CMD_OUT_IOM
+};
+
+#define MEMSTICK_DEF_PAGE_SIZE 0x0200
 
 struct memstick_ios {
 	unsigned char power_mode;
@@ -115,8 +128,8 @@ typedef enum { MEMSTICK_ERR_NONE = 0,
 #define MEMSTICK_TYPE_LEGACY      0xff
 #define MEMSTICK_TYPE_PRO         0x01
 
-#define MEMSTICK_CATEGORY_STORAGE 0xff
-#define MEMSTICK_CLASS_GENERIC    0xff
+#define MEMSTICK_CATEGORY_STORAGE 0x00
+#define MEMSTICK_CLASS_GENERIC    0x00
 
 struct memstick_device_id {
 	unsigned char type;
@@ -124,22 +137,16 @@ struct memstick_device_id {
 	unsigned char class;
 };
 
-/* block size is always 512B */
 struct memstick_request {
-	memstick_tpc_t     tpc;
-	unsigned char      short_data[32];
-	unsigned int       short_data_len;
-	struct scatterlist *sg;
-	unsigned int       sg_len;
-	unsigned int       blocks;
-	unsigned int       data_dir:1,
-			   short_data_dir:1,
-			   need_card_int:1;
-	unsigned int       retries;
-	memstick_error_t   error;
+	unsigned char       tpc;
+	unsigned char       data_dir:1,
+			    need_card_int:1;
+	struct scatterlist  sg;
+	unsigned int        retries;
+	memstick_error_t    error;
 
-	void               *done_data;
-	void               (*done)(struct memstick_request *req);
+	void                *done_data;
+	void                (*done)(struct memstick_request *req);
 };
 
 struct memstick_dev {
