@@ -53,12 +53,12 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id)
 		writel(TIFM_IRQ_ENABLE, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 
 		for (cnt = 0; cnt < fm->num_sockets; cnt++) {
-			sock = fm->sockets[cnt].dev;
+			sock = fm->sockets[cnt];
 			if (sock) {
 				if ((irq_status >> cnt) & TIFM_IRQ_FIFOMASK(1))
 					sock->data_event(sock);
 				if ((irq_status >> cnt) & TIFM_IRQ_CARDMASK(1))
-					sock->event(sock);
+					sock->card_event(sock);
 			}
 		}
 
@@ -78,15 +78,13 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-static unsigned char tifm_7xx1_toggle_sock_power(char __iomem *sock_addr,
-						 unsigned int caps)
+static unsigned char tifm_7xx1_toggle_sock_power(char __iomem *sock_addr)
 {
 	unsigned int s_state;
 	int cnt;
 
 	writel(0x0e00, sock_addr + SOCK_CONTROL);
 
-	/* half a second should be enough  */
 	for (cnt = 16; cnt <= 256; cnt <<= 1) {
 		if (!(TIFM_SOCK_STATE_POWERED
 		      & readl(sock_addr + SOCK_PRESENT_STATE)))
@@ -102,13 +100,14 @@ static unsigned char tifm_7xx1_toggle_sock_power(char __iomem *sock_addr,
 	writel(readl(sock_addr + SOCK_CONTROL) | TIFM_CTRL_LED,
 	       sock_addr + SOCK_CONTROL);
 
-	if (caps & TIFM_SOCK_XD_CAP) {
-		if (((readl(sock_addr + SOCK_PRESENT_STATE) >> 4) & 7) == 1)
-			msleep(40);
-	}
-	writel((s_state & 7) | 0x0c00, sock_addr + SOCK_CONTROL);
-	msleep(10);
+	/* xd needs some extra time before power on */
+	if (((readl(sock_addr + SOCK_PRESENT_STATE) >> 4) & 7)
+	    == TIFM_TYPE_XD)
+		msleep(40);
 
+	writel((s_state & 7) | 0x0c00, sock_addr + SOCK_CONTROL);
+	/* wait for power to stabilize */
+	msleep(20);
 	for (cnt = 16; cnt <= 256; cnt <<= 1) {
 		if ((TIFM_SOCK_STATE_POWERED
 		     & readl(sock_addr + SOCK_PRESENT_STATE)))
@@ -153,12 +152,12 @@ static void tifm_7xx1_switch_media(struct work_struct *work)
 	for (cnt = 0; cnt < fm->num_sockets; cnt++) {
 		if (!(socket_change_set & (1 << cnt)))
 			continue;
-		sock = fm->sockets[cnt].dev;
+		sock = fm->sockets[cnt];
 		if (sock) {
 			printk(KERN_INFO
 			       "%s : demand removing card from socket %u:%u\n",
 			       fm->cdev.class_id, fm->id, cnt);
-			fm->sockets[cnt].dev = NULL;
+			fm->sockets[cnt] = NULL;
 			spin_unlock_irqrestore(&fm->lock, flags);
 			device_unregister(&sock->dev);
 			spin_lock_irqsave(&fm->lock, flags);
@@ -169,8 +168,7 @@ static void tifm_7xx1_switch_media(struct work_struct *work)
 		spin_unlock_irqrestore(&fm->lock, flags);
 
 		media_id = tifm_7xx1_toggle_sock_power(
-				tifm_7xx1_sock_addr(fm->addr, cnt),
-				fm->sockets[cnt].caps);
+				tifm_7xx1_sock_addr(fm->addr, cnt));
 
 		// tifm_alloc_device will check if media_id is valid
 		sock = tifm_alloc_device(fm, cnt, media_id);
@@ -179,8 +177,8 @@ static void tifm_7xx1_switch_media(struct work_struct *work)
 
 			if (!device_register(&sock->dev)) {
 				spin_lock_irqsave(&fm->lock, flags);
-				if (!fm->sockets[cnt].dev) {
-					fm->sockets[cnt].dev = sock;
+				if (!fm->sockets[cnt]) {
+					fm->sockets[cnt] = sock;
 					sock = NULL;
 				}
 				spin_unlock_irqrestore(&fm->lock, flags);
@@ -236,12 +234,11 @@ static int tifm_7xx1_resume(struct pci_dev *dev)
 
 	for (rc = 0; rc < fm->num_sockets; rc++)
 		new_ids[rc] = tifm_7xx1_toggle_sock_power(
-					tifm_7xx1_sock_addr(fm->addr, rc),
-					fm->sockets[rc].caps);
+					tifm_7xx1_sock_addr(fm->addr, rc));
 	spin_lock_irqsave(&fm->lock, flags);
 	for (rc = 0; rc < fm->num_sockets; rc++) {
-		if (fm->sockets[rc].dev) {
-			if (fm->sockets[rc].dev->type == new_ids[rc])
+		if (fm->sockets[rc]) {
+			if (fm->sockets[rc]->type == new_ids[rc])
 				good_sockets |= 1 << rc;
 			else
 				bad_sockets |= 1 << rc;
@@ -271,7 +268,7 @@ static int tifm_7xx1_resume(struct pci_dev *dev)
 	}
 
 	fm->socket_change_set |= bad_sockets;
-	if (fm->socket_change_set)		
+	if (fm->socket_change_set)
 		tifm_queue_work(&fm->media_switcher);
 
 	spin_unlock_irqrestore(&fm->lock, flags);
@@ -318,18 +315,6 @@ static int tifm_7xx1_probe(struct pci_dev *dev,
 	if (!fm) {
 		rc = -ENOMEM;
 		goto err_out_int;
-	}
-
-	switch (fm->num_sockets) {
-	case 2:
-		fm->sockets[0].caps |= TIFM_SOCK_MS_PIF;
-		break;
-	case 4:
-		fm->sockets[0].caps |= TIFM_SOCK_XD_CAP;
-		fm->sockets[1].caps |= TIFM_SOCK_XD_CAP;
-		fm->sockets[2].caps |= TIFM_SOCK_XD_CAP | TIFM_SOCK_MS_PIF;
-		fm->sockets[3].caps |= TIFM_SOCK_XD_CAP;
-		break;
 	}
 
 	INIT_WORK(&fm->media_switcher, tifm_7xx1_switch_media);

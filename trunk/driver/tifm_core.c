@@ -101,7 +101,7 @@ static int tifm_device_remove(struct device *dev)
 					       driver);
 
 	if (dev->driver && drv->remove) {
-		sock->event = tifm_dummy_event;
+		sock->card_event = tifm_dummy_event;
 		sock->data_event = tifm_dummy_event;
 		drv->remove(sock);
 		sock->dev.driver = NULL;
@@ -155,14 +155,14 @@ static struct device_attribute tifm_dev_attrs[] = {
 };
 
 static struct bus_type tifm_bus_type = {
-	.name           = "tifm",
-	.dev_attrs      = tifm_dev_attrs,
-	.match          = tifm_bus_match,
-	.uevent         = tifm_uevent,
-	.probe          = tifm_device_probe,
-	.remove         = tifm_device_remove,
-	.suspend        = tifm_device_suspend,
-	.resume         = tifm_device_resume
+	.name      = "tifm",
+	.dev_attrs = tifm_dev_attrs,
+	.match     = tifm_bus_match,
+	.uevent    = tifm_uevent,
+	.probe     = tifm_device_probe,
+	.remove    = tifm_device_remove,
+	.suspend   = tifm_device_suspend,
+	.resume    = tifm_device_resume
 };
 
 static void tifm_free(struct class_device *cdev)
@@ -183,7 +183,7 @@ struct tifm_adapter *tifm_alloc_adapter(unsigned int num_sockets,
 	struct tifm_adapter *fm;
 
 	fm = kzalloc(sizeof(struct tifm_adapter)
-		     + sizeof(struct socket_t) * num_sockets, GFP_KERNEL);
+		     + sizeof(struct tifm_dev*) * num_sockets, GFP_KERNEL);
 	if (fm) {
 		fm->cdev.class = &tifm_adapter_class;
 		fm->cdev.dev = dev;
@@ -214,10 +214,9 @@ int tifm_add_adapter(struct tifm_adapter *fm)
 		spin_lock(&tifm_adapter_lock);
 		idr_remove(&tifm_adapter_idr, fm->id);
 		spin_unlock(&tifm_adapter_lock);
-		return rc;
 	}
 
-	return 0;
+	return rc;
 }
 EXPORT_SYMBOL(tifm_add_adapter);
 
@@ -227,8 +226,8 @@ void tifm_remove_adapter(struct tifm_adapter *fm)
 
 	flush_workqueue(workqueue);
 	for (cnt = 0; cnt < fm->num_sockets; ++cnt) {
-		if (fm->sockets[cnt].dev)
-			device_unregister(&fm->sockets[cnt].dev->dev);
+		if (fm->sockets[cnt])
+			device_unregister(&fm->sockets[cnt]->dev);
 	}
 
 	spin_lock(&tifm_adapter_lock);
@@ -264,7 +263,7 @@ struct tifm_dev *tifm_alloc_device(struct tifm_adapter *fm, unsigned int id,
 		spin_lock_init(&sock->lock);
 		sock->type = type;
 		sock->socket_id = id;
-		sock->event = tifm_dummy_event;
+		sock->card_event = tifm_dummy_event;
 		sock->data_event = tifm_dummy_event;
 
 		sock->dev.parent = fm->cdev.dev;

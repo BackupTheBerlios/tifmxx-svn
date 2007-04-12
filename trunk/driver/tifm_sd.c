@@ -16,6 +16,7 @@
 #include <linux/mmc/protocol.h>
 #include <linux/mmc/host.h>
 #include <linux/highmem.h>
+#include <linux/scatterlist.h>
 #include <asm/io.h>
 
 #define DRIVER_NAME "tifm_sd"
@@ -74,7 +75,7 @@ module_param(fixed_timeout, bool, 0644);
 #define TIFM_MMCSD_CMD_AC     0x2000
 #define TIFM_MMCSD_CMD_ADTC   0x3000
 
-#define TIFM_MMCSD_MAX_BLOCK_SIZE  0x0800
+#define TIFM_MMCSD_MAX_BLOCK_SIZE  0x0800UL
 
 enum {
 	CMD_READY    = 0x0001,
@@ -279,15 +280,13 @@ int tifm_sd_set_dma_data(struct tifm_sd *host, struct mmc_data *r_data)
 			return 1;
 	}
 
-	while (1) {
-		dma_len = sg_dma_len(&r_data->sg[host->sg_pos])
-			  - host->block_pos;
-		if (dma_len)
-			break;
+	dma_len = sg_dma_len(&r_data->sg[host->sg_pos]) - host->block_pos;
+	if (!dma_len) {
 		host->block_pos = 0;
 		host->sg_pos++;
 		if (host->sg_pos == host->sg_len)
 			return 1;
+		dma_len = sg_dma_len(&r_data->sg[host->sg_pos]);
 	}
 
 	if (dma_len < t_size) {
@@ -373,8 +372,10 @@ static unsigned int tifm_sd_op_flags(struct mmc_command *cmd)
 static void tifm_sd_exec(struct tifm_sd *host, struct mmc_command *cmd)
 {
 	struct tifm_dev *sock = host->dev;
-	unsigned int cmd_mask = tifm_sd_op_flags(cmd) |
-				(host->open_drain ? TIFM_MMCSD_ODTO : 0);
+	unsigned int cmd_mask = tifm_sd_op_flags(cmd);
+
+	if (host->open_drain)
+		cmd_mask |= TIFM_MMCSD_ODTO;
 
 	if (cmd->data && (cmd->data->flags & MMC_DATA_READ))
 		cmd_mask |= TIFM_MMCSD_READ;
@@ -500,7 +501,7 @@ static void tifm_sd_data_event(struct tifm_dev *sock)
 }
 
 /* Called from interrupt handler */
-static void tifm_sd_event(struct tifm_dev *sock)
+static void tifm_sd_card_event(struct tifm_dev *sock)
 {
 	struct tifm_sd *host;
 	unsigned int host_status = 0;
@@ -659,9 +660,8 @@ static void tifm_sd_request(struct mmc_host *mmc, struct mmc_request *mrq)
 
 			host->sg_len = r_data->sg_len;
 		} else {
-			host->bounce_buf.offset
-				= offset_in_page(host->bounce_buf_data);
-			host->bounce_buf.length = r_data->blksz;
+			sg_init_one(&host->bounce_buf, host->bounce_buf_data,
+				    r_data->blksz);
 
 			if(1 != tifm_map_sg(sock, &host->bounce_buf, 1,
 					    r_data->flags & MMC_DATA_WRITE
@@ -964,8 +964,6 @@ static int tifm_sd_probe(struct tifm_dev *sock)
 	host->dev = sock;
 	host->timeout_jiffies = msecs_to_jiffies(1000);
 
-	host->bounce_buf.page = virt_to_page(host->bounce_buf_data);
-
 	tasklet_init(&host->finish_tasklet, tifm_sd_end_cmd,
 		     (unsigned long)host);
 	setup_timer(&host->timer, tifm_sd_abort, (unsigned long)host);
@@ -988,7 +986,7 @@ static int tifm_sd_probe(struct tifm_dev *sock)
 
 //	mmc->max_req_size = mmc->max_seg_size;
 
-	sock->event = tifm_sd_event;
+	sock->card_event = tifm_sd_card_event;
 	sock->data_event = tifm_sd_data_event;
 	rc = tifm_sd_initialize_host(host);
 
@@ -1007,12 +1005,15 @@ static void tifm_sd_remove(struct tifm_dev *sock)
 	struct tifm_sd *host = mmc_priv(mmc);
 	unsigned long flags;
 
-	tasklet_kill(&host->finish_tasklet);
 	spin_lock_irqsave(&sock->lock, flags);
 	host->eject = 1;
 	writel(0, sock->addr + SOCK_MMCSD_INT_ENABLE);
 	mmiowb();
+	spin_unlock_irqrestore(&sock->lock, flags);
 
+	tasklet_kill(&host->finish_tasklet);
+
+	spin_lock_irqsave(&sock->lock, flags);
 	if (host->req) {
 		writel(TIFM_FIFO_INT_SETALL,
 		       sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
@@ -1023,8 +1024,6 @@ static void tifm_sd_remove(struct tifm_dev *sock)
 		tasklet_schedule(&host->finish_tasklet);
 	}
 	spin_unlock_irqrestore(&sock->lock, flags);
-	// temporary hack
-	msleep(1000);
 	mmc_remove_host(mmc);
 	dev_dbg(&sock->dev, "after remove\n");
 
