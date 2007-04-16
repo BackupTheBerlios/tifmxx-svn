@@ -15,6 +15,7 @@
 #include "linux/tifm.h"
 #include "linux/memstick.h"
 #include <linux/highmem.h>
+#include <linux/log2.h>
 #include <asm/io.h>
 
 #define DRIVER_NAME "tifm_ms"
@@ -35,13 +36,12 @@ module_param(no_dma, bool, 0644);
 #define TIFM_MS_SYS_NOT_RDY  0x00800
 #define TIFM_MS_SYS_DATA     0x10000
 
-#define TIFM_MS_FIFO_THR     0x00008 /* use fifo trasnfers above this size */
 /* Hardware flags */
 enum {
 	CMD_READY  = 0x0001,
 	FIFO_READY = 0x0002,
 	CARD_READY = 0x0004,
-	DMA_TRNS   = 0x0008
+	DATA_CARRY = 0x0008
 };
 
 struct tifm_ms {
@@ -52,197 +52,280 @@ struct tifm_ms {
 	unsigned int            mode_mask;
 	unsigned long           timeout_jiffies;
 
-	struct tasklet_struct   finish_tasklet;
 	struct timer_list       timer;
-
 	struct memstick_request *req;
-	unsigned int            cmd_pos;
+	unsigned int            io_word;
 };
 
-static void tifm_ms_read_fifo(struct tifm_ms *host, struct scatterlist *sg,
-			       unsigned int off)
+void tifm_ms_read_fifo(struct tifm_ms *host, unsigned int fifo_offset,
+		       struct page *pg, unsigned int page_off,
+		       unsigned int length)
 {
 	struct tifm_dev *sock = host->dev;
-	unsigned int cnt;
-	unsigned char *buf;
+	unsigned int cnt = 0, off = 0;
+	unsigned char *buf = kmap_atomic(pg, KM_BIO_DST_IRQ) + page_off;
 
-	buf = kmap_atomic(sg->page, KM_BIO_DST_IRQ) + off;
-	for (cnt = 0; cnt < 128; cnt++)
-		((unsigned int*)buf)[cnt]
-			= __raw_readl(sock->addr + SOCK_FIFO_ACCESS + cnt / 4);
-	kunmap_atomic(buf - off, KM_BIO_DST_IRQ);
-}
-
-static void tifm_ms_write_fifo(struct tifm_ms *host, struct scatterlist *sg,
-			       unsigned int off)
-{
-	struct tifm_dev *sock = host->dev;
-	unsigned int cnt;
-	unsigned char *buf;
-
-	buf = kmap_atomic(sg->page, KM_BIO_SRC_IRQ) + off;
-
-	for (cnt = 0; cnt < 128; cnt++)
-		__raw_writel(((unsigned int*)buf)[cnt],
-			     sock->addr + SOCK_FIFO_ACCESS + cnt / 4);
-	kunmap_atomic(buf - off, KM_BIO_SRC_IRQ);
-}
-
-static int tifm_ms_transfer_data(struct tifm_ms *host)
-{
-	struct memstick_request *req = host->req;
-	unsigned int cnt = req->sg[host->sg_pos].length >> 9;
-	unsigned int off = host->block_pos << 9;
-
-	if ((cnt - host->block_pos) == 1)
-		host->block_pos = 0;
-	else
-		host->block_pos++;
-
-	if (host->sg_pos < host->sg_len) {
-		if (req->data_dir == WRITE)
-			tifm_ms_write_fifo(host, &req->sg[host->sg_pos],
-					   off);
-		else
-			tifm_ms_read_fifo(host, &req->sg[host->sg_pos],
-					  off);
-
-		return 0;
-	} else
-		return 1;
-}
-
-static int tifm_ms_set_dma(struct tifm_ms *host)
-{
-	struct tifm_dev *sock = host->dev;
-	struct memstick_request *req = host->req;
-
-	unsigned int dma_cnt = sg_dma_len(&req->sg[host->sg_pos]) >> 9;
-	unsigned int dma_off = host->block_pos << 9;
-
-	if ((dma_cnt - host->block_pos) <= TIFM_DMA_TSIZE) {
-		dma_cnt -= host->block_pos;
-		host->block_pos = 0;
-	} else {
-		dma_cnt = TIFM_DMA_TSIZE;
-		host->block_pos += TIFM_DMA_TSIZE;
+	if (host->cmd_flags & DATA_CARRY) {
+		while ((fifo_offset & 3) && length) {
+			buf[off++] = host->io_word & 0xff;
+			host->io_word >>= 8;
+			length--;
+			fifo_offset++;
+		}
+		if (!(fifo_offset & 3))
+			host->cmd_flags &= ~DATA_CARRY;
+		if (!length)
+			return;
 	}
 
-	if (host->sg_pos < host->sg_len) {
-		dev_dbg(&sock->dev, "setting dma for %d blocks\n", dma_cnt);
-		writel(sg_dma_address(&req->sg[host->sg_pos]) + dma_off,
-		       sock->addr + SOCK_DMA_ADDRESS);
-		if (req->data_dir == WRITE)
-			writel((dma_cnt << 8) | TIFM_DMA_TX | TIFM_DMA_EN,
-			       sock->addr + SOCK_DMA_CONTROL);
-		else
-			writel((dma_cnt << 8) | TIFM_DMA_EN,
-			       sock->addr + SOCK_DMA_CONTROL);
+	do {
+		host->io_word = readl(sock + SOCK_FIFO_ACCESS + fifo_offset);
+		cnt = 4;
+		while (length && cnt) {
+			buf[off++] = (host->io_word >> 8) & 0xff;
+			cnt--;
+			length--;
+		}
+		fifo_offset += 4 - cnt;
+	} while (length);
 
-		return 0;
-	} else
-		return 1;
+	if (cnt)
+		host->cmd_flags |= DATA_CARRY;
+
+	kunmap_atomic(buf - page_off, KM_BIO_DST_IRQ);
 }
 
-static void tifm_ms_write_data(struct tifm_ms *host)
-{
-	struct scatterlist *sg = &host->req->sg[host->cmd_pos];
-	unsigned int data_len = sg->length;
-	unsigned int cnt = 0;
-
-	while (cnt < sg->length) {
-		off = 
-		
-	}
-}
-
-static int tifm_ms_issue_command(struct tifm_ms *host)
+void tifm_ms_write_fifo(struct tifm_ms *host, unsigned int fifo_offset,
+			struct page *pg, unsigned int page_off,
+			unsigned int length)
 {
 	struct tifm_dev *sock = host->dev;
-	int use_fifo = 0;
-	unsigned int cnt = 0, data_len, data_dir, val;
+	unsigned int cnt = 0, off = 0;
+	unsigned char *buf = kmap_atomic(pg, KM_BIO_SRC_IRQ) + page_off;
 
-	if (host->cmd_pos == host->req->count)
-		return 1;
+	if (host->cmd_flags & DATA_CARRY) {
+		while (fifo_offset & 3) {
+			host->io_word |= buf[off++] << (8 * (fifo_offset & 3));
+			length--;
+			fifo_offset++;
+		}
+		if (!(fifo_offset & 3)) {
+			writel(host->io_word, sock + SOCK_FIFO_ACCESS
+			       + fifo_offset - 4);
 
-	data_len = host->req->sg[host->cmd_pos].length;
-	data_dir = host->req->cmd[host->cmd_pos].data_dir;
+			host->cmd_flags &= ~DATA_CARRY;
+		}
+		if (!length)
+			return;
+	}
 
-	if ((data_len < TIFM_MS_FIFO_THR)
-	    || (data_len != roundup_pow_of_two(data_len))) {
-		/* The meaning of the bit majority in this constant is unknown. */
-		writel(host->mode_mask | 0x2607
-		       | (data_dir == WRITE ? TIFM_MS_SYS_LATCH : 0),
-		       sock->addr + SOCK_MS_SYSTEM);
+	do {
+		cnt = 4;
+		host->io_word = 0;
+		while (length && cnt) {
+			host->io_word |= buf[off++] << (4 - cnt);
+			cnt--;
+			length--;
+		}
+		fifo_offset += 4 - cnt;
+		if (!cnt)
+			writel(host->io_word, sock + SOCK_FIFO_ACCESS
+			       + fifo_offset - 4);
 
-		if (data_dir == WRITE) {
-			while (cnt < data_len) {
-				writel(TIFM_MS_SYS_LATCH
-				       | readl(sock->addr + SOCK_MS_SYSTEM),
-				       sock->addr + SOCK_MS_SYSTEM);
-				if (data_len - cnt >= 4) {
-					val =
-						*(unsigned int*)(req->short_data + cnt);
-					__raw_writel(val,
-						     sock->addr + SOCK_MS_DATA);
-					cnt += 4;
-			} else {
-				val = req->short_data[cnt++];
-				if (cnt < req->short_data_len)
-					val = (val << 8)
-					      | req->short_data[cnt++];
-				if (cnt < req->short_data_len)
-					val = (val << 8)
-					      | req->short_data[cnt++];
-				writel(val, sock->addr + SOCK_MS_DATA);
+	} while (length);
+
+	if (cnt)
+		host->cmd_flags |= DATA_CARRY;
+
+	kunmap_atomic(buf - page_off, KM_BIO_SRC_IRQ);
+}
+
+static void tifm_ms_move_block(struct tifm_ms *host)
+{
+	unsigned int length = host->req->sg.length, t_size;
+	unsigned int off = host->req->sg.offset;
+	unsigned int p_off, p_cnt;
+	struct page *pg;
+	unsigned long flags;
+
+	dev_dbg(&host->dev->dev, "moving block\n");
+	local_irq_save(flags);
+	t_size = length;
+	while (t_size) {
+		pg = nth_page(host->req->sg.page, off >> PAGE_SHIFT);
+		p_off = offset_in_page(off);
+		p_cnt = PAGE_SIZE - p_off;
+		p_cnt = min(p_cnt, t_size);
+
+		if (host->req->data_dir == WRITE)
+			tifm_ms_write_fifo(host, length - t_size,
+					   pg, p_off, p_cnt);
+		else
+			tifm_ms_read_fifo(host, length - t_size,
+					  pg, p_off, p_cnt);
+
+		t_size -= p_cnt;
+	}
+	local_irq_restore(flags);
+}
+
+int tifm_ms_issue_cmd(struct tifm_ms *host)
+{
+	struct tifm_dev *sock = host->dev;
+	struct memstick_request *req = host->req;
+	unsigned int length = 0;
+	unsigned int cmd = 0, cmd_mask, cnt, tval = 0;
+
+	host->cmd_flags = 0;
+
+	if (!req)
+		return 0;
+
+	if (req->block_io) {
+		if (!host->no_dma) {
+			if (1 != tifm_map_sg(sock, &req->sg, 1,
+					     req->data_dir == READ
+					     ? PCI_DMA_TODEVICE
+					     : PCI_DMA_FROMDEVICE)) {
+				req->error = MEMSTICK_ERR_INTERNAL;
+				return req->error;
 			}
+			length = sg_dma_len(&req->sg);
+		} else
+			length = req->sg.length;
+
+		writel(TIFM_FIFO_INT_SETALL,
+		       sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
+		writel(ilog2(length) - 2,
+		       sock->addr + SOCK_FIFO_PAGE_SIZE);
+		writel(TIFM_FIFO_ENABLE,
+		       sock->addr + SOCK_FIFO_CONTROL);
+		writel(TIFM_FIFO_INTMASK,
+		       sock->addr + SOCK_DMA_FIFO_INT_ENABLE_SET);
+
+		if (!host->no_dma) {
+			writel(sg_dma_address(&req->sg),
+			       sock->addr + SOCK_DMA_ADDRESS);
+			if (host->req->data_dir == WRITE)
+				writel((1 << 8) | TIFM_DMA_TX | TIFM_DMA_EN,
+				       sock->addr + SOCK_DMA_CONTROL);
+			else
+				writel((1 << 8) | TIFM_DMA_EN,
+				       sock->addr + SOCK_DMA_CONTROL);
+		} else {
+			if (req->data_dir == WRITE)
+				tifm_ms_move_block(host);
 		}
 
-		writel(TIFM_MS_SYS_LATCH
-		       | readl(sock->addr + SOCK_MS_SYSTEM),
-		       sock->addr + SOCK_MS_SYSTEM);
-		writel(0, sock->addr + SOCK_MS_DATA);
-	}
+		cmd_mask = readl(sock + SOCK_MS_SYSTEM);
+		cmd_mask |= TIFM_MS_SYS_DATA | TIFM_MS_SYS_NOT_RDY;
+		writel(cmd_mask, sock + SOCK_MS_SYSTEM);
+	} else {
+		cmd_mask = host->mode_mask | 0x2607; /* unknown constant */
 
-	cmd |= req->short_data_len;
-	cmd_mask = readl(sock->addr + SOCK_MS_SYSTEM);
-	if (req->blocks)
-		cmd_mask |= TIFM_MS_SYS_DATA;
-	else
+		if (req->data_dir == WRITE) {
+			cmd_mask |= TIFM_MS_SYS_LATCH;
+			writel(cmd_mask, sock + SOCK_MS_SYSTEM);
+			for (cnt = 0; (req->length - cnt) >= 4; cnt += 4) {
+				writel(TIFM_MS_SYS_LATCH
+				       | readl(sock + SOCK_MS_SYSTEM),
+				       sock + SOCK_MS_SYSTEM);
+				writel(*(int*)(req->data + cnt),
+				       sock + SOCK_MS_DATA);
+			}
+			switch (req->length - cnt) {
+			case 3:
+				tval |= (unsigned char)req->data[cnt + 2] << 16;
+			case 2:
+				tval |= (unsigned char)req->data[cnt + 1] << 8;
+			case 1:
+				tval = (unsigned char)req->data[cnt];
+				writel(TIFM_MS_SYS_LATCH
+				       | readl(sock + SOCK_MS_SYSTEM),
+				       sock + SOCK_MS_SYSTEM);
+				writel(tval, sock + SOCK_MS_DATA);
+			}
+		} else 
+			writel(cmd_mask, sock + SOCK_MS_SYSTEM);
+
+		cmd_mask = readl(sock + SOCK_MS_SYSTEM);
 		cmd_mask &= ~TIFM_MS_SYS_DATA;
-
-	cmd_mask |= TIFM_MS_SYS_NOT_RDY;
+		cmd_mask |= TIFM_MS_SYS_NOT_RDY;
+		writel(cmd_mask, sock + SOCK_MS_SYSTEM);
+	}
 
 	dev_dbg(&sock->dev, "executing TPC %x, %x\n", cmd, cmd_mask);
-	writel(cmd_mask, sock->addr + SOCK_MS_SYSTEM);
+	mod_timer(&host->timer, jiffies + host->timeout_jiffies);
+	writel(TIFM_CTRL_LED | readl(sock->addr + SOCK_CONTROL),
+	       sock->addr + SOCK_CONTROL);
+	cmd = (host->req->tpc & 0xf) << 12;
+	cmd |= length;
 	writel(cmd, sock->addr + SOCK_MS_COMMAND);
+	return 0;
+}
 
+void tifm_ms_complete_cmd(struct tifm_ms *host)
+{
+	struct tifm_dev *sock = host->dev;
+	struct memstick_host *msh = tifm_get_drvdata(sock);
+	struct memstick_request *req = host->req;
+	unsigned int cnt, tval = 0;
 
-		if (host->req->cmd[host->cmd_pos].data_dir == WRITE)) {
+	del_timer(&host->timer);
+	if (req->block_io) {
+		if (!host->no_dma)
+			tifm_unmap_sg(sock, &req->sg, 1,
+				      req->data_dir == READ
+				      ? PCI_DMA_TODEVICE
+				      : PCI_DMA_FROMDEVICE);
 
-		}
+		else if (req->data_dir == READ)
+			tifm_ms_move_block(host);
 	} else {
-		use_dma = data_len == roundup_pow_of_two(data_len)
-			  ? use_dma : 0;
-		if (use_dma) {
-		} else {
+		writel(~TIFM_MS_SYS_DATA & readl(sock->addr + SOCK_MS_SYSTEM),
+		       sock->addr + SOCK_MS_SYSTEM);
+
+		if (req->data_dir == READ) {
+			for (cnt = 0; (req->length - cnt) >= 4; cnt += 4)
+				*(int*)(req->data + cnt)
+					= readl(sock->addr + SOCK_MS_DATA);
+
+			if (req->length - cnt)
+				tval = readl(sock->addr + SOCK_MS_DATA);
+			switch (req->length - cnt) {
+			case 3:
+				req->data[cnt + 2] = (tval >> 16) & 0xff;
+			case 2:
+				req->data[cnt + 1] = (tval >> 8) & 0xff;
+			case 1:
+				req->data[cnt] = tval & 0xff;
+			}
 		}
 	}
-	return 0;
+
+	writel((~TIFM_CTRL_LED) & readl(sock->addr + SOCK_CONTROL),
+	       sock->addr + SOCK_CONTROL);
+	host->req = memstick_next_req(msh, host->req);
 }
 
 static void tifm_ms_check_status(struct tifm_ms *host)
 {
+	struct tifm_dev *sock = host->dev;
+	struct memstick_host *msh = tifm_get_drvdata(sock);
+
 	if (host->req->error == MEMSTICK_ERR_NONE) {
 		if (!(host->cmd_flags & CMD_READY))
 			return;
-		if (host->req->blocks && !(host->cmd_flags & FIFO_READY))
+		if (host->req->block_io && !(host->cmd_flags & FIFO_READY))
 			return;
 		if (host->req->need_card_int
 		    && !(host->cmd_flags & CARD_READY))
 			return;
 	}
-	tasklet_schedule(&host->finish_tasklet);
+
+	tifm_ms_complete_cmd(host);
+	while (tifm_ms_issue_cmd(host))
+		host->req = memstick_next_req(msh, host->req);
 }
 
 /* Called from interrupt handler */
@@ -257,23 +340,20 @@ static void tifm_ms_data_event(struct tifm_dev *sock)
 	dev_dbg(&sock->dev, "data event: fifo_status %x, flags %x\n",
 		fifo_status, host->cmd_flags);
 
-	if (host->req && host->req->blocks
-	    && (fifo_status & TIFM_FIFO_READY)) {
-		if (!host->block_pos)
-			host->sg_pos++;
-
-		if (host->no_dma ? tifm_ms_transfer_data(host)
-		    : tifm_ms_set_dma(host)) {
+	if (host->req) {
+		if (fifo_status & TIFM_FIFO_READY) {
 			host->cmd_flags |= FIFO_READY;
 			tifm_ms_check_status(host);
 		}
 	}
+
 	writel(fifo_status, sock->addr + SOCK_DMA_FIFO_STATUS);
 	spin_unlock(&sock->lock);
 }
 
+
 /* Called from interrupt handler */
-static void tifm_ms_event(struct tifm_dev *sock)
+static void tifm_ms_card_event(struct tifm_dev *sock)
 {
 	struct tifm_ms *host;
 	unsigned int host_status = 0;
@@ -283,6 +363,8 @@ static void tifm_ms_event(struct tifm_dev *sock)
 
 	if (host->req) {
 		host_status = readl(sock->addr + SOCK_MS_STATUS);
+		dev_dbg(&sock->dev, "host event: host_status %x, flags %x\n",
+			host_status, host->cmd_flags);
 
 		if (host_status & TIFM_MS_TIMEOUT)
 			host->req->error = MEMSTICK_ERR_TIMEOUT;
@@ -308,206 +390,35 @@ static void tifm_ms_event(struct tifm_dev *sock)
 	return;
 }
 
-static void tifm_ms_request(struct memstick_host *msh,
-			    struct memstick_request *req)
+void tifm_ms_request(struct memstick_host *msh, struct memstick_request *mrq)
 {
 	struct tifm_ms *host = memstick_priv(msh);
 	struct tifm_dev *sock = host->dev;
-	memstick_error_t err = MEMSTICK_ERR_TIMEOUT;
 	unsigned long flags;
 
 	spin_lock_irqsave(&sock->lock, flags);
-
 	if (host->eject) {
-		req->cmd[0].error = MEMSTICK_ERR_TIMEOUT;
+		spin_unlock_irqrestore(&sock->lock, flags);
 		goto err_out;
 	}
 
 	if (host->req) {
 		printk(KERN_ERR "%s : unfinished request detected\n",
 		       sock->dev.bus_id);
-		req->cmd[0].error = MEMSTICK_ERR_TIMEOUT;
+		spin_unlock_irqrestore(&sock->lock, flags);
 		goto err_out;
 	}
 
-	host->cmd_pos = 0;
-	host->req = req;
-	mod_timer(&host->timer, jiffies + host->timeout_jiffies);
-
-	writel(TIFM_CTRL_LED | readl(sock->addr + SOCK_CONTROL),
-	       sock->addr + SOCK_CONTROL);
-
-	if (!tifm_ms_issue_command(host))
-		return;
-
-	writel((~TIFM_CTRL_LED) & readl(sock->addr + SOCK_CONTROL),
-	       sock->addr + SOCK_CONTROL);
-
-	host->req = NULL;
-
-err_out:
-	spin_unlock_irqrestore(&sock->lock, flags);
-	memstick_request_done(msh, req, 0);
-	return;
-}
-
-
-	if ((req->sg->length > TIFM_MS_FIFO_THR)
-	    && (req->sg->length == roundup_pow_of_two(req->sg->length))) {
-		if (host->no_dma) {
-			if (req->data_dir == WRITE)
-				tifm_ms_write_fifo(host, &sg);
-		} else {
-			if (req->data_dir == READ) {
-			}
-		}
-	} else {
-	}
-
-
-		
-
-		if (host->no_dma) {
-			host->sg_len = req->sg_len;
-		} else {
-			sg_count = tifm_map_sg(sock, req->sg, req->sg_len,
-					       req->data_dir == WRITE
-					       ? PCI_DMA_TODEVICE
-					       : PCI_DMA_FROMDEVICE);
-			if (sg_count < 1) {
-				printk(KERN_ERR "%s : scatterlist map failed\n",
-				       sock->dev.bus_id);
-				goto err_out;
-			}
-
-			writel(TIFM_FIFO_INT_SETALL,
-			       sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
-			writel(TIFM_FIFO_ENABLE,
-			       sock->addr + SOCK_FIFO_CONTROL);
-			writel(TIFM_FIFO_INTMASK,
-			       sock->addr + SOCK_DMA_FIFO_INT_ENABLE_SET);
-
-			host->sg_len = sg_count;
-			tifm_ms_set_dma(host);
-		}
-	}
-
-	host->cmd_flags = 0;
-	host->req = req;
-
-
-
-	/* The meaning of the bit majority in this constant is unknown. */
-	writel(host->mode_mask | 0x2607
-	       | (req->short_data_dir == WRITE ? TIFM_MS_SYS_LATCH : 0),
-	       sock->addr + SOCK_MS_SYSTEM);
-
-	if (req->short_data_dir == WRITE) {
-		while (cnt < req->short_data_len) {
-			writel(TIFM_MS_SYS_LATCH
-			       | readl(sock->addr + SOCK_MS_SYSTEM),
-			       sock->addr + SOCK_MS_SYSTEM);
-			if (req->short_data_len - cnt >= 4) {
-				val = *(unsigned int*)(req->short_data + cnt);
-				__raw_writel(val, sock->addr + SOCK_MS_DATA);
-				cnt += 4;
-			} else {
-				val = req->short_data[cnt++];
-				if (cnt < req->short_data_len)
-					val = (val << 8)
-					      | req->short_data[cnt++];
-				if (cnt < req->short_data_len)
-					val = (val << 8)
-					      | req->short_data[cnt++];
-				writel(val, sock->addr + SOCK_MS_DATA);
-			}
-		}
-
-		writel(TIFM_MS_SYS_LATCH
-		       | readl(sock->addr + SOCK_MS_SYSTEM),
-		       sock->addr + SOCK_MS_SYSTEM);
-		writel(0, sock->addr + SOCK_MS_DATA);
-	}
-
-	cmd |= req->short_data_len;
-	cmd_mask = readl(sock->addr + SOCK_MS_SYSTEM);
-	if (req->blocks)
-		cmd_mask |= TIFM_MS_SYS_DATA;
-	else
-		cmd_mask &= ~TIFM_MS_SYS_DATA;
-
-	cmd_mask |= TIFM_MS_SYS_NOT_RDY;
-
-	dev_dbg(&sock->dev, "executing TPC %x, %x\n", cmd, cmd_mask);
-	writel(cmd_mask, sock->addr + SOCK_MS_SYSTEM);
-	writel(cmd, sock->addr + SOCK_MS_COMMAND);
-
+	host->req = mrq;
+	while (tifm_ms_issue_cmd(host))
+		host->req = memstick_next_req(msh, host->req);
 	spin_unlock_irqrestore(&sock->lock, flags);
 	return;
-
 err_out:
-	spin_unlock_irqrestore(&sock->lock, flags);
-	req->cmd[0].error = MEMSTICK_ERR_TIMEOUT;
-	memstick_request_done(msh, req, 0);
-}
-
-static void tifm_ms_end_request(unsigned long data)
-{
-	struct tifm_ms *host = (struct tifm_ms*)data;
-	struct tifm_dev *sock = host->dev;
-	struct memstick_host *msh = tifm_get_drvdata(sock);
-	struct memstick_request *req;
-	unsigned int cnt = 0, val = 0;
-	unsigned long flags;
-
-	spin_lock_irqsave(&sock->lock, flags);
-
-	del_timer(&host->timer);
-	req = host->req;
-	host->req = NULL;
-
-	if (!req) {
-		printk(KERN_ERR " %s : no request to complete?\n",
-		       sock->dev.bus_id);
-		spin_unlock_irqrestore(&sock->lock, flags);
-		return;
+	while (mrq) {
+		mrq->error = MEMSTICK_ERR_TIMEOUT;
+		mrq = memstick_next_req(msh, mrq);
 	}
-
-	writel((~TIFM_MS_SYS_DATA) & readl(sock->addr + SOCK_MS_SYSTEM),
-	       sock->addr + SOCK_MS_SYSTEM);
-
-	if ((req->short_data_dir == READ) && !req->error) {
-		while (cnt < req->short_data_len) {
-			val = readl(sock->addr + SOCK_MS_DATA);
-			if (req->short_data_len - cnt >= 4) {
-				*(unsigned int*)(req->short_data + cnt)
-					= cpu_to_le32(val);
-				cnt += 4;
-			} else {
-				req->short_data[cnt++] = val & 0xff;
-				if (cnt == req->short_data_len)
-					break;
-				req->short_data[cnt++] = (val >> 8) & 0xff;
-				if (cnt == req->short_data_len)
-					break;
-				req->short_data[cnt++] = (val >> 16) & 0xff;
-					break;
-			}
-		}
-	}
-
-	if (req->blocks) {
-		if (!host->no_dma)
-			tifm_unmap_sg(sock, req->sg, req->sg_len,
-				      req->data_dir == WRITE
-				      ? PCI_DMA_TODEVICE : PCI_DMA_FROMDEVICE);
-	}
-	writel((~TIFM_CTRL_LED) & readl(sock->addr + SOCK_CONTROL),
-	       sock->addr + SOCK_CONTROL);
-
-	spin_unlock_irqrestore(&sock->lock, flags);
-
-	memstick_request_done(msh, req, s_count);
 }
 
 static void tifm_ms_ios(struct memstick_host *msh, struct memstick_ios *ios)
@@ -522,7 +433,8 @@ static void tifm_ms_ios(struct memstick_host *msh, struct memstick_ios *ios)
 		writel((~TIFM_CTRL_FAST_CLK)
 		       & readl(sock->addr + SOCK_CONTROL),
 		       sock->addr + SOCK_CONTROL);
-	} else if (ios->interface == MEMSTICK_PARALLEL) {
+	} else if (ios->interface == MEMSTICK_PARALLEL
+		   && tifm_has_ms_pif(sock)) {
 		host->mode_mask = 0;
 		writel(TIFM_CTRL_FAST_CLK
 		       | readl(sock->addr + SOCK_CONTROL),
@@ -578,14 +490,12 @@ static int tifm_ms_probe(struct tifm_dev *sock)
 	host->dev = sock;
 	host->timeout_jiffies = msecs_to_jiffies(1000);
 	host->no_dma = no_dma;
-	tasklet_init(&host->finish_tasklet, tifm_ms_end_request,
-		     (unsigned long)host);
 
 	setup_timer(&host->timer, tifm_ms_abort, (unsigned long)host);
 
 	msh->request = tifm_ms_request;
 	msh->set_ios = tifm_ms_ios;
-	sock->event = tifm_ms_event;
+	sock->card_event = tifm_ms_card_event;
 	sock->data_event = tifm_ms_data_event;
 	rc = tifm_ms_initialize_host(host);
 
@@ -602,17 +512,16 @@ static void tifm_ms_remove(struct tifm_dev *sock)
 {
 	struct memstick_host *msh = tifm_get_drvdata(sock);
 	struct tifm_ms *host = memstick_priv(msh);
+	struct memstick_request *mrq;
 	unsigned long flags;
 
-	tasklet_kill(&host->finish_tasklet);
 	spin_lock_irqsave(&sock->lock, flags);
 	host->eject = 1;
-	if (host->req) {
-		writel(TIFM_FIFO_INT_SETALL,
-		       sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
-		writel(0, sock->addr + SOCK_DMA_FIFO_INT_ENABLE_SET);
-		host->req->error = MEMSTICK_ERR_TIMEOUT;
-		tasklet_schedule(&host->finish_tasklet);
+	mrq = host->req;
+	host->req = NULL;
+	while (mrq) {
+		mrq->error = MEMSTICK_ERR_TIMEOUT;
+		mrq = memstick_next_req(msh, mrq);
 	}
 	spin_unlock_irqrestore(&sock->lock, flags);
 

@@ -543,8 +543,9 @@ static void tifm_sd_card_event(struct tifm_dev *sock)
 					host->cmd_flags |= SCMD_READY;
 				} else {
 					cmd->error = cmd_error;
-					host->cmd_flags |= SCMD_ACTIVE;
-					tifm_sd_exec(host, host->req->stop);
+					//host->cmd_flags |= SCMD_ACTIVE;
+					//tifm_sd_exec(host, host->req->stop);
+					tifm_sd_check_status(host);
 					goto done;
 				}
 			} else

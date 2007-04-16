@@ -59,6 +59,13 @@ struct mspro_register {
 	unsigned char                reserved[8];
 } __attribute__((packed));
 
+struct ms_register_addr {
+	unsigned char r_offset;
+	unsigned char r_length;
+	unsigned char w_offset;
+	unsigned char w_length;
+} __attribute__((packed));
+
 enum {
 	MS_TPC_READ_LONG_DATA   = 0x02,
 	MS_TPC_READ_SHORT_DATA  = 0x03,
@@ -118,11 +125,10 @@ struct memstick_ios {
 struct memstick_host;
 struct memstick_driver;
 
-typedef enum { MEMSTICK_ERR_NONE = 0,
-	       MEMSTICK_ERR_TIMEOUT = 1,
-	       MEMSTICK_ERR_BADCRC = 2,
-	       MEMSTICK_ERR_BADMEDIA = 3
-} memstick_error_t;
+#define MEMSTICK_ERR_NONE     0
+#define MEMSTICK_ERR_TIMEOUT  1
+#define MEMSTICK_ERR_BADCRC   2
+#define MEMSTICK_ERR_INTERNAL 3
 
 /* I believe 0xff type/category/class is equivalent to 0x00 one */ 
 #define MEMSTICK_TYPE_LEGACY      0xff
@@ -138,43 +144,52 @@ struct memstick_device_id {
 };
 
 struct memstick_request {
-	unsigned char       tpc;
-	unsigned char       data_dir:1,
-			    need_card_int:1;
-	struct scatterlist  sg;
-	unsigned int        retries;
-	memstick_error_t    error;
-
-	void                *done_data;
-	void                (*done)(struct memstick_request *req);
+	unsigned char      tpc;
+	unsigned char      data_dir:1,
+			   need_card_int:1,
+			   block_io:1;
+	int                error;
+	union {
+		struct scatterlist sg;
+		struct {
+			char *data;
+			size_t length;
+		};
+	};
+	struct list_head   node;
 };
 
 struct memstick_dev {
-	unsigned char        type;
-	unsigned char        category;
-	unsigned char        class;
+	struct memstick_device_id     id;
+	struct memstick_host          *host;
+	unsigned char                 readonly:1; /* card is read-only */
+	struct ms_register_addr       reg_addr;
+	union {
+		struct ms_register    ms_reg;
+		struct mspro_register mspro_reg;
+	};
+	int                           (*check)(struct memstick_dev *card);
 
-	struct memstick_host *host;
-	unsigned int         readonly:1; /* card is read-only */
-
-	memstick_error_t     (*check)(struct memstick_dev *card);
-
-	struct device        dev;
+	struct device                 dev;
 };
 
 struct memstick_host {
-	struct mutex           lock;
-	unsigned int           id;
-	struct delayed_work    media_checker;
-	struct class_device    cdev;
+	struct mutex        lock;
+	unsigned int        id;
+	struct work_struct  media_checker;
+	struct class_device cdev;
+	struct list_head    preq_list;
+	struct list_head    creq_list;
+	spinlock_t          req_lock;
+	wait_queue_head_t   req_wait;
 
-	struct memstick_ios    ios;
-	struct memstick_dev    *card;
-	void                   (*request)(struct memstick_host *host,
-					  struct memstick_request *req);
-	void                   (*set_ios)(struct memstick_host *host,
-					  struct memstick_ios *ios);
-	unsigned long          private[0] ____cacheline_aligned;
+	struct memstick_ios ios;
+	struct memstick_dev *card;
+	void                (*request)(struct memstick_host *host,
+				       struct memstick_request *mrq);
+	void                (*set_ios)(struct memstick_host *host,
+				       struct memstick_ios *ios);
+	unsigned long       private[0] ____cacheline_aligned;
 };
 
 struct memstick_driver {
@@ -197,13 +212,10 @@ struct memstick_host *memstick_alloc_host(unsigned int extra,
 int memstick_add_host(struct memstick_host *host);
 void memstick_remove_host(struct memstick_host *host);
 void memstick_free_host(struct memstick_host *host);
-void memstick_detect_change(struct memstick_host *host, unsigned long delay);
+void memstick_detect_change(struct memstick_host *host);
 
-void memstick_wait_for_req(struct memstick_host *host,
-			   struct memstick_request *mrq);
-
-void memstick_request_done(struct memstick_host *host,
-			   struct memstick_request *mrq);
+struct memstick_request* memstick_next_req(struct memstick_host *host,
+					   struct memstick_request *mrq);
 
 static inline void *memstick_priv(struct memstick_host *host)
 {
@@ -220,21 +232,32 @@ inline void memstick_set_drvdata(struct memstick_dev *card, void *data)
 	dev_set_drvdata(&card->dev, data);
 }
 
-/* canned commands */
-memstick_error_t memstick_read_reg(struct memstick_host *host,
-				   struct ms_register *ms_reg);
+inline void memstick_reg_to_dev(struct ms_register *ms_reg)
+{
+	ms_reg->extra_data.logical_address
+		= cpu_to_be16(ms_reg->extra_data.logical_address);
+}
 
-memstick_error_t memstick_get_int(struct memstick_host *host,
-				  unsigned char *int_reg);
+inline void memstick_reg_from_dev(struct ms_register *ms_reg)
+{
+	ms_reg->extra_data.logical_address
+		= be16_to_cpu(ms_reg->extra_data.logical_address);
+}
 
-memstick_error_t memstick_set_rw_reg_adrs(struct memstick_host *host,
-					  unsigned char read_off,
-					  unsigned char read_len,
-					  unsigned char write_off,
-					  unsigned char write_len);
+inline void memstick_pro_reg_to_dev(struct mspro_register *ms_reg)
+{
+	ms_reg->param.data_count
+		= cpu_to_be16(ms_reg->param.data_count);
+	ms_reg->param.data_address
+		= cpu_to_be32(ms_reg->param.data_address);
+}
 
-memstick_error_t memstick_set_cmd(struct memstick_host *host,
-				  memstick_cmd_t cmd, int req_ms_int);
-
+inline void memstick_pro_reg_from_dev(struct mspro_register *ms_reg)
+{
+	ms_reg->param.data_count
+		= be16_to_cpu(ms_reg->param.data_count);
+	ms_reg->param.data_address
+		= be32_to_cpu(ms_reg->param.data_address);
+}
 
 #endif
