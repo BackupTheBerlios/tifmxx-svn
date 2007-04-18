@@ -256,6 +256,18 @@ void memstick_queue_req(struct memstick_host *host,
 }
 EXPORT_SYMBOL(memstick_queue_req);
 
+static int memstick_any_completed(struct memstick_host *host)
+{
+	int rc = 1;
+	unsigned long flags;
+	
+	spin_lock_irqsave(&host->req_lock, flags);
+	if (list_empty(&host->creq_list))
+		rc = 0;
+	spin_unlock_irqrestore(&host->req_lock, flags);
+	return rc;
+}
+
 struct memstick_request* memstick_get_req(struct memstick_host *host)
 {
 	struct memstick_request *mrq = NULL;
@@ -263,20 +275,19 @@ struct memstick_request* memstick_get_req(struct memstick_host *host)
 
 	spin_lock_irqsave(&host->req_lock, flags);
 
-	while (1) {
-		if (!list_empty(&host->creq_list)) {
-			mrq = list_entry(host->creq_list.next,
-					 struct memstick_request, node);
-			list_del(&mrq->node);
-			break;
-		} else if (!list_empty(&host->preq_list)) {
-			spin_unlock_irqrestore(&host->req_lock, flags);
-			wait_event(host->req_wait,
-				   !list_empty(&host->creq_list));
-			spin_lock_irqsave(&host->req_lock, flags);
-		} else
-			break;
+	if (!list_empty(&host->preq_list)) {
+		spin_unlock_irqrestore(&host->req_lock, flags);
+		wait_event(host->req_wait,
+			   memstick_any_completed(host));
+		spin_lock_irqsave(&host->req_lock, flags);
 	}
+	
+	if (!list_empty(&host->creq_list)) {
+		mrq = list_entry(host->creq_list.next,
+				 struct memstick_request, node);
+		list_del(&mrq->node);
+	}
+	
 	spin_unlock_irqrestore(&host->req_lock, flags);
 	return mrq;
 }
@@ -344,7 +355,7 @@ static struct memstick_dev* memstick_alloc_card(struct memstick_host *host)
 	struct memstick_dev *card = kzalloc(sizeof(struct memstick_dev),
 					    GFP_KERNEL);
 	struct memstick_request *mrq;
-	int err = 0;
+	int err = 1;
 
 	if (card) {
 		card->host = host;
@@ -369,10 +380,8 @@ static struct memstick_dev* memstick_alloc_card(struct memstick_host *host)
 		if (mrq)
 			memstick_queue_req(host, mrq);
 
-		while (1) {
-			mrq = memstick_get_req(host);
-			if (!mrq)
-				break;
+		for (mrq = memstick_get_req(host); mrq;
+		     mrq = memstick_get_req(host)) {
 			err = mrq->error;
 			if (mrq->tpc == MS_TPC_READ_REG) {
 				memstick_reg_from_dev(&card->ms_reg);
@@ -385,6 +394,7 @@ static struct memstick_dev* memstick_alloc_card(struct memstick_host *host)
 			}
 			kfree(mrq);
 		}
+
 		if (err)
 			goto err_out;
 	}
@@ -413,7 +423,7 @@ static void memstick_check(struct work_struct *work)
 {
 	struct memstick_host *host = container_of(work, struct memstick_host,
 						  media_checker);
-	struct memstick_dev *card, *old_card;
+	struct memstick_dev *card;
 
 	dev_dbg(host->cdev.dev, "memstick_check started\n");
 	mutex_lock(&host->lock);
@@ -424,11 +434,8 @@ static void memstick_check(struct work_struct *work)
 
 	if (!card) {
 		if (host->card) {
-			old_card = host->card;
+			device_unregister(&host->card->dev);
 			host->card = NULL;
-			mutex_unlock(&host->lock);
-			device_unregister(&old_card->dev);
-			mutex_lock(&host->lock);
 		}
 	} else {
 		dev_dbg(host->cdev.dev, "new card %02x, %02x, %02x\n",
@@ -436,27 +443,21 @@ static void memstick_check(struct work_struct *work)
 		if (host->card) {
 			if (!memstick_dev_match(host->card, &card->id)
 			    || host->card->check(host->card)) {
-				old_card = host->card;
+				device_unregister(&host->card->dev);
 				host->card = NULL;
-				mutex_unlock(&host->lock);
-				device_unregister(&old_card->dev);
-				mutex_lock(&host->lock);
 			}
 		}
 
 		if (!host->card) {
-			mutex_unlock(&host->lock);
 			if (device_register(&card->dev)) {
 				kfree(card);
 				card = NULL;
 			}
-			mutex_lock(&host->lock);
 			if (card)
 				host->card = card;
 		} else
 			kfree(card);
 	}
-
 
 	if (!host->card)
 		memstick_power_off(host);
@@ -471,12 +472,16 @@ struct memstick_host *memstick_alloc_host(unsigned int extra,
 
 	host = kzalloc(sizeof(struct memstick_host) + extra, GFP_KERNEL);
 	if (host) {
+		mutex_init(&host->lock);
+		INIT_WORK(&host->media_checker, memstick_check);
 		host->cdev.class = &memstick_host_class;
 		host->cdev.dev = dev;
 		class_device_initialize(&host->cdev);
-		mutex_init(&host->lock);
-		INIT_WORK(&host->media_checker, memstick_check);
+		INIT_LIST_HEAD(&host->preq_list);
+		INIT_LIST_HEAD(&host->creq_list);
+		spin_lock_init(&host->req_lock);
 		init_waitqueue_head(&host->req_wait);
+
 	}
 	return host;
 }
@@ -515,9 +520,12 @@ EXPORT_SYMBOL(memstick_add_host);
 void memstick_remove_host(struct memstick_host *host)
 {
 	flush_workqueue(workqueue);
+	mutex_lock(&host->lock);
 	if (host->card)
 		device_unregister(&host->card->dev);
+	host->card = NULL;
 	memstick_power_off(host);
+	mutex_unlock(&host->lock);
 
 	spin_lock(&memstick_host_lock);
 	idr_remove(&memstick_host_idr, host->id);
