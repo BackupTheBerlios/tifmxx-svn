@@ -537,6 +537,8 @@ static int ms_block_resume(struct memstick_dev *card)
 static struct memstick_device_id ms_block_id_tbl[] = {
 	{MEMSTICK_TYPE_LEGACY, MEMSTICK_CATEGORY_STORAGE,
 	 MEMSTICK_CLASS_GENERIC},
+	{MEMSTICK_TYPE_LEGACY, MEMSTICK_CATEGORY_LEGACY,
+	 MEMSTICK_CLASS_LEGACY},
 	{}
 };
 

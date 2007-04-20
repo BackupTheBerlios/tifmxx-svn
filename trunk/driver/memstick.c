@@ -376,7 +376,7 @@ static struct memstick_dev* memstick_alloc_card(struct memstick_host *host)
 
 		mrq = memstick_new_req_buf(MS_TPC_READ_REG,
 					   (char*)&card->ms_reg,
-					   sizeof(card->ms_reg));
+					   sizeof(card->ms_reg) - 1);
 		if (mrq)
 			memstick_queue_req(host, mrq);
 

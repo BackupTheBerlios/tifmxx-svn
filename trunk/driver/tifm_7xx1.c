@@ -52,7 +52,6 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id)
 	if (irq_status & TIFM_IRQ_ENABLE) {
 		writel(TIFM_IRQ_ENABLE, fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
 
-		dev_dbg(fm->cdev.dev, "irq %x\n", irq_status);
 		for (cnt = 0; cnt < fm->num_sockets; cnt++) {
 			sock = fm->sockets[cnt];
 			if (sock) {

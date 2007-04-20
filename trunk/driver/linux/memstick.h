@@ -134,8 +134,10 @@ struct memstick_driver;
 #define MEMSTICK_TYPE_LEGACY      0xff
 #define MEMSTICK_TYPE_PRO         0x01
 
-#define MEMSTICK_CATEGORY_STORAGE 0x00
-#define MEMSTICK_CLASS_GENERIC    0x00
+#define MEMSTICK_CATEGORY_STORAGE   0x00
+#define MEMSTICK_CATEGORY_LEGACY    0xff
+#define MEMSTICK_CLASS_GENERIC      0x00
+#define MEMSTICK_CLASS_LEGACY       0xff
 
 struct memstick_device_id {
 	unsigned char type;

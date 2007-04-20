@@ -1,4 +1,4 @@
-obj-m += tifm_core.o tifm_7xx1.o #tifm_sd.o
+obj-m += tifm_core.o tifm_7xx1.o tifm_sd.o
 obj-m += memstick.o tifm_ms.o #ms_block.o
 
 

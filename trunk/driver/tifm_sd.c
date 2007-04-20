@@ -975,18 +975,18 @@ static int tifm_sd_probe(struct tifm_dev *sock)
 	mmc->f_min = 20000000 / 60;
 	mmc->f_max = 24000000;
 
-//	mmc->max_blk_count = 2048;
-//	mmc->max_hw_segs = mmc->max_blk_count;
-	mmc->max_hw_segs = 16;
-//	mmc->max_blk_size = min(2048, PAGE_SIZE);
-//	mmc->max_seg_size = mmc->max_blk_count * mmc->max_blk_size;
-	mmc->max_seg_size = 127 * 2048;
-
+	mmc->max_seg_size = 2048 * 2048;
+	mmc->max_hw_segs = 2048;
+	mmc->max_phys_segs = 2048;
+	mmc->max_sectors = 2048;
+#if 0
+	mmc->max_blk_count = 2048;
+	mmc->max_hw_segs = mmc->max_blk_count;
 	mmc->max_phys_segs = mmc->max_hw_segs;
-	mmc->max_sectors = 127 * mmc->max_phys_segs;
-
-//	mmc->max_req_size = mmc->max_seg_size;
-
+	mmc->max_blk_size = min(2048, PAGE_SIZE);
+	mmc->max_seg_size = mmc->max_blk_count * mmc->max_blk_size;
+	mmc->max_req_size = mmc->max_seg_size;
+#endif
 	sock->card_event = tifm_sd_card_event;
 	sock->data_event = tifm_sd_data_event;
 	rc = tifm_sd_initialize_host(host);
