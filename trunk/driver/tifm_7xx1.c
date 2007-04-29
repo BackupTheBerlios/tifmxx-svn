@@ -10,7 +10,6 @@
  */
 
 #include "linux/tifm.h"
-#include "linux/pci_ids.h"
 
 #define DRIVER_NAME "tifm_7xx1"
 #define DRIVER_VERSION "0.8"
