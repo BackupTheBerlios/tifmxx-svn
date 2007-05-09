@@ -223,11 +223,14 @@ EXPORT_SYMBOL(tifm_add_adapter);
 void tifm_remove_adapter(struct tifm_adapter *fm)
 {
 	unsigned int cnt;
+	char __iomem  *sock_addr;
 
 	flush_workqueue(workqueue);
 	for (cnt = 0; cnt < fm->num_sockets; ++cnt) {
-		if (fm->sockets[cnt])
+		if (fm->sockets[cnt]) {
+			sock_addr = fm->sockets[cnt]->addr;
 			device_unregister(&fm->sockets[cnt]->dev);
+		}
 	}
 
 	spin_lock(&tifm_adapter_lock);

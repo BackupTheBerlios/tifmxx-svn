@@ -120,6 +120,7 @@ struct memstick_ios {
 	unsigned char interface;
 #define MEMSTICK_SERIAL   0
 #define MEMSTICK_PARALLEL 1
+
 };
 
 struct memstick_host;
@@ -188,7 +189,7 @@ struct memstick_host {
 	struct memstick_dev *card;
 	void                (*request)(struct memstick_host *host,
 				       struct memstick_request *mrq);
-	void                (*set_ios)(struct memstick_host *host,
+	int                 (*set_ios)(struct memstick_host *host,
 				       struct memstick_ios *ios);
 	unsigned long       private[0] ____cacheline_aligned;
 };

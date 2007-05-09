@@ -63,6 +63,7 @@ enum {
 
 #define TIFM_CTRL_LED             0x00000040
 #define TIFM_CTRL_FAST_CLK        0x00000100
+#define TIFM_CTRL_POWER_MASK      0x00000007
 
 #define TIFM_SOCK_STATE_OCCUPIED  0x00000008
 #define TIFM_SOCK_STATE_POWERED   0x00000080
@@ -71,6 +72,7 @@ enum {
 #define TIFM_FIFO_READY           0x00000001
 #define TIFM_FIFO_INT_SETALL      0x0000ffff
 #define TIFM_FIFO_INTMASK         0x00000005
+#define TIFM_FIFO_SIZE            0x00000200
 
 #define TIFM_DMA_RESET            0x00000002
 #define TIFM_DMA_TX               0x00008000

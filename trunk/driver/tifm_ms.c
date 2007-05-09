@@ -50,6 +50,7 @@ struct tifm_ms {
 				no_dma:1;
 	unsigned short          cmd_flags;
 	unsigned int            mode_mask;
+	unsigned int            block_pos;
 	unsigned long           timeout_jiffies;
 
 	struct timer_list       timer;
@@ -141,10 +142,10 @@ void tifm_ms_write_fifo(struct tifm_ms *host, unsigned int fifo_offset,
 	kunmap_atomic(buf - page_off, KM_BIO_SRC_IRQ);
 }
 
-static void tifm_ms_move_block(struct tifm_ms *host)
+static void tifm_ms_move_block(struct tifm_ms *host, unsigned int length)
 {
-	unsigned int length = host->req->sg->length, t_size;
-	unsigned int off = host->req->sg->offset;
+	unsigned int t_size;
+	unsigned int off = host->req->sg->offset + host->block_pos;
 	unsigned int p_off, p_cnt;
 	struct page *pg;
 	unsigned long flags;
@@ -168,6 +169,35 @@ static void tifm_ms_move_block(struct tifm_ms *host)
 		t_size -= p_cnt;
 	}
 	local_irq_restore(flags);
+}
+
+static int tifm_ms_transfer_data(struct tifm_ms *host, int skip)
+{
+	struct tifm_dev *sock = host->dev;
+	struct memstick_request *req = host->req;
+	unsigned int length = req->sg->length - host->block_pos;
+
+	if (!length)
+		return 1;
+
+	if (length > TIFM_FIFO_SIZE)
+		length = TIFM_FIFO_SIZE;
+
+	if (!skip) {
+		tifm_ms_move_block(host, length);
+		host->block_pos += length;
+	}
+
+	if ((req->data_dir == READ) && (host->block_pos == req->sg->length))
+		return 1;
+
+	writel(ilog2(length) - 2, sock->addr + SOCK_FIFO_PAGE_SIZE);
+	if (req->data_dir == WRITE)
+		writel((1 << 8) | TIFM_DMA_TX, sock->addr + SOCK_DMA_CONTROL);
+	else
+		writel((1 << 8), sock->addr + SOCK_DMA_CONTROL);
+
+	return 0;
 }
 
 int tifm_ms_issue_cmd(struct tifm_ms *host)
@@ -197,14 +227,14 @@ int tifm_ms_issue_cmd(struct tifm_ms *host)
 
 		writel(TIFM_FIFO_INT_SETALL,
 		       sock->addr + SOCK_DMA_FIFO_INT_ENABLE_CLEAR);
-		writel(ilog2(length) - 2,
-		       sock->addr + SOCK_FIFO_PAGE_SIZE);
 		writel(TIFM_FIFO_ENABLE,
 		       sock->addr + SOCK_FIFO_CONTROL);
 		writel(TIFM_FIFO_INTMASK,
 		       sock->addr + SOCK_DMA_FIFO_INT_ENABLE_SET);
 
 		if (!host->no_dma) {
+			writel(ilog2(length) - 2,
+			       sock->addr + SOCK_FIFO_PAGE_SIZE);
 			writel(sg_dma_address(req->sg),
 			       sock->addr + SOCK_DMA_ADDRESS);
 			if (host->req->data_dir == WRITE)
@@ -214,8 +244,7 @@ int tifm_ms_issue_cmd(struct tifm_ms *host)
 				writel((1 << 8) | TIFM_DMA_EN,
 				       sock->addr + SOCK_DMA_CONTROL);
 		} else {
-			if (req->data_dir == WRITE)
-				tifm_ms_move_block(host);
+			tifm_ms_transfer_data(host, req->data_dir == READ);
 		}
 
 		cmd_mask = readl(sock->addr + SOCK_MS_SYSTEM);
@@ -293,9 +322,6 @@ void tifm_ms_complete_cmd(struct tifm_ms *host)
 				      req->data_dir == READ
 				      ? PCI_DMA_FROMDEVICE
 				      : PCI_DMA_TODEVICE);
-
-		else if (req->data_dir == READ)
-			tifm_ms_move_block(host);
 	} else {
 		writel(~TIFM_MS_SYS_DATA & readl(sock->addr + SOCK_MS_SYSTEM),
 		       sock->addr + SOCK_MS_SYSTEM);
@@ -356,8 +382,10 @@ static void tifm_ms_data_event(struct tifm_dev *sock)
 
 	if (host->req) {
 		if (fifo_status & TIFM_FIFO_READY) {
-			host->cmd_flags |= FIFO_READY;
-			rc = tifm_ms_check_status(host);
+			if (!host->no_dma || tifm_ms_transfer_data(host, 0)) {
+				host->cmd_flags |= FIFO_READY;
+				rc = tifm_ms_check_status(host);
+			}
 		}
 	}
 
@@ -446,10 +474,11 @@ void tifm_ms_request(struct memstick_host *msh, struct memstick_request *mrq)
 	return;
 }
 
-static void tifm_ms_ios(struct memstick_host *msh, struct memstick_ios *ios)
+static int tifm_ms_ios(struct memstick_host *msh, struct memstick_ios *ios)
 {
 	struct tifm_ms *host = memstick_priv(msh);
 	struct tifm_dev *sock = host->dev;
+	int rc = 0;
 	unsigned long flags;
 
 	spin_lock_irqsave(&sock->lock, flags);
@@ -464,8 +493,11 @@ static void tifm_ms_ios(struct memstick_host *msh, struct memstick_ios *ios)
 		writel(TIFM_CTRL_FAST_CLK
 		       | readl(sock->addr + SOCK_CONTROL),
 		       sock->addr + SOCK_CONTROL);
-	}
+	} else
+		rc = 1;
+
 	spin_unlock_irqrestore(&sock->lock, flags);
+	return rc;
 }
 
 static void tifm_ms_abort(unsigned long data)
@@ -566,10 +598,6 @@ static void tifm_ms_remove(struct tifm_dev *sock)
 
 	writel(0x0200 | TIFM_MS_SYS_NOT_RDY, sock->addr + SOCK_MS_SYSTEM);
 	writel(0xffffffff, sock->addr + SOCK_MS_STATUS);
-
-	/* The meaning of the bit majority in this constant is unknown. */
-	writel(0xfff8 & readl(sock->addr + SOCK_CONTROL),
-	       sock->addr + SOCK_CONTROL);
 
 	memstick_free_host(msh);
 }
