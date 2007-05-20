@@ -15,27 +15,62 @@
 #include <linux/workqueue.h>
 
 struct ms_status_register {
-	unsigned char reserved1;
+	unsigned char reserved0;
 	unsigned char interrupt;
+#define MEMSTICK_INT_CMDNAK             0x0001
+#define MEMSTICK_INT_BREQ               0x0020
+#define MEMSTICK_INT_ERR                0x0040
+#define MEMSTICK_INT_CED                0x0080
+
 	unsigned char status0;
+#define MEMSTICK_STATUS0_WP             0x0001
+#define MEMSTICK_STATUS0_SL             0x0002
+#define MEMSTICK_STATUS0_BF             0x0010
+#define MEMSTICK_STATUS0_BE             0x0020
+#define MEMSTICK_STATUS0_FB0            0x0040
+#define MEMSTICK_STATUS0_MB             0x0080
+
 	unsigned char status1;
+#define MEMSTICK_STATUS1_UCFG           0x0001
+#define MEMSTICK_STATUS1_FGER           0x0002
+#define MEMSTICK_STATUS1_UCEX           0x0004
+#define MEMSTICK_STATUS1_EXER           0x0008
+#define MEMSTICK_STATUS1_UCDT           0x0010
+#define MEMSTICK_STATUS1_DTER           0x0020
+#define MEMSTICK_STATUS1_FBI            0x0040
+#define MEMSTICK_STATUS1_MB             0x0080
+
 	unsigned char type;
-	unsigned char reserved2;
+	unsigned char reserved1;
 	unsigned char category;
 	unsigned char class;
-	unsigned char reserved3[8];
+	unsigned char reserved2[8];
 } __attribute__((packed));
 
 struct ms_param_register {
 	unsigned char system;
 	unsigned char block_address[3];
 	unsigned char cp;
+#define MEMSTICK_CP_BLOCK               0x0000
+#define MEMSTICK_CP_PAGE                0x0020
+#define MEMSTICK_CP_EXTRA               0x0040
+#define MEMSTICK_CP_OVERWRITE           0x0080
+
 	unsigned char page_address;
 } __attribute__((packed));
 
 struct ms_extra_data_register {
 	unsigned char  overwrite_flag;
+#define MEMSTICK_OVERWRITE_UPDATA       0x0010
+#define MEMSTICK_OVERWRITE_PAGE         0x0060
+#define MEMSTICK_OVERWRITE_BLOCK        0x0080
+
 	unsigned char  management_flag;
+#define MEMSTICK_MANAGEMENT_SYSTEM      0x0004
+#define MEMSTICK_MANAGEMENT_TRANS_TABLE 0x0008
+#define MEMSTICK_MANAGEMENT_COPY        0x0010
+#define MEMSTICK_MANAGEMENT_ACCESS      0x0020
+
 	unsigned short logical_address;
 } __attribute__((packed));
 
@@ -160,7 +195,7 @@ struct memstick_request {
 	size_t        length;
 	union {
 		struct scatterlist *sg;
-		char               *data;
+		unsigned char      *data;
 	};
 	struct list_head   node;
 };
@@ -168,6 +203,7 @@ struct memstick_request {
 struct memstick_dev {
 	struct memstick_device_id     id;
 	struct memstick_host          *host;
+	struct ms_register_addr       reg_addr;
 
 	int                           (*check)(struct memstick_dev *card);
 
@@ -177,6 +213,9 @@ struct memstick_dev {
 struct memstick_host {
 	struct mutex        lock;
 	unsigned int        id;
+	unsigned int        caps;
+#define MEMSTICK_CAP_PARALLEL  1
+
 	struct work_struct  media_checker;
 	struct class_device cdev;
 	struct list_head    preq_list;
@@ -189,7 +228,7 @@ struct memstick_host {
 	struct memstick_dev *card;
 	void                (*request)(struct memstick_host *host,
 				       struct memstick_request *mrq);
-	int                 (*set_ios)(struct memstick_host *host,
+	void                (*set_ios)(struct memstick_host *host,
 				       struct memstick_ios *ios);
 	unsigned long       private[0] ____cacheline_aligned;
 };
@@ -225,7 +264,9 @@ struct memstick_request* memstick_get_req(struct memstick_host *host);
 void memstick_init_req_sg(struct memstick_request *mrq, unsigned char tpc,
 			  struct scatterlist *sg);
 void memstick_init_req(struct memstick_request *mrq, unsigned char tpc,
-		       char *buf, size_t length);
+		       unsigned char *buf, size_t length);
+
+int memstick_set_rw_addr(struct memstick_dev *card);
 
 static inline void *memstick_priv(struct memstick_host *host)
 {

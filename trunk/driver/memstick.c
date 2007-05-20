@@ -325,7 +325,7 @@ void memstick_init_req_sg(struct memstick_request *mrq, unsigned char tpc,
 EXPORT_SYMBOL(memstick_init_req_sg);
 
 void memstick_init_req(struct memstick_request *mrq, unsigned char tpc,
-		       char *buf, size_t length)
+		       unsigned char *buf, size_t length)
 {
 	mrq->tpc = tpc;
 	mrq->error = MEMSTICK_ERR_INTERNAL;
@@ -346,31 +346,43 @@ void memstick_init_req(struct memstick_request *mrq, unsigned char tpc,
 }
 EXPORT_SYMBOL(memstick_init_req);
 
+int memstick_set_rw_addr(struct memstick_dev *card)
+{
+	struct memstick_request req;
+
+	memstick_init_req(&req, MS_TPC_SET_RW_REG_ADRS,
+			  (char*)&card->reg_addr, sizeof(card->reg_addr));
+	memstick_queue_req(card->host, &req);
+	memstick_get_req(card->host);
+
+	if (req.error)
+		return -EIO;
+
+	return 0;
+}
+EXPORT_SYMBOL(memstick_set_rw_addr);
+
 static struct memstick_dev* memstick_alloc_card(struct memstick_host *host)
 {
 	struct memstick_dev *card = kzalloc(sizeof(struct memstick_dev),
 					    GFP_KERNEL);
 	struct memstick_request mrq;
 	struct ms_register reg;
-	const struct ms_register_addr addr = { 0, sizeof(reg) - 1,
-					       0, sizeof(reg) - 1 };
 
 	if (card) {
 		card->host = host;
 		snprintf(card->dev.bus_id, sizeof(card->dev.bus_id),
-			 "%s:0", host->cdev.class_id);
+			 "%s", host->cdev.class_id);
 		card->dev.parent = host->cdev.dev;
 		card->dev.bus = &memstick_bus_type;
 		card->dev.release = memstick_free_card;
 		card->check = memstick_dummy_check;
 
+		card->reg_addr = (struct ms_register_addr){
+			0, sizeof(reg) - 1, 0, sizeof(reg) - 1
+		};
 
-		memstick_init_req(&mrq, MS_TPC_SET_RW_REG_ADRS,
-				  (char*)&addr, sizeof(addr));
-
-		memstick_queue_req(host, &mrq);
-		memstick_get_req(host);
-		if (mrq.error)
+		if (memstick_set_rw_addr(card))
 			goto err_out;
 
 		memstick_init_req(&mrq, MS_TPC_READ_REG, (char*)&reg,

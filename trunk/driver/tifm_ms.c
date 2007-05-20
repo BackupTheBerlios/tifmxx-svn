@@ -261,17 +261,17 @@ int tifm_ms_issue_cmd(struct tifm_ms *host)
 				writel(TIFM_MS_SYS_LATCH
 				       | readl(sock->addr + SOCK_MS_SYSTEM),
 				       sock->addr + SOCK_MS_SYSTEM);
-				__raw_writel(*(int*)(req->data + cnt),
+				__raw_writel(*(unsigned int*)(req->data + cnt),
 					     sock->addr + SOCK_MS_DATA);
 				dev_dbg(&sock->dev, "writing %x\n", *(int*)(req->data + cnt));
 			}
 			switch (length - cnt) {
 			case 3:
-				tval |= (unsigned char)req->data[cnt + 2] << 16;
+				tval |= req->data[cnt + 2] << 16;
 			case 2:
-				tval |= (unsigned char)req->data[cnt + 1] << 8;
+				tval |= req->data[cnt + 1] << 8;
 			case 1:
-				tval = (unsigned char)req->data[cnt];
+				tval |= req->data[cnt];
 				writel(TIFM_MS_SYS_LATCH
 				       | readl(sock->addr + SOCK_MS_SYSTEM),
 				       sock->addr + SOCK_MS_SYSTEM);
@@ -474,11 +474,10 @@ void tifm_ms_request(struct memstick_host *msh, struct memstick_request *mrq)
 	return;
 }
 
-static int tifm_ms_ios(struct memstick_host *msh, struct memstick_ios *ios)
+static void tifm_ms_ios(struct memstick_host *msh, struct memstick_ios *ios)
 {
 	struct tifm_ms *host = memstick_priv(msh);
 	struct tifm_dev *sock = host->dev;
-	int rc = 0;
 	unsigned long flags;
 
 	spin_lock_irqsave(&sock->lock, flags);
@@ -487,17 +486,14 @@ static int tifm_ms_ios(struct memstick_host *msh, struct memstick_ios *ios)
 		writel((~TIFM_CTRL_FAST_CLK)
 		       & readl(sock->addr + SOCK_CONTROL),
 		       sock->addr + SOCK_CONTROL);
-	} else if (ios->interface == MEMSTICK_PARALLEL
-		   && tifm_has_ms_pif(sock)) {
+	} else if (ios->interface == MEMSTICK_PARALLEL) {
 		host->mode_mask = 0;
 		writel(TIFM_CTRL_FAST_CLK
 		       | readl(sock->addr + SOCK_CONTROL),
 		       sock->addr + SOCK_CONTROL);
-	} else
-		rc = 1;
+	}
 
 	spin_unlock_irqrestore(&sock->lock, flags);
-	return rc;
 }
 
 static void tifm_ms_abort(unsigned long data)
@@ -516,11 +512,14 @@ static void tifm_ms_abort(unsigned long data)
 static int tifm_ms_initialize_host(struct tifm_ms *host)
 {
 	struct tifm_dev *sock = host->dev;
+	struct memstick_host *msh = tifm_get_drvdata(sock);
 
 	host->mode_mask = TIFM_MS_SERIAL;
 	writel(0x8000, sock->addr + SOCK_MS_SYSTEM);
 	writel(0x0200 | TIFM_MS_SYS_NOT_RDY, sock->addr + SOCK_MS_SYSTEM);
 	writel(0xffffffff, sock->addr + SOCK_MS_STATUS);
+	if (tifm_has_ms_pif(sock))
+		msh->caps |= MEMSTICK_CAP_PARALLEL;
 
 	return 0;
 }
