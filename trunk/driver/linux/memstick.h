@@ -15,7 +15,7 @@
 #include <linux/workqueue.h>
 
 struct ms_status_register {
-	unsigned char reserved0;
+	unsigned char reserved;
 	unsigned char interrupt;
 #define MEMSTICK_INT_CMDNAK             0x0001
 #define MEMSTICK_INT_BREQ               0x0020
@@ -39,17 +39,19 @@ struct ms_status_register {
 #define MEMSTICK_STATUS1_DTER           0x0020
 #define MEMSTICK_STATUS1_FBI            0x0040
 #define MEMSTICK_STATUS1_MB             0x0080
+} __attribute__((packed));
 
+struct ms_id_register {
 	unsigned char type;
-	unsigned char reserved1;
+	unsigned char reserved;
 	unsigned char category;
 	unsigned char class;
-	unsigned char reserved2[8];
 } __attribute__((packed));
 
 struct ms_param_register {
 	unsigned char system;
-	unsigned char block_address[3];
+	unsigned char block_address_msb;
+	unsigned short block_address;
 	unsigned char cp;
 #define MEMSTICK_CP_BLOCK               0x0000
 #define MEMSTICK_CP_PAGE                0x0020
@@ -76,9 +78,10 @@ struct ms_extra_data_register {
 
 struct ms_register {
 	struct ms_status_register     status;
+	struct ms_id_register         id;
+	unsigned char                 reserved[8];
 	struct ms_param_register      param;
 	struct ms_extra_data_register extra_data;
-	unsigned char                 reserved[6];
 } __attribute__((packed));
 
 struct mspro_param_register {
@@ -90,8 +93,9 @@ struct mspro_param_register {
 
 struct mspro_register {
 	struct ms_status_register    status;
-	struct mspro_param_register  param;
+	struct ms_id_register        id;
 	unsigned char                reserved[8];
+	struct mspro_param_register  param;
 } __attribute__((packed));
 
 struct ms_register_addr {
@@ -145,7 +149,7 @@ enum {
 //	MSPRO_CMD_OUT_IOM
 };
 
-#define MEMSTICK_DEF_PAGE_SIZE 0x0200
+#define MEMSTICK_PART_SHIFT 8
 
 struct memstick_ios {
 	unsigned char power_mode;
@@ -160,11 +164,6 @@ struct memstick_ios {
 
 struct memstick_host;
 struct memstick_driver;
-
-#define MEMSTICK_ERR_NONE     0
-#define MEMSTICK_ERR_TIMEOUT  1
-#define MEMSTICK_ERR_BADCRC   2
-#define MEMSTICK_ERR_INTERNAL 3
 
 #define MEMSTICK_MATCH_ALL            0x01
 
@@ -190,44 +189,52 @@ struct memstick_request {
 	unsigned char tpc;
 	unsigned char data_dir:1,
 		      need_card_int:1,
-		      block_io:1;
+		      get_int_reg:1,
+		      io_type:2;
+#define               MEMSTICK_IO_NONE 0
+#define               MEMSTICK_IO_VAL  1
+#define               MEMSTICK_IO_SG   2
+
+	unsigned char int_reg;
 	int           error;
-	size_t        length;
 	union {
-		struct scatterlist *sg;
-		unsigned char      *data;
+		struct scatterlist sg;
+		struct {
+			unsigned char data_len;
+			unsigned char data[15];
+		};
 	};
-	struct list_head   node;
 };
 
 struct memstick_dev {
-	struct memstick_device_id     id;
-	struct memstick_host          *host;
-	struct ms_register_addr       reg_addr;
+	struct memstick_device_id id;
+	struct memstick_host      *host;
+	struct ms_register_addr   reg_addr;
+	struct completion         mrq_complete;
+	struct memstick_request   current_mrq;
 
-	int                           (*check)(struct memstick_dev *card);
+	int                       (*check)(struct memstick_dev *card);
+	int                       (*next_request)(struct memstick_dev *card,
+						  struct memstick_request **mrq);
 
-	struct device                 dev;
+	struct device             dev;
 };
 
 struct memstick_host {
 	struct mutex        lock;
 	unsigned int        id;
 	unsigned int        caps;
-#define MEMSTICK_CAP_PARALLEL  1
+#define MEMSTICK_CAP_PARALLEL      1
+#define MEMSTICK_CAP_AUTO_GET_INT  2
 
 	struct work_struct  media_checker;
 	struct class_device cdev;
-	struct list_head    preq_list;
-	struct list_head    creq_list;
-	unsigned int        retries;
-	spinlock_t          req_lock;
-	wait_queue_head_t   req_wait;
 
 	struct memstick_ios ios;
 	struct memstick_dev *card;
-	void                (*request)(struct memstick_host *host,
-				       struct memstick_request *mrq);
+	unsigned int        retries;
+
+	void                (*request)(struct memstick_host *host);
 	void                (*set_ios)(struct memstick_host *host,
 				       struct memstick_ios *ios);
 	unsigned long       private[0] ____cacheline_aligned;
@@ -255,20 +262,17 @@ void memstick_remove_host(struct memstick_host *host);
 void memstick_free_host(struct memstick_host *host);
 void memstick_detect_change(struct memstick_host *host);
 
-struct memstick_request* memstick_next_req(struct memstick_host *host,
-					   struct memstick_request *mrq);
-void memstick_queue_req(struct memstick_host *host,
-			struct memstick_request *mrq);
-struct memstick_request* memstick_get_req(struct memstick_host *host);
-
 void memstick_init_req_sg(struct memstick_request *mrq, unsigned char tpc,
 			  struct scatterlist *sg);
 void memstick_init_req(struct memstick_request *mrq, unsigned char tpc,
-		       unsigned char *buf, size_t length);
+		       void *buf, size_t length);
+int memstick_next_req(struct memstick_host *host, struct memstick_request **mrq);
+void memstick_new_req(struct memstick_host *host);
 
-int memstick_set_rw_addr(struct memstick_dev *card);
+int memstick_set_rw_addr(struct memstick_dev *card,
+			 struct ms_register_addr *addr);
 
-static inline void *memstick_priv(struct memstick_host *host)
+inline void *memstick_priv(struct memstick_host *host)
 {
         return (void *)host->private;
 }

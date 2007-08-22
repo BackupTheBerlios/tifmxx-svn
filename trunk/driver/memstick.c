@@ -202,7 +202,7 @@ static void memstick_free_card(struct device *dev)
 
 static int memstick_dummy_check(struct memstick_dev *card)
 {
-	return MEMSTICK_ERR_INTERNAL;
+	return 0;
 }
 
 void memstick_detect_change(struct memstick_host *host)
@@ -211,154 +211,141 @@ void memstick_detect_change(struct memstick_host *host)
 }
 EXPORT_SYMBOL(memstick_detect_change);
 
-struct memstick_request* memstick_next_req(struct memstick_host *host,
-					   struct memstick_request *mrq)
+int memstick_next_req(struct memstick_host *host, struct memstick_request **mrq)
 {
-	unsigned long flags;
+	int rc = -ENXIO;
 
-	spin_lock_irqsave(&host->req_lock, flags);
-	if (mrq->error) {
+	if ((*mrq) && (*mrq)->error && host->retries) {
+		(*mrq)->error = rc;
 		host->retries--;
-		if (host->retries) {
-			mrq->error = MEMSTICK_ERR_INTERNAL;
-			goto out;
-		} else
-			list_splice_init(&host->preq_list,
-					 host->creq_list.prev);
-	} else {
-		list_move_tail(&mrq->node, &host->creq_list);
+		return 0;
+	}
+
+	if (host->card && host->card->next_request)
+		rc = host->card->next_request(host->card, mrq);
+
+	if (!rc)
 		host->retries = cmd_retries;
-	}
+	else
+		*mrq = NULL;
 
-	if (!list_empty(&host->preq_list))
-		mrq = list_entry(host->preq_list.next, struct memstick_request,
-				 node);
-	else {
-		mrq = NULL;
-		wake_up_all(&host->req_wait);
-	}
-
-out:
-	spin_unlock_irqrestore(&host->req_lock, flags);
-	return mrq;
+	return rc;
 }
 EXPORT_SYMBOL(memstick_next_req);
 
-void memstick_queue_req(struct memstick_host *host,
-			struct memstick_request *mrq)
+void memstick_new_req(struct memstick_host *host)
 {
-	unsigned long flags;
-	int restart = 0;
-
-	spin_lock_irqsave(&host->req_lock, flags);
-
-	if (list_empty(&host->preq_list)) {
-		restart = 1;
-		host->retries = cmd_retries;
-	}
-
-	list_add_tail(&mrq->node, &host->preq_list);
-	spin_unlock_irqrestore(&host->req_lock, flags);
-
-	if (restart)
-		host->request(host, mrq);
+	host->retries = cmd_retries;
+	host->request(host);
 }
-EXPORT_SYMBOL(memstick_queue_req);
-
-static int memstick_any_completed(struct memstick_host *host)
-{
-	int rc = 1;
-	unsigned long flags;
-	
-	spin_lock_irqsave(&host->req_lock, flags);
-	if (list_empty(&host->creq_list))
-		rc = 0;
-	spin_unlock_irqrestore(&host->req_lock, flags);
-	return rc;
-}
-
-struct memstick_request* memstick_get_req(struct memstick_host *host)
-{
-	struct memstick_request *mrq = NULL;
-	unsigned long flags;
-
-	spin_lock_irqsave(&host->req_lock, flags);
-
-	if (!list_empty(&host->preq_list)) {
-		spin_unlock_irqrestore(&host->req_lock, flags);
-		wait_event(host->req_wait,
-			   memstick_any_completed(host));
-		spin_lock_irqsave(&host->req_lock, flags);
-	}
-	
-	if (!list_empty(&host->creq_list)) {
-		mrq = list_entry(host->creq_list.next,
-				 struct memstick_request, node);
-		list_del(&mrq->node);
-	}
-	
-	spin_unlock_irqrestore(&host->req_lock, flags);
-	return mrq;
-}
-EXPORT_SYMBOL(memstick_get_req);
+EXPORT_SYMBOL(memstick_new_req);
 
 void memstick_init_req_sg(struct memstick_request *mrq, unsigned char tpc,
 			  struct scatterlist *sg)
 {
 	mrq->tpc = tpc;
-	mrq->error = MEMSTICK_ERR_INTERNAL;
-	mrq->length = 0;
-	mrq->sg = sg;
-	INIT_LIST_HEAD(&mrq->node);
 	if (tpc & 8)
 		mrq->data_dir = WRITE;
 	else
 		mrq->data_dir = READ;
+
+	mrq->sg = *sg;
+	mrq->io_type = MEMSTICK_IO_SG;
 
 	if (tpc == MS_TPC_SET_CMD || tpc == MS_TPC_EX_SET_CMD)
 		mrq->need_card_int = 1;
 	else
 		mrq->need_card_int = 0;
 
-	mrq->block_io = 1;
+	mrq->get_int_reg = 0;
 }
 EXPORT_SYMBOL(memstick_init_req_sg);
 
 void memstick_init_req(struct memstick_request *mrq, unsigned char tpc,
-		       unsigned char *buf, size_t length)
+		       void *buf, size_t length)
 {
 	mrq->tpc = tpc;
-	mrq->error = MEMSTICK_ERR_INTERNAL;
-	mrq->length = length;
-	mrq->data = buf;
-	INIT_LIST_HEAD(&mrq->node);
 	if (tpc & 8)
 		mrq->data_dir = WRITE;
 	else
 		mrq->data_dir = READ;
+
+	mrq->data_len = length > sizeof(mrq->data) ? sizeof(mrq->data) : length;
+	if (mrq->data_dir == WRITE)
+		memcpy(mrq->data, buf, mrq->data_len);
+
+	mrq->io_type = MEMSTICK_IO_VAL;
 
 	if (tpc == MS_TPC_SET_CMD || tpc == MS_TPC_EX_SET_CMD)
 		mrq->need_card_int = 1;
 	else
 		mrq->need_card_int = 0;
 
-	mrq->block_io = 0;
+	mrq->get_int_reg = 0;
 }
 EXPORT_SYMBOL(memstick_init_req);
 
-int memstick_set_rw_addr(struct memstick_dev *card)
+static int h_memstick_read_dev_id(struct memstick_dev *card,
+				  struct memstick_request **mrq)
 {
-	struct memstick_request req;
+	struct ms_id_register id_reg;
 
-	memstick_init_req(&req, MS_TPC_SET_RW_REG_ADRS,
-			  (char*)&card->reg_addr, sizeof(card->reg_addr));
-	memstick_queue_req(card->host, &req);
-	memstick_get_req(card->host);
+	if (!(*mrq)) {
+		memstick_init_req(&card->current_mrq, MS_TPC_READ_REG, NULL,
+				  sizeof(struct ms_id_register));
+		*mrq = &card->current_mrq;
+		return 0;
+	} else {
+		if (!(*mrq)->error) {
+			id_reg = *(struct ms_id_register*)((*mrq)->data);
+			card->id = (struct memstick_device_id){
+				.match_flags = MEMSTICK_MATCH_ALL,
+				.type = id_reg.type,
+				.category = id_reg.category,
+				.class = id_reg.class
+			};
+		}
+		complete(&card->mrq_complete);
+		return -EAGAIN;
+	}
+}
 
-	if (req.error)
-		return -EIO;
+static int h_memstick_set_rw_addr(struct memstick_dev *card,
+				  struct memstick_request **mrq)
+{
+	if (!(*mrq)) {
+		memstick_init_req(&card->current_mrq, MS_TPC_SET_RW_REG_ADRS,
+				  (char*)&card->reg_addr,
+				  sizeof(card->reg_addr));
+		*mrq = &card->current_mrq;
+		return 0;
+	} else {
+		complete(&card->mrq_complete);
+		return -EAGAIN;
+	}
+}
 
-	return 0;
+int memstick_set_rw_addr(struct memstick_dev *card,
+			 struct ms_register_addr *reg_addr)
+{
+	struct ms_register_addr t_addr;
+
+	if (!memcmp(reg_addr, &card->reg_addr, sizeof(*reg_addr)))
+		return 0;
+
+	t_addr = card->reg_addr;
+	card->reg_addr = *reg_addr;
+
+	card->next_request = h_memstick_set_rw_addr;
+	memstick_new_req(card->host);
+	wait_for_completion(&card->mrq_complete);
+
+	if (card->current_mrq.error)
+		card->reg_addr = t_addr;
+	else
+		*reg_addr = t_addr;
+
+	return card->current_mrq.error;
 }
 EXPORT_SYMBOL(memstick_set_rw_addr);
 
@@ -366,8 +353,8 @@ static struct memstick_dev* memstick_alloc_card(struct memstick_host *host)
 {
 	struct memstick_dev *card = kzalloc(sizeof(struct memstick_dev),
 					    GFP_KERNEL);
-	struct memstick_request mrq;
-	struct ms_register reg;
+	struct memstick_dev *old_card = host->card;
+	struct ms_id_register id_reg;
 
 	if (card) {
 		card->host = host;
@@ -379,26 +366,34 @@ static struct memstick_dev* memstick_alloc_card(struct memstick_host *host)
 		card->check = memstick_dummy_check;
 
 		card->reg_addr = (struct ms_register_addr){
-			0, sizeof(reg) - 1, 0, sizeof(reg) - 1
+			offsetof(struct ms_register, id),
+			sizeof(id_reg),
+			offsetof(struct ms_register, id),
+			sizeof(id_reg)
 		};
 
-		if (memstick_set_rw_addr(card))
+		init_completion(&card->mrq_complete);
+
+		host->card = card;
+
+		card->next_request = h_memstick_set_rw_addr;
+		memstick_new_req(host);
+		wait_for_completion(&card->mrq_complete);
+
+		if (card->current_mrq.error)
 			goto err_out;
 
-		memstick_init_req(&mrq, MS_TPC_READ_REG, (char*)&reg,
-				  sizeof(reg) - 1);
-		memstick_queue_req(host, &mrq);
-		memstick_get_req(host);
-		if (mrq.error)
-			goto err_out;
+		card->next_request = h_memstick_read_dev_id;
+		memstick_new_req(host);
+		wait_for_completion(&card->mrq_complete);
 
-		card->id.match_flags = MEMSTICK_MATCH_ALL;
-		card->id.type = reg.status.type;
-		card->id.category = reg.status.category;
-		card->id.class = reg.status.class;
+		if (card->current_mrq.error)
+			goto err_out;
 	}
+	host->card = old_card;
 	return card;
 err_out:
+	host->card = old_card;
 	kfree(card);
 	return NULL;
 }
@@ -440,22 +435,24 @@ static void memstick_check(struct work_struct *work)
 		dev_dbg(host->cdev.dev, "new card %02x, %02x, %02x\n",
 			card->id.type, card->id.category, card->id.class);
 		if (host->card) {
-			if (!memstick_dev_match(host->card, &card->id)
-			    || host->card->check(host->card)) {
+			host->card->next_request = h_memstick_set_rw_addr;
+			memstick_new_req(host);
+			wait_for_completion(&host->card->mrq_complete);
+
+			if (host->card->current_mrq.error
+			    || !memstick_dev_match(host->card, &card->id)
+			    || !(host->card->check(host->card))) {
 				device_unregister(&host->card->dev);
 				host->card = NULL;
 			}
 		}
 
 		if (!host->card) {
-			mutex_unlock(&host->lock);
+			host->card = card;
 			if (device_register(&card->dev)) {
-				kfree(card);
-				card = NULL;
+				kfree(host->card);
+				host->card = NULL;
 			}
-			mutex_lock(&host->lock);
-			if (card)
-				host->card = card;
 		} else
 			kfree(card);
 	}
@@ -478,11 +475,6 @@ struct memstick_host *memstick_alloc_host(unsigned int extra,
 		host->cdev.class = &memstick_host_class;
 		host->cdev.dev = dev;
 		class_device_initialize(&host->cdev);
-		INIT_LIST_HEAD(&host->preq_list);
-		INIT_LIST_HEAD(&host->creq_list);
-		spin_lock_init(&host->req_lock);
-		init_waitqueue_head(&host->req_wait);
-
 	}
 	return host;
 }
@@ -561,7 +553,7 @@ static int __init memstick_init(void)
 {
 	int rc;
 
-	workqueue = create_singlethread_workqueue("kmemstick");
+	workqueue = create_freezeable_workqueue("kmemstick");
 	if (!workqueue)
 		return -ENOMEM;
 
