@@ -511,6 +511,13 @@ static int h_mspro_block_get_ro(struct memstick_dev *card,
 static int h_mspro_block_wait_for_ced(struct memstick_dev *card,
 				      struct memstick_request **mrq)
 {
+	if ((*mrq)->error) {
+		complete(&card->mrq_complete);
+		return (*mrq)->error;
+	}
+
+	dev_dbg(&card->dev, "wait for ced: value %x\n", (*mrq)->data[0]);
+
 	if ((*mrq)->data[0] & (MEMSTICK_INT_CMDNAK | MEMSTICK_INT_ERR)) {
 		card->current_mrq.error = -EFAULT;
 		complete(&card->mrq_complete);
@@ -531,8 +538,9 @@ static int h_mspro_block_transfer_data(struct memstick_dev *card,
 {
 	struct memstick_host *host = card->host;
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
-	unsigned char t_val = MSPRO_CMD_READ_DATA;
-	struct scatterlist t_sg = {0};
+	unsigned char t_val = 0;
+	struct scatterlist t_sg = { 0 };
+	size_t t_offset;
 
 	if ((*mrq)->error) {
 		complete(&card->mrq_complete);
@@ -560,11 +568,6 @@ has_int_reg:
 			return 0;
 		}
 
-		if (!(t_val & MEMSTICK_INT_BREQ)) {
-			memstick_init_req(*mrq, MS_TPC_GET_INT, NULL, 1);
-			return 0;
-		}
-
 		if (msb->current_page
 		    == (msb->req_sg[msb->current_seg].length
 			/ msb->page_size)) {
@@ -584,12 +587,20 @@ has_int_reg:
 				}
 			}
 		}
+
+		if (!(t_val & MEMSTICK_INT_BREQ)) {
+			memstick_init_req(*mrq, MS_TPC_GET_INT, NULL, 1);
+			return 0;
+		}
+
+		t_offset = msb->req_sg[msb->current_seg].offset;
+		t_offset += msb->current_page * msb->page_size;
 		t_sg.page = nth_page(msb->req_sg[msb->current_seg].page,
-				     (msb->current_page
-				      * msb->page_size) >> PAGE_SHIFT);
-		t_sg.offset = offset_in_page(msb->current_page
-					     * msb->page_size);
+				     t_offset >> PAGE_SHIFT);
+		t_sg.offset = offset_in_page(t_offset);
 		t_sg.length = msb->page_size;
+		dev_dbg(&card->dev, "setting sg: page %p, offset %x, "
+			"length %x\n", t_sg.page, t_sg.offset, t_sg.length);
 		memstick_init_req_sg(*mrq, msb->data_dir == READ
 					   ? MS_TPC_READ_LONG_DATA
 					   : MS_TPC_WRITE_LONG_DATA,
@@ -617,15 +628,14 @@ has_int_reg:
 static void mspro_block_process_request(struct memstick_dev *card,
 					struct request *req)
 {
-	struct memstick_host *host = card->host;
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
 	struct mspro_param_register param;
 	int rc, chunk, cnt;
-	unsigned short page_count = 0;
+	unsigned short page_count;
 	unsigned long flags;
 
 	do {
-		mutex_lock(&host->lock);
+		page_count = 0;
 		msb->current_seg = 0;
 		msb->seg_count = blk_rq_map_sg(req->q, req, msb->req_sg);
 
@@ -639,7 +649,7 @@ static void mspro_block_process_request(struct memstick_dev *card,
 				.system = msb->system,
 				.data_count = cpu_to_be16(page_count),
 				.data_address = cpu_to_be32(req->sector
-							    * (msb->page_size
+							    / (msb->page_size
 							       >> 9)),
 				.cmd_param = 0
 			};
@@ -649,10 +659,15 @@ static void mspro_block_process_request(struct memstick_dev *card,
 					    ? MSPRO_CMD_READ_DATA
 					    : MSPRO_CMD_WRITE_DATA;
 
+			dev_dbg(&card->dev, "data transfer: cmd %x, "
+				"lba %x, count %x\n", msb->transfer_cmd,
+				be32_to_cpu(param.data_address),
+				page_count);
+
 			card->next_request = h_mspro_block_req_init;
 			msb->mrq_handler = h_mspro_block_transfer_data;
 			memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG,
-					  (char*)&param, sizeof(param));
+					  &param, sizeof(param));
 			memstick_new_req(card->host);
 			wait_for_completion(&card->mrq_complete);
 			rc = card->current_mrq.error;
@@ -673,8 +688,6 @@ static void mspro_block_process_request(struct memstick_dev *card,
 				rc = msb->page_size * page_count;
 		} else
 			rc = -EFAULT;
-
-		mutex_unlock(&host->lock);
 
 		spin_lock_irqsave(&msb->q_lock, flags);
 		if (rc >= 0)
@@ -709,15 +722,18 @@ static int mspro_block_has_request(struct mspro_block_data *msb)
 static int mspro_block_queue_thread(void *data)
 {
 	struct memstick_dev *card = data;
+	struct memstick_host *host = card->host;
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
-	struct request *req = NULL;
+	struct request *req;
 	unsigned long flags;
 
 	while (1) {
 		wait_event(msb->q_wait, mspro_block_has_request(msb));
+		dev_dbg(&card->dev, "thread iter\n");
 
 		spin_lock_irqsave(&msb->q_lock, flags);
 		req = elv_next_request(msb->queue);
+		dev_dbg(&card->dev, "next req %p\n", req);
 		if (!req) {
 			msb->has_request = 0;
 			if (kthread_should_stop()) {
@@ -728,9 +744,16 @@ static int mspro_block_queue_thread(void *data)
 			msb->has_request = 1;
 		spin_unlock_irqrestore(&msb->q_lock, flags);
 
-		if (req)
-			mspro_block_process_request(card, req);
+		if (req) {
+			if (msb->active) {
+				mutex_lock(&host->lock);
+				mspro_block_process_request(card, req);
+				mutex_unlock(&host->lock);
+			} else
+				mspro_block_process_request(card, req);
+		}
 	}
+	dev_dbg(&card->dev, "thread finished\n");
 	return 0;
 }
 
@@ -813,9 +836,12 @@ static int mspro_block_read_attributes(struct memstick_dev *card)
 	msb->data_dir = READ;
 	msb->transfer_cmd = MSPRO_CMD_READ_ATRB;
 
+	dev_dbg(&card->dev, "attr read %p, %x, %x\n", msb->req_sg[0].page,
+		msb->req_sg[0].offset, msb->req_sg[0].length);
+
 	card->next_request = h_mspro_block_req_init;
 	msb->mrq_handler = h_mspro_block_transfer_data;
-	memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, (char*)&param,
+	memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, &param,
 			  sizeof(param));
 	memstick_new_req(card->host);
 	wait_for_completion(&card->mrq_complete);
@@ -992,7 +1018,9 @@ static int mspro_block_init_card(struct memstick_dev *card)
 	rc = mspro_block_wait_for_ced(card);
 	if (rc)
 		return rc;
-
+	msleep(100);
+	dev_dbg(&card->dev, "card activated\n");
+	
 	card->next_request = h_mspro_block_req_init;
 	msb->mrq_handler = h_mspro_block_get_ro;
 	memstick_init_req(&card->current_mrq, MS_TPC_READ_REG, NULL,
@@ -1002,11 +1030,14 @@ static int mspro_block_init_card(struct memstick_dev *card)
 	if (card->current_mrq.error)
 		return card->current_mrq.error;
 
+	dev_dbg(&card->dev, "card r/w status %d\n", msb->read_only ? 0 : 1);
+
 	msb->page_size = 512;
 	rc = mspro_block_read_attributes(card);
 	if (rc)
 		return rc;
 
+	dev_dbg(&card->dev, "attributes loaded\n");
 	return 0;
 
 }
@@ -1095,13 +1126,14 @@ static int mspro_block_init_disk(struct memstick_dev *card)
 
 	set_capacity(msb->disk, capacity);
 	dev_dbg(&card->dev, "capacity set %ld\n", capacity);
-	msb->q_thread = kthread_run(mspro_block_queue_thread, card, "msproq");
+	msb->q_thread = kthread_run(mspro_block_queue_thread, card,
+				    "mspro_blockd");
 	if (IS_ERR(msb->q_thread))
 		goto out_put_disk;
 
-	msb->active = 1;
 	msb->disk_usage_count++;
 	add_disk(msb->disk);
+	msb->active = 1;
 	return 0;
 
 out_put_disk:
@@ -1169,16 +1201,21 @@ static void mspro_block_remove(struct memstick_dev *card)
 	struct task_struct *q_thread = NULL;
 	unsigned long flags;
 
+	dev_dbg(&card->dev, "mspro block remove\n");
 	spin_lock_irqsave(&msb->q_lock, flags);
 	q_thread = msb->q_thread;
 	msb->q_thread = NULL;
 	msb->active = 0;
+	dev_dbg(&card->dev, "before stop queue\n");
 	if (q_thread)
 		blk_stop_queue(msb->queue);
 	spin_unlock_irqrestore(&msb->q_lock, flags);
 
+	dev_dbg(&card->dev, "before stop thread\n");
 	if (q_thread)
 		kthread_stop(q_thread);
+
+	dev_dbg(&card->dev, "queue thread stopped\n");
 
 	del_gendisk(msb->disk);
 	mutex_lock(&mspro_block_disk_lock);
@@ -1203,10 +1240,12 @@ static int mspro_block_suspend(struct memstick_dev *card, pm_message_t state)
 	spin_lock_irqsave(&msb->q_lock, flags);
 	q_thread = msb->q_thread;
 	msb->q_thread = NULL;
+	msb->active = 0;
+
 	if (q_thread)
 		blk_stop_queue(msb->queue);
 
-	msb->active = 0;
+
 	spin_unlock_irqrestore(&msb->q_lock, flags);
 
 	if (q_thread)
@@ -1246,7 +1285,7 @@ static int mspro_block_resume(struct memstick_dev *card)
 
 			memstick_set_drvdata(card, msb);
 			msb->q_thread = kthread_run(mspro_block_queue_thread,
-						    card, "msproq");
+						    card, "mspro_blockd");
 			if (IS_ERR(msb->q_thread))
 				msb->q_thread = NULL;
 			else {
