@@ -149,7 +149,7 @@ enum {
 //	MSPRO_CMD_OUT_IOM
 };
 
-#define MEMSTICK_PART_SHIFT 8
+#define MEMSTICK_PART_SHIFT 3
 
 struct memstick_ios {
 	unsigned char power_mode;

@@ -575,6 +575,7 @@ static void __exit memstick_exit(void)
 	class_unregister(&memstick_host_class);
 	bus_unregister(&memstick_bus_type);
 	destroy_workqueue(workqueue);
+	idr_destroy(&memstick_host_idr);
 }
 
 module_init(memstick_init);

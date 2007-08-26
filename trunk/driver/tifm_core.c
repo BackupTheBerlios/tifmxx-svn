@@ -363,6 +363,7 @@ static void __exit tifm_exit(void)
 	class_unregister(&tifm_adapter_class);
 	bus_unregister(&tifm_bus_type);
 	destroy_workqueue(workqueue);
+	idr_destroy(&tifm_adapter_idr);
 }
 
 subsys_initcall(tifm_init);

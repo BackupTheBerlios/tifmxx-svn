@@ -129,7 +129,7 @@ struct ms_cis_idi {
 	unsigned char  reserved3[128];
 } __attribute__((packed));
 
-enum  write_state {
+enum write_state {
 	NOTHING = 0,
 	GET_BLOCK,
 	DEL_DST,
@@ -141,11 +141,12 @@ enum  write_state {
 };
 
 struct ms_block_data {
+	struct memstick_dev      *card;
+	unsigned int             usage_count;
 	unsigned int             *block_map;
 	unsigned short           *block_lut;
 
 	struct gendisk           *disk;
-	int                      disk_usage_count;
 	request_queue_t          *queue;
 	spinlock_t               q_lock;
 	wait_queue_head_t        q_wait;
@@ -233,10 +234,8 @@ static unsigned short ms_block_physical(struct ms_block_data *msb,
 
 static unsigned short ms_block_get_unused(struct ms_block_data *msb)
 {
-	unsigned short r_pos, b_cnt, rc;
-	unsigned int t_val;
-
-	get_random_bytes(&r_pos, 2);
+	unsigned short b_cnt, rc;
+	unsigned int t_val, r_pos = random32();
 
 	r_pos %= msb->block_count;
 	b_cnt = r_pos >> 5;
@@ -265,18 +264,14 @@ static unsigned short ms_block_get_unused(struct ms_block_data *msb)
 static int ms_block_bd_open(struct inode *inode, struct file *filp)
 {
 	struct gendisk *disk = inode->i_bdev->bd_disk;
-	struct memstick_dev *card;
-	struct ms_block_data *msb;
+	struct ms_block_data *msb = disk->private_data;
 	int rc = -ENXIO;
 
 	mutex_lock(&ms_block_disk_lock);
-	card = disk->private_data;
-
+	
 	printk(KERN_INFO "disk open\n");
-	if (card) {
-		msb = memstick_get_drvdata(card);
-		msb->disk_usage_count++;
-
+	if (msb && msb->card) {
+		msb->usage_count++;
 		if ((filp->f_mode & FMODE_WRITE) && msb->read_only)
 			rc = -EROFS;
 		else
@@ -288,26 +283,23 @@ static int ms_block_bd_open(struct inode *inode, struct file *filp)
 	return rc;
 }
 
-static int ms_block_bd_release(struct inode *inode, struct file *filp)
+static int ms_block_disk_release(struct gendisk *disk)
 {
-	struct gendisk *disk = inode->i_bdev->bd_disk;
+	struct ms_block_data *msb = disk->private_data;
 	int disk_id = disk->first_minor >> MEMSTICK_PART_SHIFT;
-	struct memstick_dev *card;
-	struct ms_block_data *msb;
 
 	mutex_lock(&ms_block_disk_lock);
-	card = disk->private_data;
 
 	printk(KERN_INFO "disk release\n");
-	if (card) {
-		msb = memstick_get_drvdata(card);
-		msb->disk_usage_count--;
-	}
 
-	if (!card || !msb->disk_usage_count) {
-		disk->private_data = NULL;
-		idr_remove(&ms_block_disk_idr, disk_id);
-		put_disk(disk);
+	if (msb->usage_count) {
+		msb->usage_count--;
+		if (!msb->usage_count) {
+			kfree(msb);
+			disk->private_data = NULL;
+			idr_remove(&ms_block_disk_idr, disk_id);
+			put_disk(disk);	
+		}
 	}
 
 	mutex_unlock(&ms_block_disk_lock);
@@ -315,11 +307,16 @@ static int ms_block_bd_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
+static int ms_block_bd_release(struct inode *inode, struct file *filp)
+{
+	struct gendisk *disk = inode->i_bdev->bd_disk;
+	return ms_block_disk_release(disk);
+}
+
 static int ms_block_bd_getgeo(struct block_device *bdev,
 			      struct hd_geometry *geo)
 {
-	struct memstick_dev *card = bdev->bd_disk->private_data;
-	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct ms_block_data *msb = bdev->bd_disk->private_data;
 
 	geo->heads = msb->cis_idi.current_logical_heads;
 	geo->sectors = msb->cis_idi.current_sectors_per_track;
@@ -767,7 +764,8 @@ static int h_ms_block_write_pages(struct memstick_dev *card,
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct ms_param_register param;
-	struct scatterlist t_sg = {0};
+	struct scatterlist t_sg = { 0 };
+	size_t t_offset;
 	unsigned char t_val = MS_CMD_BLOCK_WRITE;
 
 	if ((*mrq)->error) {
@@ -777,11 +775,11 @@ static int h_ms_block_write_pages(struct memstick_dev *card,
 
 	switch ((*mrq)->tpc) {
 	case MS_TPC_WRITE_REG:
+		t_offset = msb->req_sg[msb->current_seg].offset;
+		t_offset += msb->current_page * msb->page_size;
 		t_sg.page = nth_page(msb->req_sg[msb->current_seg].page,
-				     (msb->current_page
-				      * msb->page_size) >> PAGE_SHIFT);
-		t_sg.offset = offset_in_page(msb->current_page
-					     * msb->page_size);
+				     t_offset >> PAGE_SHIFT);
+		t_sg.offset = offset_in_page(t_offset);
 		t_sg.length = msb->page_size;
 		memstick_init_req_sg(*mrq, MS_TPC_WRITE_LONG_DATA, &t_sg);
 		break;
@@ -1007,7 +1005,6 @@ static int h_ms_block_req_init(struct memstick_dev *card,
 
 	*mrq = &card->current_mrq;
 	card->next_request = msb->mrq_handler;
-	msb->mrq_handler = NULL;
 	return 0;
 }
 
@@ -1037,7 +1034,9 @@ static int h_ms_block_read_pages(struct memstick_dev *card,
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct ms_status_register *status;
-	struct scatterlist t_sg = {0};
+	struct scatterlist t_sg = { 0 };
+	size_t t_offset;
+	unsigned short src_phy_block;
 	unsigned char t_val = MS_CMD_BLOCK_READ;
 	struct ms_param_register param = {
 		.system = msb->system,
@@ -1078,15 +1077,16 @@ static int h_ms_block_read_pages(struct memstick_dev *card,
 			return (*mrq)->error;
 		}
 
+		t_offset = msb->req_sg[msb->current_seg].offset;
+		t_offset += msb->current_page * msb->page_size;
 		t_sg.page = nth_page(msb->req_sg[msb->current_seg].page,
-				     (msb->current_page
-				      * msb->page_size) >> PAGE_SHIFT);
-		t_sg.offset = offset_in_page(msb->current_page
-					     * msb->page_size);
+				     t_offset >> PAGE_SHIFT);
+		t_sg.offset = offset_in_page(t_offset);
 		t_sg.length = msb->page_size;
 		memstick_init_req_sg(*mrq, MS_TPC_READ_LONG_DATA, &t_sg);
 		return 0;
 	case MS_TPC_READ_LONG_DATA:
+skip_page:
 		msb->total_page_cnt++;
 		msb->current_page++;
 
@@ -1107,25 +1107,18 @@ static int h_ms_block_read_pages(struct memstick_dev *card,
 			msb->src_block++;
 		}
 
-		if (msb->physical_src)
-			param.block_address = cpu_to_be16(msb->src_block);
-		else {
-			if (MS_BLOCK_INVALID
-			    != ms_block_physical(msb, msb->src_block))
-				param.block_address
-					= ms_block_physical(msb,
-							    msb->src_block);
-			else {
-				card->current_mrq.error = -EIO;
-				complete(&card->mrq_complete);
-				return -EIO;
-			}
-		}
+		src_phy_block = msb->src_block;
+		if (!msb->physical_src)
+			src_phy_block = ms_block_physical(msb, src_phy_block);
 
+		/* unmapped blocks are considered undefined, yet legal */
+		if (src_phy_block == MS_BLOCK_INVALID)
+			goto skip_page;
+
+		param.block_address = cpu_to_be16(src_phy_block);
 		param.page_address = msb->page_off;
 
-		memstick_init_req(*mrq, MS_TPC_WRITE_REG,
-				  (unsigned char*)&param,
+		memstick_init_req(*mrq, MS_TPC_WRITE_REG, &param,
 				  sizeof(param));
 		return 0;
 	default:
@@ -1408,13 +1401,11 @@ static int ms_block_read_req(struct memstick_dev *card)
 static void ms_block_process_request(struct memstick_dev *card,
 				     struct request *req)
 {
-	struct memstick_host *host = card->host;
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	int rc, chunk;
 	unsigned long flags;
 
 	do {
-		mutex_lock(&host->lock);
 		msb->seg_cnt = blk_rq_map_sg(req->q, req, msb->req_sg);
 
 		if (msb->seg_cnt) {
@@ -1434,8 +1425,6 @@ static void ms_block_process_request(struct memstick_dev *card,
 				rc = ms_block_write_req(card);
 		} else
 			rc = -EFAULT;
-
-		mutex_unlock(&host->lock);
 
 		spin_lock_irqsave(&msb->q_lock, flags);
 		if (!rc)
@@ -1472,6 +1461,7 @@ static int ms_block_has_request(struct ms_block_data *msb)
 static int ms_block_queue_thread(void *data)
 {
 	struct memstick_dev *card = data;
+	struct memstick_host *host = card->host;
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct request *req = NULL;
 	unsigned long flags;
@@ -1491,8 +1481,11 @@ static int ms_block_queue_thread(void *data)
 			msb->has_request = 1;
 		spin_unlock_irqrestore(&msb->q_lock, flags);
 
-		if (req)
+		if (req) {
+			mutex_lock(&host->lock);
 			ms_block_process_request(card, req);
+			mutex_unlock(&host->lock);
+		}
 	}
 	return 0;
 }
@@ -1701,7 +1694,7 @@ static int ms_block_read_physical(struct memstick_dev *card,
 	msb->mrq_handler = h_ms_block_read_pages;
 
 	memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG,
-			  (unsigned char*)&param, sizeof(param));
+			  &param, sizeof(param));
 	memstick_new_req(card->host);
 	wait_for_completion(&card->mrq_complete);
 
@@ -1870,8 +1863,8 @@ static int ms_block_find_boot_blocks(struct memstick_dev *card,
 
 static int ms_block_switch_to_parallel(struct memstick_dev *card)
 {
-	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct memstick_host *host = card->host;
+	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct ms_param_register param = {
 		.system = 0x88,
 		.block_address_msb = 0,
@@ -1882,18 +1875,32 @@ static int ms_block_switch_to_parallel(struct memstick_dev *card)
 
 	card->next_request = h_ms_block_req_init;
 	msb->mrq_handler = h_ms_block_default;
-	memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, (char*)&param,
+	memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, &param,
 			  sizeof(param));
 	memstick_new_req(card->host);
 	wait_for_completion(&card->mrq_complete);
 
-	if (!card->current_mrq.error) {
-		msb->system = 0x88;
-		host->ios.interface = MEMSTICK_PARALLEL;
+	if (card->current_mrq.error)
+		return card->current_mrq.error;
+
+	msb->system = 0x88;
+	host->ios.interface = MEMSTICK_PARALLEL;
+	host->set_ios(host, &host->ios);
+
+	card->next_request = h_ms_block_req_init;
+	msb->mrq_handler = h_ms_block_default;
+	memstick_init_req(&card->current_mrq, MS_TPC_GET_INT, NULL, 1);
+	memstick_new_req(host);
+	wait_for_completion(&card->mrq_complete);
+
+	if (card->current_mrq.error) {
+		msb->system = 0x80;
+		host->ios.interface = MEMSTICK_SERIAL;
 		host->set_ios(host, &host->ios);
-		return 0;
-	} else
 		return -EFAULT;
+	}
+
+	return 0;
 }
 
 static int ms_block_init_card(struct memstick_dev *card)
@@ -1917,8 +1924,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 
 	card->next_request = h_ms_block_req_init;
 	msb->mrq_handler = h_ms_block_default;
-	memstick_init_req(&card->current_mrq, MS_TPC_SET_CMD,
-			  &t_val, 1);
+	memstick_init_req(&card->current_mrq, MS_TPC_SET_CMD, &t_val, 1);
 	card->current_mrq.need_card_int = 0;
 	memstick_new_req(card->host);
 	wait_for_completion(&card->mrq_complete);
@@ -1930,13 +1936,9 @@ static int ms_block_init_card(struct memstick_dev *card)
 		return -EIO;
 
 	if (host->caps & MEMSTICK_CAP_PARALLEL) {
-		rc = ms_block_switch_to_parallel(card);
-		if (rc == -EFAULT) {
+		if (ms_block_switch_to_parallel(card))
 			printk(KERN_WARNING "%s: could not switch to "
 			       "parallel interface\n", card->dev.bus_id);
-			rc = 0;
-		} else if (rc)
-			return rc;
 	}
 
 	buf = kmalloc(2 * msb->page_size, GFP_KERNEL);
@@ -2112,7 +2114,8 @@ static int ms_block_init_disk(struct memstick_dev *card)
 	msb->disk->major = major;
 	msb->disk->first_minor = disk_id << MEMSTICK_PART_SHIFT;
 	msb->disk->fops = &ms_block_bdops;
-	msb->disk->private_data = card;
+	msb->usage_count = 1;
+	msb->disk->private_data = msb;
 	msb->disk->queue = msb->queue;
 	msb->disk->driverfs_dev = &card->dev;
 
@@ -2124,13 +2127,15 @@ static int ms_block_init_disk(struct memstick_dev *card)
 				* msb->block_psize
 				* (msb->page_size >> 9));
 	dev_dbg(&card->dev, "capacity set %d\n", msb->log_block_count * msb->block_psize);
-	msb->q_thread = kthread_run(ms_block_queue_thread, card, "memstickq");
+	msb->q_thread = kthread_run(ms_block_queue_thread, card,
+				    DRIVER_NAME"d");
 	if (IS_ERR(msb->q_thread))
 		goto out_put_disk;
 
-	msb->active = 1;
-	msb->disk_usage_count++;
+	mutex_unlock(&host->lock);
 	add_disk(msb->disk);
+	mutex_lock(&host->lock);
+	msb->active = 1;
 	return 0;
 
 out_put_disk:
@@ -2142,11 +2147,11 @@ out_release_id:
 	return rc;
 }
 
-static void ms_block_data_free(struct ms_block_data *msb)
+static void ms_block_data_clear(struct ms_block_data *msb)
 {
 	kfree(msb->block_map);
 	kfree(msb->block_lut);
-	kfree(msb);
+	msb->card = NULL;
 }
 
 static int ms_block_probe(struct memstick_dev *card)
@@ -2159,6 +2164,7 @@ static int ms_block_probe(struct memstick_dev *card)
 		return -ENOMEM;
 
 	memstick_set_drvdata(card, msb);
+	msb->card = card;
 
 	rc = ms_block_init_card(card);
 	if (!rc)
@@ -2196,7 +2202,8 @@ out_remove_boot_attr:
 	device_remove_file(&card->dev, &dev_attr_boot_attr);
 out_free:
 	memstick_set_drvdata(card, NULL);
-	ms_block_data_free(msb);
+	ms_block_data_clear(msb);
+	kfree(msb);
 	return rc;
 }
 
@@ -2214,14 +2221,13 @@ static void ms_block_remove(struct memstick_dev *card)
 		blk_stop_queue(msb->queue);
 	spin_unlock_irqrestore(&msb->q_lock, flags);
 
-	if (q_thread)
+	if (q_thread) {
+		mutex_unlock(&card->host->lock);
 		kthread_stop(q_thread);
+		mutex_lock(&card->host->lock);
+	}
 
 	del_gendisk(msb->disk);
-	mutex_lock(&ms_block_disk_lock);
-	msb->disk->private_data = NULL;
-	msb->disk_usage_count--;
-	mutex_unlock(&ms_block_disk_lock);
 	blk_cleanup_queue(msb->queue);
 
 	sysfs_remove_bin_file(&card->dev.kobj,
@@ -2231,8 +2237,13 @@ static void ms_block_remove(struct memstick_dev *card)
 	device_remove_file(&card->dev, &dev_attr_cis_idi);
 	device_remove_file(&card->dev, &dev_attr_boot_attr);
 
+	mutex_lock(&ms_block_disk_lock);
+	ms_block_data_clear(msb);
+	mutex_unlock(&ms_block_disk_lock);
+
+	ms_block_disk_release(msb->disk);
+
 	memstick_set_drvdata(card, NULL);
-	ms_block_data_free(msb);
 }
 
 
@@ -2247,10 +2258,10 @@ static int ms_block_suspend(struct memstick_dev *card, pm_message_t state)
 	spin_lock_irqsave(&msb->q_lock, flags);
 	q_thread = msb->q_thread;
 	msb->q_thread = NULL;
+	msb->active = 0;
 	if (q_thread)
 		blk_stop_queue(msb->queue);
 
-	msb->active = 0;
 	spin_unlock_irqrestore(&msb->q_lock, flags);
 
 	if (q_thread)
@@ -2275,6 +2286,7 @@ static int ms_block_resume(struct memstick_dev *card)
 	if (!new_msb)
 		goto out;
 
+	new_msb->card = card;
 	memstick_set_drvdata(card, new_msb);
 	if (ms_block_init_card(card))
 		goto out_free;
@@ -2289,7 +2301,7 @@ static int ms_block_resume(struct memstick_dev *card)
 	memstick_set_drvdata(card, msb);
 
 	msb->q_thread = kthread_run(ms_block_queue_thread,
-				    card, "memstickq");
+				    card, DRIVER_NAME"d");
 	if (IS_ERR(msb->q_thread))
 		msb->q_thread = NULL;
 	else {
@@ -2301,7 +2313,8 @@ static int ms_block_resume(struct memstick_dev *card)
 
 out_free:
 	memstick_set_drvdata(card, msb);
-	ms_block_data_free(new_msb);
+	ms_block_data_clear(new_msb);
+	kfree(new_msb);
 out:
 	mutex_unlock(&host->lock);
 	return 0;
@@ -2338,7 +2351,7 @@ static int __init ms_block_init(void)
 {
 	int rc = -ENOMEM;
 
-	rc = register_blkdev(major, "memstick");
+	rc = register_blkdev(major, DRIVER_NAME);
 	if (rc < 0) {
 		printk(KERN_ERR DRIVER_NAME ": failed to register "
 		       "major %d, error %d\n", major, rc);
@@ -2349,14 +2362,15 @@ static int __init ms_block_init(void)
 
 	rc = memstick_register_driver(&ms_block_driver);
 	if (rc)
-		unregister_blkdev(major, "memstick");
+		unregister_blkdev(major, DRIVER_NAME);
 	return rc;
 }
 
 static void __exit ms_block_exit(void)
 {
 	memstick_unregister_driver(&ms_block_driver);
-	unregister_blkdev(major, "memstick");
+	unregister_blkdev(major, DRIVER_NAME);
+	idr_destroy(&ms_block_disk_idr);
 }
 
 module_init(ms_block_init);
