@@ -20,7 +20,7 @@
 #include "linux/memstick.h"
 
 #define DRIVER_NAME "mspro_block"
-#define DRIVER_VERSION "0.1"
+#define DRIVER_VERSION "0.2"
 
 static int major = 0;
 static int unsafe_resume = 0;
@@ -726,6 +726,8 @@ static int mspro_block_queue_thread(void *data)
 	struct request *req;
 	unsigned long flags;
 
+	current->flags |= PF_NOFREEZE;
+
 	while (1) {
 		wait_event(msb->q_wait, mspro_block_has_request(msb));
 		dev_dbg(&card->dev, "thread iter\n");
@@ -1006,16 +1008,16 @@ static int mspro_block_init_card(struct memstick_dev *card)
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
 	struct memstick_host *host = card->host;
 	int rc = 0;
-	struct ms_register_addr reg_addr = {
+
+	msb->system = 0x80;
+	card->reg_addr = (struct ms_register_addr){
 		offsetof(struct mspro_register, status),
 		sizeof(struct ms_status_register),
 		offsetof(struct mspro_register, param),
 		sizeof(struct mspro_param_register)
 	};
 
-	msb->system = 0x80;
-
-	if (memstick_set_rw_addr(card, &reg_addr))
+	if (memstick_set_rw_addr(card))
 		return -EIO;
 
 	if (host->caps & MEMSTICK_CAP_PARALLEL) {
@@ -1213,17 +1215,14 @@ static void mspro_block_remove(struct memstick_dev *card)
 	struct task_struct *q_thread = NULL;
 	unsigned long flags;
 
+	del_gendisk(msb->disk);
 	dev_dbg(&card->dev, "mspro block remove\n");
 	spin_lock_irqsave(&msb->q_lock, flags);
 	q_thread = msb->q_thread;
 	msb->q_thread = NULL;
 	msb->active = 0;
-	dev_dbg(&card->dev, "before stop queue\n");
-	if (q_thread)
-		blk_stop_queue(msb->queue);
 	spin_unlock_irqrestore(&msb->q_lock, flags);
 
-	dev_dbg(&card->dev, "before stop thread\n");
 	if (q_thread) {
 		mutex_unlock(&card->host->lock);
 		kthread_stop(q_thread);
@@ -1232,7 +1231,6 @@ static void mspro_block_remove(struct memstick_dev *card)
 
 	dev_dbg(&card->dev, "queue thread stopped\n");
 
-	del_gendisk(msb->disk);
 	blk_cleanup_queue(msb->queue);
 
 	mspro_block_sysfs_unregister(card);
@@ -1240,9 +1238,8 @@ static void mspro_block_remove(struct memstick_dev *card)
 	mutex_lock(&mspro_block_disk_lock);
 	mspro_block_data_clear(msb);
 	mutex_unlock(&mspro_block_disk_lock);
-
+	
 	mspro_block_disk_release(msb->disk);
-
 	memstick_set_drvdata(card, NULL);
 }
 
@@ -1258,11 +1255,7 @@ static int mspro_block_suspend(struct memstick_dev *card, pm_message_t state)
 	q_thread = msb->q_thread;
 	msb->q_thread = NULL;
 	msb->active = 0;
-
-	if (q_thread)
-		blk_stop_queue(msb->queue);
-
-
+	blk_stop_queue(msb->queue);
 	spin_unlock_irqrestore(&msb->q_lock, flags);
 
 	if (q_thread)
@@ -1278,14 +1271,17 @@ static int mspro_block_resume(struct memstick_dev *card)
 	struct memstick_host *host = card->host;
 	unsigned long flags;
 	unsigned char cnt;
+	int rc = 0;
 
 	if (!unsafe_resume)
-		return 0;
+		goto out_start_queue;
 
 	mutex_lock(&host->lock);
 	new_msb = kzalloc(sizeof(struct mspro_block_data), GFP_KERNEL);
-	if (!new_msb)
-		goto out;
+	if (!new_msb) {
+		rc = -ENOMEM;
+		goto out_unlock;
+	}
 
 	new_msb->card = card;
 	memstick_set_drvdata(card, new_msb);
@@ -1306,12 +1302,9 @@ static int mspro_block_resume(struct memstick_dev *card)
 						    card, DRIVER_NAME"d");
 			if (IS_ERR(msb->q_thread))
 				msb->q_thread = NULL;
-			else {
+			else
 				msb->active = 1;
-				spin_lock_irqsave(&msb->q_lock, flags);
-				blk_start_queue(msb->queue);
-				spin_unlock_irqrestore(&msb->q_lock, flags);
-			}
+
 			break;
 		}
 	}
@@ -1320,8 +1313,12 @@ out_free:
 	memstick_set_drvdata(card, msb);
 	mspro_block_data_clear(new_msb);
 	kfree(new_msb);
-out:
+out_unlock:
 	mutex_unlock(&host->lock);
+out_start_queue:
+	spin_lock_irqsave(&msb->q_lock, flags);
+	blk_start_queue(msb->queue);
+	spin_unlock_irqrestore(&msb->q_lock, flags);
 	return 0;
 }
 

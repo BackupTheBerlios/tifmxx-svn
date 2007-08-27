@@ -269,8 +269,7 @@ void memstick_init_req(struct memstick_request *mrq, unsigned char tpc,
 int memstick_next_req(struct memstick_host *host, struct memstick_request **mrq);
 void memstick_new_req(struct memstick_host *host);
 
-int memstick_set_rw_addr(struct memstick_dev *card,
-			 struct ms_register_addr *addr);
+int memstick_set_rw_addr(struct memstick_dev *card);
 
 inline void *memstick_priv(struct memstick_host *host)
 {

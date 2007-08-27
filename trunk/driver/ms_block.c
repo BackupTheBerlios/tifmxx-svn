@@ -21,7 +21,7 @@
 #include "linux/memstick.h"
 
 #define DRIVER_NAME "ms_block"
-#define DRIVER_VERSION "0.1"
+#define DRIVER_VERSION "0.2"
 
 static int major = 0;
 static int unsafe_resume = 0;
@@ -1306,12 +1306,7 @@ static int ms_block_write_req(struct memstick_dev *card)
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct memstick_request *mrq = &card->current_mrq;
 	struct ms_param_register param;
-	struct ms_register_addr reg_addr = {
-		offsetof(struct ms_register, status),
-		sizeof(struct ms_status_register),
-		offsetof(struct ms_register, param),
-		sizeof(struct ms_param_register)
-	};
+	
 	enum write_state w_state;
 	int rc = 0, t_rc = 0;
 
@@ -1368,7 +1363,13 @@ static int ms_block_write_req(struct memstick_dev *card)
 	}
 
 	if (t_rc) {
-		if (memstick_set_rw_addr(card, &reg_addr))
+		card->reg_addr = (struct ms_register_addr){
+			offsetof(struct ms_register, status),
+			sizeof(struct ms_status_register),
+			offsetof(struct ms_register, param),
+			sizeof(struct ms_param_register)
+		};
+		if (memstick_set_rw_addr(card))
 			return -EIO;
 	}
 
@@ -1466,6 +1467,8 @@ static int ms_block_queue_thread(void *data)
 	struct request *req = NULL;
 	unsigned long flags;
 
+	current->flags |= PF_NOFREEZE;
+
 	while (1) {
 		wait_event(msb->q_wait, ms_block_has_request(msb));
 
@@ -1552,13 +1555,13 @@ static int ms_block_read_page_extra(struct memstick_dev *card)
 	wait_for_completion(&card->mrq_complete);
 	rc = card->current_mrq.error;
 	if (rc) {
-		struct ms_register_addr reg_addr = {
+		card->reg_addr = (struct ms_register_addr){
 			offsetof(struct ms_register, status),
 			sizeof(struct ms_status_register),
 			offsetof(struct ms_register, param),
 			sizeof(struct ms_param_register)
 		};
-		memstick_set_rw_addr(card, &reg_addr);
+		memstick_set_rw_addr(card);
 	}
 	return rc;
 }
@@ -1910,12 +1913,6 @@ static int ms_block_init_card(struct memstick_dev *card)
 	char *buf;
 	struct ms_boot_page *boot_pages[2];
 	unsigned short boot_blocks[2];
-	struct ms_register_addr reg_addr = {
-		offsetof(struct ms_register, status),
-		sizeof(struct ms_status_register),
-		offsetof(struct ms_register, param),
-		sizeof(struct ms_param_register)
-	};
 	int rc;
 	unsigned char t_val = MS_CMD_RESET;
 
@@ -1932,7 +1929,14 @@ static int ms_block_init_card(struct memstick_dev *card)
 	if (card->current_mrq.error)
 		return -ENODEV;
 
-	if (memstick_set_rw_addr(card, &reg_addr))
+	card->reg_addr = (struct ms_register_addr){
+		offsetof(struct ms_register, status),
+		sizeof(struct ms_status_register),
+		offsetof(struct ms_register, param),
+		sizeof(struct ms_param_register)
+	};
+
+	if (memstick_set_rw_addr(card))
 		return -EIO;
 
 	if (host->caps & MEMSTICK_CAP_PARALLEL) {
@@ -2213,12 +2217,11 @@ static void ms_block_remove(struct memstick_dev *card)
 	struct task_struct *q_thread = NULL;
 	unsigned long flags;
 
+	del_gendisk(msb->disk);
 	spin_lock_irqsave(&msb->q_lock, flags);
 	q_thread = msb->q_thread;
 	msb->q_thread = NULL;
 	msb->active = 0;
-	if (q_thread)
-		blk_stop_queue(msb->queue);
 	spin_unlock_irqrestore(&msb->q_lock, flags);
 
 	if (q_thread) {
@@ -2227,7 +2230,7 @@ static void ms_block_remove(struct memstick_dev *card)
 		mutex_lock(&card->host->lock);
 	}
 
-	del_gendisk(msb->disk);
+
 	blk_cleanup_queue(msb->queue);
 
 	sysfs_remove_bin_file(&card->dev.kobj,
@@ -2242,7 +2245,6 @@ static void ms_block_remove(struct memstick_dev *card)
 	mutex_unlock(&ms_block_disk_lock);
 
 	ms_block_disk_release(msb->disk);
-
 	memstick_set_drvdata(card, NULL);
 }
 
@@ -2259,9 +2261,7 @@ static int ms_block_suspend(struct memstick_dev *card, pm_message_t state)
 	q_thread = msb->q_thread;
 	msb->q_thread = NULL;
 	msb->active = 0;
-	if (q_thread)
-		blk_stop_queue(msb->queue);
-
+	blk_stop_queue(msb->queue);
 	spin_unlock_irqrestore(&msb->q_lock, flags);
 
 	if (q_thread)
@@ -2275,16 +2275,18 @@ static int ms_block_resume(struct memstick_dev *card)
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct ms_block_data *new_msb;
 	struct memstick_host *host = card->host;
-	struct ms_register_addr reg_addr = card->reg_addr;
 	unsigned long flags;
+	int rc = 0;
 
 	if (!unsafe_resume)
-		return 0;
+		goto out_start_queue;
 
 	mutex_lock(&host->lock);
 	new_msb = kzalloc(sizeof(struct ms_block_data), GFP_KERNEL);
-	if (!new_msb)
-		goto out;
+	if (!new_msb) {
+		rc = -ENOMEM;
+		goto out_unlock;
+	}
 
 	new_msb->card = card;
 	memstick_set_drvdata(card, new_msb);
@@ -2295,29 +2297,26 @@ static int ms_block_resume(struct memstick_dev *card)
 	    || memcmp(&msb->cis_idi, &new_msb->cis_idi, sizeof(msb->cis_idi)))
 		goto out_free;
 
-	if (memstick_set_rw_addr(card, &reg_addr))
-		goto out_free;
-
 	memstick_set_drvdata(card, msb);
 
 	msb->q_thread = kthread_run(ms_block_queue_thread,
 				    card, DRIVER_NAME"d");
 	if (IS_ERR(msb->q_thread))
 		msb->q_thread = NULL;
-	else {
+	else
 		msb->active = 1;
-		spin_lock_irqsave(&msb->q_lock, flags);
-		blk_start_queue(msb->queue);
-		spin_unlock_irqrestore(&msb->q_lock, flags);
-	}
 
 out_free:
 	memstick_set_drvdata(card, msb);
 	ms_block_data_clear(new_msb);
 	kfree(new_msb);
-out:
+out_unlock:
 	mutex_unlock(&host->lock);
-	return 0;
+out_start_queue:
+	spin_lock_irqsave(&msb->q_lock, flags);
+	blk_start_queue(msb->queue);
+	spin_unlock_irqrestore(&msb->q_lock, flags);
+	return rc;
 }
 
 #else

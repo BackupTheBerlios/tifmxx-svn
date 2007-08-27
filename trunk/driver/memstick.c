@@ -17,6 +17,9 @@
 #include <linux/idr.h>
 #include <linux/scatterlist.h>
 
+#define DRIVER_NAME "memstick"
+#define DRIVER_VERSION "0.2"
+
 static unsigned int cmd_retries = 3;
 module_param(cmd_retries, uint, 0644);
 
@@ -325,25 +328,11 @@ static int h_memstick_set_rw_addr(struct memstick_dev *card,
 	}
 }
 
-int memstick_set_rw_addr(struct memstick_dev *card,
-			 struct ms_register_addr *reg_addr)
+int memstick_set_rw_addr(struct memstick_dev *card)
 {
-	struct ms_register_addr t_addr;
-
-	if (!memcmp(reg_addr, &card->reg_addr, sizeof(*reg_addr)))
-		return 0;
-
-	t_addr = card->reg_addr;
-	card->reg_addr = *reg_addr;
-
 	card->next_request = h_memstick_set_rw_addr;
 	memstick_new_req(card->host);
 	wait_for_completion(&card->mrq_complete);
-
-	if (card->current_mrq.error)
-		card->reg_addr = t_addr;
-	else
-		*reg_addr = t_addr;
 
 	return card->current_mrq.error;
 }
@@ -375,12 +364,7 @@ static struct memstick_dev* memstick_alloc_card(struct memstick_host *host)
 		init_completion(&card->mrq_complete);
 
 		host->card = card;
-
-		card->next_request = h_memstick_set_rw_addr;
-		memstick_new_req(host);
-		wait_for_completion(&card->mrq_complete);
-
-		if (card->current_mrq.error)
+		if (memstick_set_rw_addr(card))
 			goto err_out;
 
 		card->next_request = h_memstick_read_dev_id;
@@ -435,11 +419,7 @@ static void memstick_check(struct work_struct *work)
 		dev_dbg(host->cdev.dev, "new card %02x, %02x, %02x\n",
 			card->id.type, card->id.category, card->id.class);
 		if (host->card) {
-			host->card->next_request = h_memstick_set_rw_addr;
-			memstick_new_req(host);
-			wait_for_completion(&host->card->mrq_complete);
-
-			if (host->card->current_mrq.error
+			if (memstick_set_rw_addr(host->card)
 			    || !memstick_dev_match(host->card, &card->id)
 			    || !(host->card->check(host->card))) {
 				device_unregister(&host->card->dev);
@@ -581,6 +561,7 @@ static void __exit memstick_exit(void)
 module_init(memstick_init);
 module_exit(memstick_exit);
 
-MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Alex Dubov");
+MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Sony MemoryStick core driver");
+MODULE_VERSION(DRIVER_VERSION);
