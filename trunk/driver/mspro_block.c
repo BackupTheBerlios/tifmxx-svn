@@ -631,6 +631,7 @@ static void mspro_block_process_request(struct memstick_dev *card,
 	struct mspro_param_register param;
 	int rc, chunk, cnt;
 	unsigned short page_count;
+	sector_t t_sec;
 	unsigned long flags;
 
 	do {
@@ -644,12 +645,12 @@ static void mspro_block_process_request(struct memstick_dev *card,
 				page_count += msb->req_sg[rc].length
 					      / msb->page_size;
 
+			t_sec = req->sector;
+			sector_div(t_sec, msb->page_size >> 9);
 			param = (struct mspro_param_register) {
 				.system = msb->system,
 				.data_count = cpu_to_be16(page_count),
-				.data_address = cpu_to_be32(req->sector
-							    / (msb->page_size
-							       >> 9)),
+				.data_address = cpu_to_be32((uint32_t)t_sec),
 				.cmd_param = 0
 			};
 
@@ -1057,6 +1058,7 @@ static int mspro_block_init_disk(struct memstick_dev *card)
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
 	struct memstick_host *host = card->host;
 	struct mspro_devinfo *dev_info = NULL;
+	struct mspro_sys_info *sys_info = NULL;
 	int rc, disk_id;
 	u64 limit = BLK_BOUNCE_HIGH;
 	size_t capacity;
@@ -1065,24 +1067,25 @@ static int mspro_block_init_disk(struct memstick_dev *card)
 		limit = *(host->cdev.dev->dma_mask);
 
 	for (rc = 0; rc < msb->attr_count; rc++) {
-		if (msb->attributes[rc].id == MSPRO_BLOCK_ID_DEVINFO) {
+		if (msb->attributes[rc].id == MSPRO_BLOCK_ID_DEVINFO)
 			dev_info = (struct mspro_devinfo*)msb->attributes[rc]
 							      .data;
-			break;
-		}
+		if (msb->attributes[rc].id == MSPRO_BLOCK_ID_SYSINFO)
+			sys_info = (struct mspro_sys_info*)msb->attributes[rc]
+							       .data;
 	}
 
-	if (!dev_info)
+	if (!dev_info || !sys_info)
 		return -ENODEV;
 
-	msb->page_size = be16_to_cpu(dev_info->bytes_per_sector);
 	msb->cylinders = be16_to_cpu(dev_info->cylinders);
 	msb->heads = be16_to_cpu(dev_info->heads);
 	msb->sectors_per_track = be16_to_cpu(dev_info->sectors_per_track);
 
-	capacity = msb->cylinders;
-	capacity *= msb->heads;
-	capacity *= msb->sectors_per_track;
+	msb->page_size = be16_to_cpu(sys_info->unit_size);
+	capacity = be16_to_cpu(sys_info->user_block_count);
+	capacity *= be16_to_cpu(sys_info->block_size);
+	capacity *= msb->page_size / 512;
 
 	if (!idr_pre_get(&mspro_block_disk_idr, GFP_KERNEL))
 		return -ENOMEM;

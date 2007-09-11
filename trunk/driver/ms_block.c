@@ -1404,19 +1404,19 @@ static void ms_block_process_request(struct memstick_dev *card,
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	int rc, chunk;
+	sector_t t_sec;
 	unsigned long flags;
 
 	do {
 		msb->seg_cnt = blk_rq_map_sg(req->q, req, msb->req_sg);
 
 		if (msb->seg_cnt) {
+			t_sec = req->sector;
+			msb->page_off = sector_div(t_sec, msb->block_psize
+							  * (msb->page_size
+							     >> 9));
+			msb->src_block = (size_t)t_sec;
 			msb->physical_src = 0;
-			msb->src_block = (size_t)req->sector
-					   / (msb->block_psize
-					      * (msb->page_size >> 9));
-			msb->page_off = (size_t)req->sector
-					  % (msb->block_psize
-					     * (msb->page_size >> 9));
 			msb->current_seg = 0;
 			msb->current_page = 0;
 
