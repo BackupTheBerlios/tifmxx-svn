@@ -887,6 +887,7 @@ get_next_block:
 
 		memstick_init_req(*mrq, MS_TPC_WRITE_REG, &param,
 				  sizeof(param));
+		dev_dbg(&card->dev, "GET_BLOCK - erase %x\n", msb->dst_block);
 		return 0;
 	case DEL_DST:
 		if (msb->page_off) {
@@ -901,6 +902,11 @@ get_next_block:
 		src_phy_block = ms_block_physical(msb, msb->src_block);
 		if (src_phy_block == MS_BLOCK_INVALID)
 			msb->w_state = WRITE_PAGES;
+
+		dev_dbg(&card->dev, "DEL_DST - copy_pos %x, "
+			"page_off %x, src_block %x, "
+			"src_phy_block %x\n", msb->copy_pos,
+			msb->page_off, msb->src_block, src_phy_block);
 
 		if (msb->w_state == COPY_PAGES) {
 			card->next_request = h_ms_block_copy_read;
@@ -929,6 +935,8 @@ get_next_block:
 		};
 		memstick_init_req(*mrq, MS_TPC_WRITE_REG,
 				  &param, sizeof(param));
+		dev_dbg(&card->dev, "COPY_PAGES - copy_pos %x, page_off %x\n",
+			msb->copy_pos, msb->page_off);
 		return 0;
 	case WRITE_PAGES:
 		msb->current_extra = (struct ms_extra_data_register){
@@ -946,6 +954,7 @@ get_next_block:
 		};
 		memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
 				  &card->reg_addr, sizeof(card->reg_addr));
+		dev_dbg(&card->dev, "WRITE_PAGES\n");
 		return 0;
 	case WRITE_EXTRA:
 		card->next_request = h_ms_block_write_single;
@@ -960,12 +969,19 @@ get_next_block:
 
 		memstick_init_req(*mrq, MS_TPC_WRITE_REG,
 				  &param, sizeof(param));
+		dev_dbg(&card->dev, "WRITE_EXTRA - dst_block %x\n",
+			msb->dst_block);
 		return 0;
 	case SET_TABLE:
 		msb->total_page_cnt += msb->page_cnt;
 		src_phy_block = ms_block_physical(msb, msb->src_block);
 		msb->block_lut[msb->src_block] = msb->dst_block;
 		ms_block_mark_used(msb, msb->dst_block);
+
+		dev_dbg(&card->dev, "SET_TABLE - src_block %x, "
+			"src_phy_block %x, dst_block %x\n", msb->src_block,
+			src_phy_block, msb->dst_block);
+
 		if (src_phy_block != MS_BLOCK_INVALID) {
 			ms_block_mark_unused(msb, src_phy_block);
 			card->next_request = h_ms_block_erase;
@@ -1379,15 +1395,42 @@ static int ms_block_write_req(struct memstick_dev *card)
 static int ms_block_read_req(struct memstick_dev *card)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
+	unsigned short src_phy_block = ms_block_physical(msb, msb->src_block);
 	struct ms_param_register param = {
 		.system = msb->system,
 		.block_address_msb = 0,
-		.block_address = cpu_to_be16(msb->src_block),
+		.block_address = cpu_to_be16(src_phy_block),
 		.cp = MEMSTICK_CP_PAGE,
 		.page_address = msb->page_off
-	};
+	}; 
 
 	msb->total_page_cnt = 0;
+
+	/* unmapped blocks are considered undefined, yet legal */
+	while (src_phy_block == MS_BLOCK_INVALID) {
+		msb->total_page_cnt++;
+		msb->current_page++;
+
+		if (msb->current_page
+		    == (msb->req_sg[msb->current_seg].length
+			/ msb->page_size)) {
+			msb->current_page = 0;
+			msb->current_seg++;
+
+			if (msb->current_seg == msb->seg_cnt)
+				goto out;
+		}
+		msb->page_off++;
+		if (msb->page_off == msb->block_psize) {
+			msb->page_off = 0; 
+			msb->src_block++;
+		}
+
+		src_phy_block = ms_block_physical(msb, msb->src_block);
+	}
+	param.block_address = cpu_to_be16(src_phy_block);
+	param.page_address = msb->page_off;
+
 	card->next_request = h_ms_block_req_init;
 	msb->mrq_handler = h_ms_block_read_pages;
 
@@ -1395,7 +1438,7 @@ static int ms_block_read_req(struct memstick_dev *card)
 			  (unsigned char*)&param, sizeof(param));
 	memstick_new_req(card->host);
 	wait_for_completion(&card->mrq_complete);
-
+out:
 	return msb->total_page_cnt ? 0 : card->current_mrq.error;
 }
 
@@ -2072,6 +2115,7 @@ static int ms_block_init_disk(struct memstick_dev *card)
 	struct memstick_host *host = card->host;
 	int rc, disk_id;
 	u64 limit = BLK_BOUNCE_HIGH;
+	unsigned long capacity;
 
 	if (host->cdev.dev->dma_mask && *(host->cdev.dev->dma_mask))
 		limit = *(host->cdev.dev->dma_mask);
@@ -2127,10 +2171,11 @@ static int ms_block_init_disk(struct memstick_dev *card)
 
 	blk_queue_hardsect_size(msb->queue, msb->page_size);
 
-	set_capacity(msb->disk, msb->log_block_count
-				* msb->block_psize
-				* (msb->page_size >> 9));
-	dev_dbg(&card->dev, "capacity set %d\n", msb->log_block_count * msb->block_psize);
+	capacity = msb->log_block_count;
+	capacity *= msb->block_psize;
+	capacity *= msb->page_size >> 9;
+	set_capacity(msb->disk, capacity);
+	dev_dbg(&card->dev, "capacity set %ld\n", capacity);
 	msb->q_thread = kthread_run(ms_block_queue_thread, card,
 				    DRIVER_NAME"d");
 	if (IS_ERR(msb->q_thread))

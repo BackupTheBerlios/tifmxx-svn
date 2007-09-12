@@ -1061,7 +1061,7 @@ static int mspro_block_init_disk(struct memstick_dev *card)
 	struct mspro_sys_info *sys_info = NULL;
 	int rc, disk_id;
 	u64 limit = BLK_BOUNCE_HIGH;
-	size_t capacity;
+	unsigned long capacity;
 
 	if (host->cdev.dev->dma_mask && *(host->cdev.dev->dma_mask))
 		limit = *(host->cdev.dev->dma_mask);
@@ -1083,9 +1083,6 @@ static int mspro_block_init_disk(struct memstick_dev *card)
 	msb->sectors_per_track = be16_to_cpu(dev_info->sectors_per_track);
 
 	msb->page_size = be16_to_cpu(sys_info->unit_size);
-	capacity = be16_to_cpu(sys_info->user_block_count);
-	capacity *= be16_to_cpu(sys_info->block_size);
-	capacity *= msb->page_size / 512;
 
 	if (!idr_pre_get(&mspro_block_disk_idr, GFP_KERNEL))
 		return -ENOMEM;
@@ -1138,6 +1135,9 @@ static int mspro_block_init_disk(struct memstick_dev *card)
 
 	blk_queue_hardsect_size(msb->queue, msb->page_size);
 
+	capacity = be16_to_cpu(sys_info->user_block_count);
+	capacity *= be16_to_cpu(sys_info->block_size);
+	capacity *= msb->page_size >> 9;
 	set_capacity(msb->disk, capacity);
 	dev_dbg(&card->dev, "capacity set %ld\n", capacity);
 	msb->q_thread = kthread_run(mspro_block_queue_thread, card,
