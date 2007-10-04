@@ -168,7 +168,6 @@ static int mspro_block_bd_open(struct inode *inode, struct file *filp)
 
 	mutex_lock(&mspro_block_disk_lock);
 	
-	printk(KERN_INFO "disk open\n");
 	if (msb && msb->card) {
 		msb->usage_count++;
 		if ((filp->f_mode & FMODE_WRITE) && msb->read_only)
@@ -189,8 +188,6 @@ static int mspro_block_disk_release(struct gendisk *disk)
 	int disk_id = disk->first_minor >> MEMSTICK_PART_SHIFT;
 
 	mutex_lock(&mspro_block_disk_lock);
-
-	printk(KERN_INFO "disk release\n");
 
 	if (msb->usage_count) {
 		msb->usage_count--;

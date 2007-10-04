@@ -16,6 +16,7 @@
 #include "linux/memstick.h"
 #include <linux/idr.h>
 #include <linux/scatterlist.h>
+#include <linux/fs.h>
 
 #define DRIVER_NAME "memstick"
 #define DRIVER_VERSION "0.2"
