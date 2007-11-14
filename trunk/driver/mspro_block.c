@@ -126,7 +126,7 @@ struct mspro_block_data {
 	struct memstick_dev   *card;
 	unsigned int          usage_count;
 	struct gendisk        *disk;
-	request_queue_t       *queue;
+	struct request_queue  *queue;
 	spinlock_t            q_lock;
 	wait_queue_head_t     q_wait;
 	struct task_struct    *q_thread;
@@ -753,7 +753,7 @@ static int mspro_block_queue_thread(void *data)
 	return 0;
 }
 
-static void mspro_block_request(request_queue_t *q)
+static void mspro_block_request(struct request_queue *q)
 {
 	struct memstick_dev *card = q->queuedata;
 	struct mspro_block_data *msb = memstick_get_drvdata(card);

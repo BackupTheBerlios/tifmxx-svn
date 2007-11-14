@@ -148,7 +148,7 @@ struct ms_block_data {
 	unsigned short           *free_blocks;
 
 	struct gendisk           *disk;
-	request_queue_t          *queue;
+	struct request_queue     *queue;
 	spinlock_t               q_lock;
 	wait_queue_head_t        q_wait;
 	struct task_struct       *q_thread;
@@ -505,8 +505,10 @@ static DEVICE_ATTR(boot_attr, S_IRUGO, ms_boot_attr_show, NULL);
 static DEVICE_ATTR(cis_idi, S_IRUGO, ms_cis_idi_show, NULL);
 static DEVICE_ATTR(format, S_IRUGO | S_IWUSR, ms_format_show, ms_format_store);
 
-static ssize_t ms_block_log_block_map_read(struct kobject *kobj, char *buf,
-					   loff_t offset, size_t count)
+static ssize_t ms_block_log_block_map_read(struct kobject *kobj,
+					   struct bin_attribute *attr,
+					   char *buf, loff_t offset,
+					   size_t count)
 {
 	struct device *dev = container_of(kobj, struct device, kobj);
 	struct memstick_dev *card = container_of(dev, struct memstick_dev, dev);
@@ -550,8 +552,10 @@ static ssize_t ms_block_log_block_map_read(struct kobject *kobj, char *buf,
 	return rv;
 }
 
-static ssize_t ms_block_phys_block_map_read(struct kobject *kobj, char *buf,
-					    loff_t offset, size_t count)
+static ssize_t ms_block_phys_block_map_read(struct kobject *kobj,
+					    struct bin_attribute *attr,
+					    char *buf, loff_t offset,
+					    size_t count)
 {
 	struct device *dev = container_of(kobj, struct device, kobj);
 	struct memstick_dev *card = container_of(dev, struct memstick_dev, dev);
@@ -1593,7 +1597,7 @@ static int ms_block_queue_thread(void *data)
 	return 0;
 }
 
-static void ms_block_request(request_queue_t *q)
+static void ms_block_request(struct request_queue *q)
 {
 	struct memstick_dev *card = q->queuedata;
 	struct ms_block_data *msb = memstick_get_drvdata(card);
