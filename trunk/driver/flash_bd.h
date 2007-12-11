@@ -19,35 +19,37 @@
 #ifndef _FLASH_BD_H
 #define _FLASH_BD_H
 
-#define FLASH_BD_INVALID 0xffffffffU
+#include <linux/scatterlist.h>
 
-struct flash_bd_info {
-	unsigned int zone_cnt;
-	unsigned int zone_ssize;
-	unsigned int block_cnt;
-	unsigned int page_cnt;
-	unsigned int page_size;
-};
+#define FLASH_BD_INVALID 0xffffffffU
 
 struct flash_bd;
 
 enum flash_bd_cmd {
-	NOTHING = 0,
-	READ,
-	READ_BUF,
-	ERASE,
-	BLOCK_BEGIN,
-	WRITE,
-	BLOCK_END
+	FBD_NONE = 0,
+	FBD_READ,
+	FBD_READ_BUF,
+	FBD_SKIP,
+	FBD_ERASE,
+	FBD_WRITE,
+	FBD_WRITE_BUF,
+	FBD_BLOCK_MARK_1,
+	FBD_BLOCK_MARK_2
 };
 
 struct flash_bd_request {
-	enum flash_bd_cmd cmd;
-	unsigned int      zone;
-	unsigned int      block;
-	unsigned int      page;
-	unsigned int      count;
-	unsigned int      logical;
+	enum flash_bd_cmd  cmd;
+	unsigned int       block;
+	unsigned int       page;
+	unsigned int       count;
+	unsigned int       logical;
+	struct scatterlist sg;
 };
+
+struct flash_bd* flash_bd_init(unsigned int phy_block_cnt,
+			       unsigned int log_block_cnt,
+			       unsigned int page_cnt,
+			       unsigned int page_size);
+void flash_bd_destroy(struct flash_bd *fbd);
 
 #endif
