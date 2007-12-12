@@ -19,19 +19,32 @@ struct block_node {
 };
 
 struct flash_bd {
-	unsigned int   phy_block_cnt;
-	unsigned int   log_block_cnt;
-	unsigned int   page_cnt;
-	unsigned int   page_size;
-	sector_t       size;
-	unsigned int   block_ssize;
-	unsigned int   free_cnt;
-	unsigned int   *block_table;
-	unsigned long  *erase_map;
-	unsigned long  *data_map;
-	struct rb_root useful_blocks;
-	struct rb_node *filled_blocks;
-	char           *block_buffer;
+	unsigned int       phy_block_cnt;
+	unsigned int       log_block_cnt;
+	unsigned int       page_cnt;
+	unsigned int       page_size;
+	unsigned int       block_size;
+
+	unsigned int       free_cnt;
+	unsigned int       *block_table;
+	unsigned long      *erase_map;
+	unsigned long      *data_map;
+	struct rb_root     useful_blocks;
+	struct rb_node     *filled_blocks;
+
+	unsigned int       data_dir:1,
+			   active:1;
+	enum flash_bd_cmd  current_cmd;
+	unsigned long long byte_offset;
+	unsigned int       t_count;
+	unsigned int       rem_count;
+	unsigned int       req_count;
+	unsigned int       src_block;
+	unsigned int       src_page;
+	unsigned int       pb_off;
+	unsigned int       pb_cnt;
+
+	char              *block_buffer;
 };
 
 /* For each block two bits are maintained:
@@ -141,7 +154,7 @@ struct flash_bd* flash_bd_init(unsigned int phy_block_cnt,
 	rv->log_block_cnt = log_block_cnt;
 	rv->page_cnt = page_cnt;
 	rv->page_size = page_size;
-	rv->block_ssize = (rv->page_cnt * rv->page_size) / 512;
+	rv->block_size = page_size * page_cnt;
 
 	rv->block_table = kmalloc(sizeof(unsigned int) * rv->log_block_cnt,
 				  GFP_KERNEL);
@@ -160,6 +173,8 @@ struct flash_bd* flash_bd_init(unsigned int phy_block_cnt,
 				* sizeof(unsigned long), GFP_KERNEL);
 	if (!rv->data_map)
 		goto err_out;
+
+	rv->free_cnt = phy_block_cnt;
 
 	return rv;
 err_out:
@@ -223,14 +238,15 @@ int flash_bd_set_empty(struct flash_bd *fbd, unsigned int phy_block, int erased)
 		log_block = flash_bd_get_logical(fbd, phy_block);
 		if (log_block != FLASH_BD_INVALID)
 			fbd->block_table[log_block] = FLASH_BD_INVALID;
-	}
 
-	clear_bit(phy_block, fbd->data_map);
+		fbd->free_cnt--;
+		clear_bit(phy_block, fbd->data_map);
+		flash_bd_erase_useful(fbd, phy_block);
+	}
 
 	if (erased)
 		set_bit(phy_block, fbd->erase_map);
 
-	flash_bd_erase_useful(fbd, phy_block);
 	return 0;
 }
 
@@ -248,8 +264,7 @@ int flash_bd_set_full(struct flash_bd *fbd, unsigned int phy_block,
 				fbd->block_table[log_block] = FLASH_BD_INVALID;
 		}
 	} else if (log_block < fbd->log_block_cnt) {
-		if (test_bit(phy_block, fbd->data_map)
-		    && phy_block != fbd->block_table[log_block])
+		if (test_bit(phy_block, fbd->data_map))
 			return -EEXIST;
 
 		fbd->block_table[log_block] = phy_block;
@@ -257,16 +272,16 @@ int flash_bd_set_full(struct flash_bd *fbd, unsigned int phy_block,
 		return -EINVAL;
 
 
-	set_bit(phy_block, fbd->data_map);
-	clear_bit(phy_block, fbd->erase_map);
-	flash_bd_erase_useful(fbd, phy_block);
-	return 0;
-}
+	if (!test_bit(phy_block, fbd->data_map)) {
+		if (fbd->free_cnt)
+			fbd->free_cnt--;
 
-int flash_bd_start_reading(struct flash_bd *fbd, sector_t start,
-			   unsigned int count)
-{
-#warning Ugh!
+		set_bit(phy_block, fbd->data_map);
+	} else
+		flash_bd_erase_useful(fbd, phy_block);
+
+	clear_bit(phy_block, fbd->erase_map);
+	return 0;
 }
 
 int flash_bd_start_writing(struct flash_bd *fbd, sector_t start,
@@ -275,13 +290,117 @@ int flash_bd_start_writing(struct flash_bd *fbd, sector_t start,
 #warning Ugh!
 }
 
-int flash_bd_next_action(struct flash_bd *fbd, struct flash_bd_request *req,
-			 int last_error)
+static int flash_bd_next_write_req(struct flash_bd *fbd,
+				   struct flash_bd_request *req,
+				   int last_error)
 {
 #warning Ugh!
 }
 
-int flash_bd_abort(struct flash_bd *fbd)
+int flash_bd_start_reading(struct flash_bd *fbd,
+			   unsigned long long offset,
+			   unsigned int count)
+{
+	if (fbd->active)
+		return -EBUSY;
+
+	fbd->active = 1;
+	fbd->data_dir = READ;
+	fbd->byte_offset = offset;
+	fbd->t_count = 0;
+	fbd->rem_count = count;
+	fbd->req_count = 0;
+
+	return 0;
+}
+
+static int flash_bd_next_read_req(struct flash_bd *fbd,
+				  struct flash_bd_request *req,
+				  int last_error)
+{
+	unsigned long long b_off = fbd->byte_offset;
+	unsigned int p_off, p_sz;
+
+	if (!fbd->rem_count) {
+		req->cmd = FBD_NONE;
+		fbd->current_cmd = FBD_NONE;
+		return 0;
+	}
+
+	if (last_error)
+		return last_error;
+
+	b_off += fbd->t_count;
+
+	p_off = do_div(b_off, fbd->block_size);
+	req->logical = b_off;
+
+	if (req->logical >= fbd->log_block_cnt)
+		return -ENOSPC;
+
+	req->page = p_off / fbd->page_size;
+
+	if ((req->page * fbd->page_size) != p_off) {
+		req->count = 1;
+		fbd->pb_off = p_off - req->page * fbd->page_size;
+		req->byte_off = fbd->pb_off;
+		fbd->pb_cnt = fbd->page_size - fbd->pb_off;
+
+		if (fbd->pb_cnt > fbd->rem_count)
+			fbd->pb_cnt = fbd->rem_count;
+
+		req->byte_cnt = fbd->pb_cnt;
+	} else {
+		p_sz = fbd->block_size - p_off;
+
+		if (p_sz > fbd->rem_count)
+			p_sz = fbd->rem_count;
+
+		req->count = p_sz / fbd->page_size;
+
+		if (!req->count) {
+			req->count = 1;
+			fbd->pb_off = 0;
+			fbd->pb_cnt = p_sz;
+			req->byte_cnt = p_sz;
+		}
+	}
+
+	req->block = flash_bd_get_physical(fbd, req->logical);
+
+	if (req->block == FLASH_BD_INVALID
+	    || !test_bit(req->block, fbd->data_map))
+		req->cmd = FBD_SKIP;
+	else
+		req->cmd = FBD_READ;
+
+	fbd->current_cmd = req->cmd;
+	return 0;
+}
+
+int flash_bd_next_req(struct flash_bd *fbd, struct flash_bd_request *req,
+		      unsigned int last_page_cnt, int last_error)
+{
+	if (last_page_cnt == 1 && fbd->pb_cnt) {
+		fbd->t_count += fbd->pb_cnt;
+		fbd->rem_count -= fbd->pb_cnt;
+		fbd->pb_cnt = 0;
+		fbd->pb_off = 0;
+	} else {
+		fbd->t_count += last_page_cnt * fbd->page_size;
+		fbd->rem_count -= last_page_cnt * fbd->page_size;
+	}
+
+	memset(req, 0, sizeof(struct flash_bd_request));
+
+	if (fbd->data_dir == WRITE)
+		return flash_bd_next_write_req(fbd, req, last_error);
+	else
+		return flash_bd_next_read_req(fbd, req, last_error);
+
+}
+
+unsigned int flash_bd_end(struct flash_bd *fbd)
 {
 #warning Ugh!
 }

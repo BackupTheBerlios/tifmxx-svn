@@ -39,10 +39,12 @@ enum flash_bd_cmd {
 
 struct flash_bd_request {
 	enum flash_bd_cmd  cmd;
+	unsigned int       logical;
 	unsigned int       block;
 	unsigned int       page;
 	unsigned int       count;
-	unsigned int       logical;
+	unsigned int       byte_off;
+	unsigned int       byte_cnt;
 	struct scatterlist sg;
 };
 
