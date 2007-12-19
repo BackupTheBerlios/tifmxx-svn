@@ -42,10 +42,19 @@ enum {
 	VERSION           = 0x50
 };
 
-struct jmb38x_ms {
-	char __iomem *addr;
+struct jmb38x_ms_host {
+	void __iomem *addr;
 	spinlock_t   lock;
+	int          id;
+	char         host_id[DEVICE_ID_SIZE];
+	int          irq;
 
+};
+
+struct jmb38x_ms {
+	struct pci_dev        *pdev;
+	int                   num_slots;
+	struct jmb38x_ms_host hosts[];
 };
 
 #define HOST_CONTROL_RST       0x00008000
@@ -97,76 +106,161 @@ static int jmb38x_ms_resume(struct pci_dev *dev)
 
 #endif /* CONFIG_PM */
 
-static int jmb38x_ms_probe(struct pci_dev *dev,
+static int jmb38x_ms_count_slots(struct pci_dev *pdev)
+{
+	int cnt, rc = 0;
+
+	for (cnt = 0; cnt < PCI_ROM_RESOURCE; ++cnt) {
+		if (!(IORESOURCE_MEM & pci_resource_flags(pdev, cnt)))
+			continue;
+
+		if (256 != pci_resource_len(pdev, cnt))
+			continue;
+
+		++rc;
+	}
+	return rc;
+}
+
+static int jmb38x_ms_get_regions(struct jmb38x_ms *jm)
+{
+	int cnt, h_cnt = 0;
+
+	for (cnt = 0; cnt < PCI_ROM_RESOURCE; ++cnt) {
+		if (!(IORESOURCE_MEM & pci_resource_flags(jm->pdev, cnt)))
+			continue;
+
+		if (256 != pci_resource_len(jm->pdev, cnt))
+			continue;
+
+		jm->hosts[h_cnt++].addr = ioremap(pci_resource_start(jm->pdev,
+								     cnt),
+						  pci_resource_len(jm->pdev,
+								   cnt));
+		if (!jm->hosts[h_cnt - 1].addr) {
+			for (--h_cnt; h_cnt >= 0; --h_cnt)
+				iounmap(jm->hosts[h_cnt].addr);
+
+			return -ENOMEM;
+		}
+	}
+	return 0;
+}
+
+static int jmb38x_ms_host_init(struct jmb38x_ms_host *host)
+{
+	int rc = 0;
+
+	spin_lock_init(&host->lock);
+
+	snprintf(host->host_id, DEVICE_ID_SIZE, DRIVER_NAME ":slot%d",
+		 host->id);
+
+	rc = request_irq(host->irq, jmb38x_ms_isr, IRQF_SHARED, host->host_id,
+			 host);
+	if (rc)
+		goto err_out_unmap;
+
+	return 0;
+err_out_unmap:
+	iounmap(host->addr);
+	host->addr = NULL;
+	return rc;
+}
+
+static void jmb38x_ms_host_remove(struct jmb38x_ms_host *host)
+{
+	writel(readl(host->addr + HOST_CONTROL)
+	       & ~(HOST_CONTROL_CLOCK_EN | HOST_CONTROL_POWER_EN),
+	       host->addr + HOST_CONTROL);
+
+	mmiowb();
+	free_irq(host->irq, host);
+	iounmap(host->addr);
+}
+
+static int jmb38x_ms_probe(struct pci_dev *pdev,
 			   const struct pci_device_id *dev_id)
 {
 	struct jmb38x_ms *jm;
 	int pci_dev_busy = 0;
-	int rc;
+	int rc, cnt;
 
-	rc = pci_set_dma_mask(dev, DMA_32BIT_MASK);
+	rc = pci_set_dma_mask(pdev, DMA_32BIT_MASK);
 	if (rc)
 		return rc;
 
-	rc = pci_enable_device(dev);
+	rc = pci_enable_device(pdev);
 	if (rc)
 		return rc;
 
-	pci_set_master(dev);
+	pci_set_master(pdev);
 
-	rc = pci_request_regions(dev, DRIVER_NAME);
+	rc = pci_request_regions(pdev, DRIVER_NAME);
 	if (rc) {
 		pci_dev_busy = 1;
 		goto err_out;
 	}
 
-	jm = kzalloc(sizeof(struct jmb38x_ms), GFP_KERNEL);
+	cnt = jmb38x_ms_count_slots(pdev);
+	if (!cnt) {
+		rc = -ENODEV;
+		pci_dev_busy = 1;
+		goto err_out;
+	}
+
+	jm = kzalloc(sizeof(struct jmb38x_ms)
+		     + cnt * sizeof(struct jmb38x_ms_host), GFP_KERNEL);
 	if (!jm) {
 		rc = -ENOMEM;
 		goto err_out_int;
 	}
-	spin_lock_init(&jm->lock);
 
-	pci_set_drvdata(dev, jm);
+	jm->pdev = pdev;
+	jm->num_slots = cnt;
+	pci_set_drvdata(pdev, jm);
 
-	jm->addr = ioremap(pci_resource_start(dev, 0),
-			   pci_resource_len(dev, 0));
-	if (!jm->addr)
+	rc = jmb38x_ms_get_regions(jm);
+	if (rc)
 		goto err_out_free;
 
-	rc = request_irq(dev->irq, jmb38x_ms_isr, IRQF_SHARED, DRIVER_NAME, jm);
-	if (rc)
-		goto err_out_unmap;
+
+	for (cnt = 0; cnt < jm->num_slots; ++cnt) {
+		jm->hosts[cnt].id = cnt;
+		jm->hosts[cnt].irq = pdev->irq;
+		rc = jmb38x_ms_host_init(&jm->hosts[cnt]);
+
+		if (rc) {
+			if (cnt) {
+				for (--cnt; cnt >= 0; --cnt)
+					jmb38x_ms_host_remove(&jm->hosts[cnt]);
+			}
+			goto err_out_free;
+		}
+	}
 
 	return 0;
 
-err_out_irq:
-	free_irq(dev->irq, jm);
-err_out_unmap:
-	iounmap(jm->addr);
 err_out_free:
-	pci_set_drvdata(dev, NULL);
+	pci_set_drvdata(pdev, NULL);
 	kfree(jm);
 err_out_int:
-	pci_release_regions(dev);
+	pci_release_regions(pdev);
 err_out:
 	if (!pci_dev_busy)
-		pci_disable_device(dev);
+		pci_disable_device(pdev);
 	return rc;
 }
 
 static void jmb38x_ms_remove(struct pci_dev *dev)
 {
 	struct jmb38x_ms *jm = pci_get_drvdata(dev);
+	int cnt;
 
-	writel(readl(jm->addr + HOST_CONTROL)
-	       & ~(HOST_CONTROL_CLOCK_EN | HOST_CONTROL_POWER_EN),
-	       jm->addr + HOST_CONTROL);
+	for (cnt = 0; cnt < jm->num_slots; ++cnt)
+		jmb38x_ms_host_remove(&jm->hosts[cnt]);
 
-	mmiowb();
-	free_irq(dev->irq, jm);
 	pci_set_drvdata(dev, NULL);
-	iounmap(jm->addr);
 	pci_release_regions(dev);
 	pci_disable_device(dev);
 	kfree(jm);
