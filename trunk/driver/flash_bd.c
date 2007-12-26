@@ -11,6 +11,11 @@
 
 #include "flash_bd.h"
 #include <linux/module.h>
+#include <linux/random.h>
+#include <asm/div64.h>
+
+#define READ  0
+#define WRITE 1
 
 struct block_node {
 	struct rb_node node;
@@ -77,36 +82,37 @@ static struct block_node* flash_bd_find_useful(struct flash_bd *fbd,
 	return NULL;
 }
 
-static struct block_node* flash_bd_alloc_useful(struct flash_bd *fbd,
-						unsigned int zone,
-						unsigned int phy_block)
+static struct block_node* flash_bd_alloc_useful(struct flash_bd *fbd)
 {
-	struct rb_node **p = &(fbd->useful_blocks.rb_node);
-	struct rb_node *q;
 	struct block_node *rv;
-
-	while (*p) {
-		q = *p;
-		rv = rb_entry(q, struct block_node, node);
-
-		if (phy_block < rv->address)
-			p = &(*p)->rb_left;
-		else if (phy_block > rv->address)
-			p = &(*p)->rb_right;
-		else
-			return rv;
-	}
 
 	rv = kzalloc(sizeof(struct block_node)
 		     + BITS_TO_LONGS(fbd->page_cnt) * sizeof(unsigned long),
 		     GFP_KERNEL);
-	if (!rv)
-		return NULL;
-
-	rv->address = phy_block;
-	rb_link_node(&rv->node, q, p);
-	rb_insert_color(&rv->node, &fbd->useful_blocks);
 	return rv;
+}
+
+static int flash_bd_add_useful(struct flash_bd *fbd, struct block_node *b)
+{
+	struct rb_node **p = &(fbd->useful_blocks.rb_node);
+	struct rb_node *q;
+	struct block_node *cb;
+
+	while (*p) {
+		q = *p;
+		cb = rb_entry(q, struct block_node, node);
+
+		if (b->address < cb->address)
+			p = &(*p)->rb_left;
+		else if (b->address > cb->address)
+			p = &(*p)->rb_right;
+		else
+			return -EEXIST;
+	}
+
+	rb_link_node(&b->node, q, p);
+	rb_insert_color(&b->node, &fbd->useful_blocks);
+	return 0;
 }
 
 static void flash_bd_erase_useful(struct flash_bd *fbd, unsigned int phy_block)
@@ -171,12 +177,9 @@ struct flash_bd* flash_bd_init(unsigned int phy_block_cnt,
 
 	rv->data_map = kzalloc(BITS_TO_LONGS(rv->phy_block_cnt)
 				* sizeof(unsigned long), GFP_KERNEL);
-	if (!rv->data_map)
-		goto err_out;
+	if (rv->data_map)
+		return rv;
 
-	rv->free_cnt = phy_block_cnt;
-
-	return rv;
 err_out:
 	flash_bd_destroy(rv);
 	return NULL;
@@ -239,7 +242,6 @@ int flash_bd_set_empty(struct flash_bd *fbd, unsigned int phy_block, int erased)
 		if (log_block != FLASH_BD_INVALID)
 			fbd->block_table[log_block] = FLASH_BD_INVALID;
 
-		fbd->free_cnt--;
 		clear_bit(phy_block, fbd->data_map);
 		flash_bd_erase_useful(fbd, phy_block);
 	}
@@ -272,22 +274,86 @@ int flash_bd_set_full(struct flash_bd *fbd, unsigned int phy_block,
 		return -EINVAL;
 
 
-	if (!test_bit(phy_block, fbd->data_map)) {
-		if (fbd->free_cnt)
-			fbd->free_cnt--;
-
+	if (!test_bit(phy_block, fbd->data_map))
 		set_bit(phy_block, fbd->data_map);
-	} else
+	else
 		flash_bd_erase_useful(fbd, phy_block);
 
 	clear_bit(phy_block, fbd->erase_map);
 	return 0;
 }
 
-int flash_bd_start_writing(struct flash_bd *fbd, sector_t start,
+static unsigned int flash_bd_get_free(struct flash_bd *fbd)
+{
+	unsigned long r_pos = (random32() % fbd->free_cnt) + 1, pos = 0; 
+
+	do {
+		pos = find_next_zero_bit(fbd->data_map, fbd->phy_block_cnt,
+					 pos);
+		if (pos == fbd->phy_block_cnt)
+			return FLASH_BD_INVALID;
+
+		r_pos--;
+	} while (r_pos);
+
+	return pos;
+}
+
+int flash_bd_start_writing(struct flash_bd *fbd, unsigned long long offset,
 			   unsigned int count)
 {
-#warning Ugh!
+	unsigned long long b_off;
+	unsigned int p_off, p_sz, p_b, p_e, phy_block, partial_cnt = 0;
+	struct block_node *b;
+
+	if (fbd->active)
+		return -EBUSY;
+
+	fbd->byte_offset = offset;
+	fbd->t_count = 0;
+	fbd->rem_count = count;
+	fbd->req_count = 0;
+
+	while (count) {
+		b_off = offset;
+		p_off = do_div(b_off, fbd->block_size);
+		p_sz = fbd->block_size - p_off;
+
+		if (count < p_sz)
+			p_sz = count;
+
+		count -= p_sz;
+		offset += p_sz;
+
+		phy_block = flash_bd_get_physical(fbd, b_off);
+
+		p_b = p_off / fbd->page_size;
+		p_e = (p_off + p_sz - 1) / fbd->page_size;
+
+		if (phy_block == FLASH_BD_INVALID) {
+			if (p_b != 0 || p_e != (fbd->page_cnt - 1))
+				partial_cnt++;
+		}
+	}
+
+	fbd->free_cnt = fbd->phy_block_cnt
+			- bitmap_weight(fbd->data_map, fbd->phy_block_cnt);
+
+	while (partial_cnt) {
+		b = flash_bd_alloc_useful(fbd);
+
+		if (!b)
+			return -ENOMEM;
+
+		b->node.rb_right = fbd->filled_blocks;
+		fbd->filled_blocks = &b->node;
+		partial_cnt--;
+	}
+
+	fbd->active = 1;
+	fbd->data_dir = WRITE;
+
+	return 0;
 }
 
 static int flash_bd_next_write_req(struct flash_bd *fbd,
