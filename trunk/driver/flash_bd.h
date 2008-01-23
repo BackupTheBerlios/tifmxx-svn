@@ -27,25 +27,51 @@ struct flash_bd;
 
 enum flash_bd_cmd {
 	FBD_NONE = 0,
-	FBD_READ,
-	FBD_READ_BUF,
-	FBD_SKIP,
-	FBD_ERASE,
-	FBD_WRITE,
-	FBD_WRITE_BUF,
-	FBD_BLOCK_MARK_1,
-	FBD_BLOCK_MARK_2
+	FBD_READ,           /* read from media                             */
+	FBD_READ_BUF,       /* read from media into supplied buffer        */
+	FBD_FLUSH_BUF,      /* copy data from supplied buffer              */
+	FBD_SKIP,           /* pretend like reading from media             */
+	FBD_ERASE,          /* erase media block                           */
+	FBD_COPY,           /* media side page copy                        */
+	FBD_WRITE,          /* write to media                              */
+	FBD_WRITE_BUF,      /* write to media from supplied buffer         */
+	FBD_FILL_BUF,       /* copy data to supplied buffer                */
+	FBD_BLOCK_MARK_1,   /* set media block log->phy entry (pre-write)  */
+	FBD_BLOCK_MARK_2    /* set media block log->phy entry (post-write) */
 };
 
 struct flash_bd_request {
 	enum flash_bd_cmd  cmd;
-	unsigned int       logical;
-	unsigned int       block;
-	unsigned int       page;
-	unsigned int       count;
-	unsigned int       byte_off;
-	unsigned int       byte_cnt;
-	struct scatterlist sg;
+	union {
+		struct { /* FBD_READ, FBD_WRITE, FBD_SKIP, FBD_ERASE */
+			unsigned int phy_block;
+			unsigned int page_off;
+			unsigned int page_cnt;
+		} rw_cmd;
+		struct { /* FBD_READ_BUF, FBD_WRITE_BUF */
+			unsigned int phy_block;
+			unsigned int page_off;
+			unsigned int page_cnt;
+			struct scatterlist sg;
+		} buf_rw_cmd;
+		struct { /* FBD_FLUSH_BUF, FBD_FILL_BUF */
+			unsigned int byte_cnt;
+			struct scatterlist sg;
+		} buf_ff_cmd;
+		struct { /* FBD_COPY */
+			unsigned int src_phy_block;
+			unsigned int src_page_off;
+			unsigned int dst_phy_block;
+			unsigned int dst_page_off;
+			unsigned int page_cnt;
+		} copy_cmd;
+		struct { /* FBD_BLOCK_MARK_1, FBD_BLOCK_MARK_2 */
+			unsigned int log_block;
+			unsigned int phy_block;
+			unsigned int page_off;
+			unsigned int page_cnt;
+		} mark_cmd;
+	};
 };
 
 struct flash_bd* flash_bd_init(unsigned int phy_block_cnt,

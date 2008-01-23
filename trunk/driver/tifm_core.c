@@ -58,7 +58,7 @@ static int tifm_bus_match(struct device *dev, struct device_driver *drv)
 }
 
 static int tifm_uevent(struct device *dev, char **envp, int num_envp,
-		       char *buffer, int buffer_size)
+                       char *buffer, int buffer_size)
 {
 	struct tifm_dev *sock = container_of(dev, struct tifm_dev, dev);
 	int i = 0;
@@ -71,6 +71,18 @@ static int tifm_uevent(struct device *dev, char **envp, int num_envp,
 
 	return 0;
 }
+
+/*
+static int tifm_uevent(struct device *dev, struct kobj_uevent_env *env)
+{
+	struct tifm_dev *sock = container_of(dev, struct tifm_dev, dev);
+
+	if (add_uevent_var(env, "TIFM_CARD_TYPE=%s", tifm_media_type_name(sock->type, 1)))
+		return -ENOMEM;
+
+	return 0;
+}
+*/
 
 static int tifm_device_probe(struct device *dev)
 {
@@ -223,14 +235,11 @@ EXPORT_SYMBOL(tifm_add_adapter);
 void tifm_remove_adapter(struct tifm_adapter *fm)
 {
 	unsigned int cnt;
-	char __iomem  *sock_addr;
 
 	flush_workqueue(workqueue);
 	for (cnt = 0; cnt < fm->num_sockets; ++cnt) {
-		if (fm->sockets[cnt]) {
-			sock_addr = fm->sockets[cnt]->addr;
+		if (fm->sockets[cnt])
 			device_unregister(&fm->sockets[cnt]->dev);
-		}
 	}
 
 	spin_lock(&tifm_adapter_lock);
@@ -363,7 +372,6 @@ static void __exit tifm_exit(void)
 	class_unregister(&tifm_adapter_class);
 	bus_unregister(&tifm_bus_type);
 	destroy_workqueue(workqueue);
-	idr_destroy(&tifm_adapter_idr);
 }
 
 subsys_initcall(tifm_init);

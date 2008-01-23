@@ -43,13 +43,22 @@ struct flash_bd {
 	unsigned long long byte_offset;
 	unsigned int       t_count;
 	unsigned int       rem_count;
+
 	unsigned int       req_count;
 	unsigned int       src_block;
+	unsigned int       dst_block;
 	unsigned int       src_page;
 	unsigned int       pb_off;
 	unsigned int       pb_cnt;
 
-	char              *block_buffer;
+	unsigned int       buf_offset;
+	unsigned int       buf_count;
+	char               *block_buffer;
+
+	unsigned int       last_count;
+	int                last_error;
+
+	int                (*cmd_handler)(struct flash_bd *fbd);
 };
 
 /* For each block two bits are maintained:
@@ -161,6 +170,7 @@ struct flash_bd* flash_bd_init(unsigned int phy_block_cnt,
 	rv->page_cnt = page_cnt;
 	rv->page_size = page_size;
 	rv->block_size = page_size * page_cnt;
+	rv->free_cnt = phy_block_cnt;
 
 	rv->block_table = kmalloc(sizeof(unsigned int) * rv->log_block_cnt,
 				  GFP_KERNEL);
@@ -176,8 +186,12 @@ struct flash_bd* flash_bd_init(unsigned int phy_block_cnt,
 		goto err_out;
 
 	rv->data_map = kzalloc(BITS_TO_LONGS(rv->phy_block_cnt)
-				* sizeof(unsigned long), GFP_KERNEL);
-	if (rv->data_map)
+			       * sizeof(unsigned long), GFP_KERNEL);
+	if (!rv->data_map)
+		goto err_out;
+
+	rv->block_buffer = kmalloc(rv->page_cnt * rv->page_size, GFP_KERNEL);
+	if (rv->block_buffer)
 		return rv;
 
 err_out:
@@ -195,6 +209,7 @@ void flash_bd_destroy(struct flash_bd *fbd)
 	kfree(fbd->block_table);
 	kfree(fbd->erase_map);
 	kfree(fbd->data_map);
+	kfree(fbd->block_buffer);
 	flash_bd_free_all_useful(fbd);
 
 	while (fbd->filled_blocks) {
@@ -244,6 +259,7 @@ int flash_bd_set_empty(struct flash_bd *fbd, unsigned int phy_block, int erased)
 
 		clear_bit(phy_block, fbd->data_map);
 		flash_bd_erase_useful(fbd, phy_block);
+		fbd->free_cnt++;
 	}
 
 	if (erased)
@@ -274,9 +290,11 @@ int flash_bd_set_full(struct flash_bd *fbd, unsigned int phy_block,
 		return -EINVAL;
 
 
-	if (!test_bit(phy_block, fbd->data_map))
+	if (!test_bit(phy_block, fbd->data_map)) {
 		set_bit(phy_block, fbd->data_map);
-	else
+		if (fbd->free_cnt)
+			fbd->free_cnt--;
+	} else
 		flash_bd_erase_useful(fbd, phy_block);
 
 	clear_bit(phy_block, fbd->erase_map);
@@ -299,68 +317,67 @@ static unsigned int flash_bd_get_free(struct flash_bd *fbd)
 	return pos;
 }
 
+static int flash_bd_can_merge(struct flash_bd *fbd, unsigned int phy_block,
+			      unsigned int page, unsigned int count)
+{
+	struct block_node *b;
+	unsigned int cnt;
+
+	if (phy_block == FLASH_BD_INVALID)
+		return 0;
+
+	b = flash_bd_find_useful(fbd, phy_block);
+	if (!b)
+		return 0;
+
+	for (cnt = page; cnt < page + count; ++cnt) {
+		if (test_bit(cnt, b->page_map))
+			return 0;
+	}
+
+	return 1;
+}
+
 int flash_bd_start_writing(struct flash_bd *fbd, unsigned long long offset,
 			   unsigned int count)
 {
-	unsigned long long b_off;
-	unsigned int p_off, p_sz, p_b, p_e, phy_block, partial_cnt = 0;
 	struct block_node *b;
+	int u_entries = 0;
 
 	if (fbd->active)
 		return -EBUSY;
 
+	fbd->data_dir = WRITE;
 	fbd->byte_offset = offset;
 	fbd->t_count = 0;
 	fbd->rem_count = count;
 	fbd->req_count = 0;
+	fbd->dst_block = FLASH_BD_INVALID;
+	fbd->buf_offset = 0;
+	fbd->buf_count = 0;
 
-	while (count) {
-		b_off = offset;
-		p_off = do_div(b_off, fbd->block_size);
-		p_sz = fbd->block_size - p_off;
+	/* always keep two useful block node entries, just in case */
 
-		if (count < p_sz)
-			p_sz = count;
+	if (!fbd->filled_blocks) {
+		b = flash_bd_alloc_useful(fbd);
+		if (!b)
+			return -ENOMEM;
 
-		count -= p_sz;
-		offset += p_sz;
-
-		phy_block = flash_bd_get_physical(fbd, b_off);
-
-		p_b = p_off / fbd->page_size;
-		p_e = (p_off + p_sz - 1) / fbd->page_size;
-
-		if (phy_block == FLASH_BD_INVALID) {
-			if (p_b != 0 || p_e != (fbd->page_cnt - 1))
-				partial_cnt++;
-		}
+		fbd->filled_blocks = &b->node;
 	}
 
-	fbd->free_cnt = fbd->phy_block_cnt
-			- bitmap_weight(fbd->data_map, fbd->phy_block_cnt);
-
-	while (partial_cnt) {
+	if (!fbd->filled_blocks->rb_right) {
 		b = flash_bd_alloc_useful(fbd);
-
 		if (!b)
 			return -ENOMEM;
 
 		b->node.rb_right = fbd->filled_blocks;
 		fbd->filled_blocks = &b->node;
-		partial_cnt--;
 	}
 
 	fbd->active = 1;
-	fbd->data_dir = WRITE;
 
 	return 0;
-}
-
-static int flash_bd_next_write_req(struct flash_bd *fbd,
-				   struct flash_bd_request *req,
-				   int last_error)
-{
-#warning Ugh!
 }
 
 int flash_bd_start_reading(struct flash_bd *fbd,
@@ -375,100 +392,208 @@ int flash_bd_start_reading(struct flash_bd *fbd,
 	fbd->byte_offset = offset;
 	fbd->t_count = 0;
 	fbd->rem_count = count;
-	fbd->req_count = 0;
+	fbd->cmd_handler = h_flash_bd_read;
+	fbd->buf_offset = 0;
+	fbd->buf_count = 0;
+	fbd->last_count = 0;
+	fbd->last_error = 0;
 
 	return 0;
 }
 
-static int flash_bd_next_read_req(struct flash_bd *fbd,
-				  struct flash_bd_request *req,
-				  int last_error)
+static int h_flash_bd_write(struct flash_bd *fbd,
+			    struct flash_bd_request *req)
 {
-	unsigned long long b_off = fbd->byte_offset;
-	unsigned int p_off, p_sz;
+	unsigned long long log_block = fbd->byte_offset + fbd->t_count;
+	unsigned int block_off = div64(log_block, fbd->block_size);
+	unsigned int block_sz = fbd->block_size - block_off;
 
-	if (!fbd->rem_count) {
-		req->cmd = FBD_NONE;
-		fbd->current_cmd = FBD_NONE;
-		return 0;
-	}
+	if (block_sz > fbd->rem_count)
+		block_sz = fbd->rem_count; 
 
-	if (last_error)
-		return last_error;
+	req->logical = log_block;
+	req->block = flash_bd_get_physical(fbd, log_block); 
+	req->page = block_off / fbd->page_size;
 
-	b_off += fbd->t_count;
-
-	p_off = do_div(b_off, fbd->block_size);
-	req->logical = b_off;
-
-	if (req->logical >= fbd->log_block_cnt)
-		return -ENOSPC;
-
-	req->page = p_off / fbd->page_size;
-
-	if ((req->page * fbd->page_size) != p_off) {
-		req->count = 1;
-		fbd->pb_off = p_off - req->page * fbd->page_size;
-		req->byte_off = fbd->pb_off;
-		fbd->pb_cnt = fbd->page_size - fbd->pb_off;
-
-		if (fbd->pb_cnt > fbd->rem_count)
-			fbd->pb_cnt = fbd->rem_count;
-
-		req->byte_cnt = fbd->pb_cnt;
-	} else {
-		p_sz = fbd->block_size - p_off;
-
-		if (p_sz > fbd->rem_count)
-			p_sz = fbd->rem_count;
-
-		req->count = p_sz / fbd->page_size;
-
-		if (!req->count) {
-			req->count = 1;
-			fbd->pb_off = 0;
-			fbd->pb_cnt = p_sz;
-			req->byte_cnt = p_sz;
+	if (!fbd->buf_count) {
+		if ((block_off % fbd->page_size)
+		    || (block_sz % fbd->page_size)) {
+			memset(fbd->block_buffer + block_off
+			       - block_off % fbd->page_size, 0,
+			       block_sz / fbd->page_size + 1);
+			fbd->buf_off = block_off;
+			fbd->buf_count = block_sz;
+			req->cmd = FBD_FILL_BUF;
+			req->count = block_sz;
+			sg_init_one(&req->sg, fbd->block_buffer + block_off,
+				    block_sz);
+			return 0;
 		}
 	}
 
-	req->block = flash_bd_get_physical(fbd, req->logical);
 
-	if (req->block == FLASH_BD_INVALID
-	    || !test_bit(req->block, fbd->data_map))
-		req->cmd = FBD_SKIP;
+	fbd->buf_offset = block_off;
+	fbd->buf_count = fbd->block_size - block_off;
+
+	if (fbd->buf_count > fbd->rem_count)
+		fbd->buf_count = fbd->rem_count;
+
+	req->count = fbd->buf_count + block_off % fdb->page_size;
+	if (req->count % fbd->page_size)
+		req->count = req->count / fbd->page_size + 1;
 	else
-		req->cmd = FBD_READ;
+		req->count /= fbd->page_size;
 
-	fbd->current_cmd = req->cmd;
+	if ((req->count * fbd->page_size) > fbd->buf_offset) {
+		req->cmd = FBD_FILL_BUF;
+		sg_init_one(&req->sg, fbd->block_buffer + block_off,
+			    fbd->buf_count);
+		req->count = fbd->buf_count;
+		
+	}
+
+	if (fbd->dst_block != FLASH_BD_INVALID) {
+
+	} else if (flash_bd_can_merge(fbd, fbd->src_block, req->page,
+				      req->count)) {
+		if ((req->count * fbd->page_size) > block_sz) {
+			/* buffered write */
+		} else {
+			/* direct write */
+
+		} 
+	} else {
+		
+	}
+
+	if (req->block == FLASH_BD_INVALID) {
+		req->block = flash_bd_get_free(fbd);
+		if (req->block == FLASH_BD_INVALID)
+			return -ENOSPC;
+		fbd->block_table[log_block] = req->block;
+	}
+
+	if (!test_bit(req->block, fbd->erase_map)) {
+	}
+}
+
+static int h_flash_bd_add_bytes(struct flash_bd *fbd,
+				struct flash_bd_request *req)
+{
+	fbd->t_count += fbd->last_count;
+	fbd->rem_count -= fbd->last_count;
+
+	if (!fbd->rem_count) {
+		req->cmd = FBD_NONE;
+		return 0;
+	} else if (fbd->last_error) {
+		return fbd->last_error;
+	} else {
+		return fbd->data_dir == READ
+		       ? h_flash_bd_read(fbd, req)
+		       : h_flash_bd_write(fbd, req);
+	}
+}
+
+static int h_flash_bd_add_pages(struct flash_bd *fbd,
+				struct flash_bd_request *req)
+{
+	fbd->t_count += fbd->last_count * fbd->page_size;
+	fbd->rem_count -= fbd->last_count * fbd->page_size;
+
+	if (!fbd->rem_count) {
+		req->cmd = FBD_NONE;
+		return 0;
+	} else if (fbd->last_error) {
+		return fbd->last_error;
+	} else {
+		return fbd->data_dir == READ
+		       ? h_flash_bd_read(fbd, req)
+		       : h_flash_bd_write(fbd, req);
+	}
+}
+
+static int h_flash_bd_flush(struct flash_bd *fbd, struct flash_bd_request *req)
+{
+	if (fbd->last_error && fbd->last_count < 1)
+		return fbd->last_error;
+
+	req->cmd = FBD_FLUSH_BUF;
+	req->logical = FLASH_BD_INVALID;
+	req->block = FLASH_BD_INVALID;
+	req->page = 0;
+	req->count = fbd->buf_count;
+	sg_init_one(&req->sg, fbd->block_buffer + fbd->buf_offset,
+		    fbd->buf_count);
+	fbd->cmd_handler = h_flash_bd_add_bytes;
 	return 0;
 }
 
-int flash_bd_next_req(struct flash_bd *fbd, struct flash_bd_request *req,
-		      unsigned int last_page_cnt, int last_error)
+static int h_flash_bd_read(struct flash_bd *fbd, struct flash_bd_request *req)
 {
-	if (last_page_cnt == 1 && fbd->pb_cnt) {
-		fbd->t_count += fbd->pb_cnt;
-		fbd->rem_count -= fbd->pb_cnt;
-		fbd->pb_cnt = 0;
-		fbd->pb_off = 0;
+	unsigned long long log_block = fbd->byte_offset + fbd->t_count;
+	unsigned int block_off = div64(log_block, fbd->block_size);
+
+	fbd->buf_count = fbd->block_size - block_off;
+	req->logical = log_block;
+	req->block = flash_bd_get_physical(fbd, log_block);
+	req->page = block_off / fbd->page_size;
+	fbd->buf_offset = block_off % fdb->page_size;
+	req->count = 0;
+
+	if (fbd->buf_count > fbd->rem_count)
+		fbd->buf_count = fbd->rem_count;
+
+	if (fbd->buf_offset) {
+		fbd->buf_count = fbd->page_size - fbd->buf_offset;
+
+		if (fbd->buf_count > fbd->rem_count)
+			fbd->buf_count = fbd->rem_count;
+	} else
+		req->count = fbd->buf_count / fbd->page_size;
+
+	if (req->block == FLASH_BD_INVALID) {
+		if (!req->count) {
+			memset(fbd->block_buffer, 0, fbd->buf_count);
+			fbd->buf_offset = 0;
+			return h_flash_bd_flush(fbd, req);
+		} else {
+			req->cmd = FBD_SKIP;
+		}
 	} else {
-		fbd->t_count += last_page_cnt * fbd->page_size;
-		fbd->rem_count -= last_page_cnt * fbd->page_size;
+		if (!req->count) {
+			sg_init_one(&req->sg, fbd->block_buffer,
+				    fbd->page_size);
+			req->count = 1;
+			req->cmd = FBD_READ_BUF;
+			fbd->buf_offset = block_off % fbd->page_size;
+			fbd->buf_count = block_ext;
+			fbd->cmd_handler = h_flash_bd_flush;
+			return 0;
+		} else {
+			req->cmd = FBD_READ;
+		}
 	}
 
-	memset(req, 0, sizeof(struct flash_bd_request));
+	fbd->cmd_handler = h_flash_bd_add_pages;
 
-	if (fbd->data_dir == WRITE)
-		return flash_bd_next_write_req(fbd, req, last_error);
-	else
-		return flash_bd_next_read_req(fbd, req, last_error);
+	return 0;
+}
 
+
+int flash_bd_next_req(struct flash_bd *fbd, struct flash_bd_request *req,
+		      unsigned int count, int error)
+{
+	fbd->last_count = count;
+	fbd->last_error = error;
+
+	return (fbd->cmd_handler)(fbd, req);
 }
 
 unsigned int flash_bd_end(struct flash_bd *fbd)
 {
-#warning Ugh!
+	fbd->active = 0;
+	return fbd->t_count;
 }
 
 MODULE_AUTHOR("Alex Dubov");

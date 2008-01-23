@@ -24,9 +24,7 @@
 #define DRIVER_VERSION "0.2"
 
 static int major = 0;
-static int unsafe_resume = 0;
 module_param(major, int, 0644);
-module_param(unsafe_resume, int, 0644);
 
 #define MS_BLOCK_MAX_SEGS      32
 #define MS_BLOCK_MAX_PAGES     ((2 << 16) - 1)
@@ -1087,7 +1085,7 @@ static int h_ms_block_get_ro(struct memstick_dev *card,
 		return (*mrq)->error;
 	}
 
-	if (((struct ms_status_register*)(*mrq)->data)->status0
+	if ((*mrq)->data[offsetof(struct ms_status_register, status0)]
 	    & MEMSTICK_STATUS0_WP)
 		msb->read_only = 1;
 	else
@@ -1213,8 +1211,9 @@ static int h_ms_block_get_extra(struct memstick_dev *card,
 				  sizeof(struct ms_extra_data_register));
 		return 0; 
 	case MS_TPC_READ_REG:
-		msb->current_extra
-			= *((struct ms_extra_data_register*)((*mrq)->data));
+		memcpy(&msb->current_extra, (*mrq)->data,
+		       sizeof(msb->current_extra));
+
 		memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS, &reg_addr,
 				  sizeof(reg_addr));
 		card->next_request = msb->mrq_handler;
@@ -1247,8 +1246,8 @@ static int h_ms_block_set_extra(struct memstick_dev *card,
 				  sizeof(struct ms_extra_data_register));
 		break; 
 	case MS_TPC_WRITE_REG:
-		msb->current_extra
-			= *((struct ms_extra_data_register*)((*mrq)->data));
+		memcpy(&msb->current_extra, (*mrq)->data,
+		       sizeof(msb->current_extra));
 		memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS, &reg_addr,
 				  sizeof(reg_addr));
 		card->next_request = h_ms_block_default;
@@ -1561,8 +1560,6 @@ static int ms_block_queue_thread(void *data)
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct request *req = NULL;
 	unsigned long flags;
-
-	current->flags |= PF_NOFREEZE;
 
 	while (1) {
 		wait_event(msb->q_wait, ms_block_has_request(msb));
@@ -2178,8 +2175,7 @@ static int ms_block_switch_to_parallel(struct memstick_dev *card)
 		return card->current_mrq.error;
 
 	msb->system = 0x88;
-	host->ios.interface = MEMSTICK_PARALLEL;
-	host->set_ios(host, &host->ios);
+	host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_PARALLEL);
 
 	card->next_request = h_ms_block_req_init;
 	msb->mrq_handler = h_ms_block_default;
@@ -2189,8 +2185,7 @@ static int ms_block_switch_to_parallel(struct memstick_dev *card)
 
 	if (card->current_mrq.error) {
 		msb->system = 0x80;
-		host->ios.interface = MEMSTICK_SERIAL;
-		host->set_ios(host, &host->ios);
+		host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_SERIAL);
 		return -EFAULT;
 	}
 
@@ -2591,13 +2586,13 @@ static int ms_block_suspend(struct memstick_dev *card, pm_message_t state)
 static int ms_block_resume(struct memstick_dev *card)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
-	struct ms_block_data *new_msb;
-	struct memstick_host *host = card->host;
 	unsigned long flags;
 	int rc = 0;
 
-	if (!unsafe_resume)
-		goto out_start_queue;
+#ifdef CONFIG_MEMSTICK_UNSAFE_RESUME
+
+	struct ms_block_data *new_msb;
+	struct memstick_host *host = card->host;
 
 	mutex_lock(&host->lock);
 	new_msb = kzalloc(sizeof(struct ms_block_data), GFP_KERNEL);
@@ -2630,7 +2625,9 @@ out_free:
 	kfree(new_msb);
 out_unlock:
 	mutex_unlock(&host->lock);
-out_start_queue:
+
+#endif // CONFIG_MEMSTICK_UNSAFE_RESUME
+
 	spin_lock_irqsave(&msb->q_lock, flags);
 	blk_start_queue(msb->queue);
 	spin_unlock_irqrestore(&msb->q_lock, flags);

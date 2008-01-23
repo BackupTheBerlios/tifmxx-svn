@@ -1,7 +1,7 @@
 /*
- *  memstick.c - Sony MemoryStick support
+ *  Sony MemoryStick support
  *
- *  Copyright (C) 2006 Alex Dubov <oakad@yahoo.com>
+ *  Copyright (C) 2007 Alex Dubov <oakad@yahoo.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -12,11 +12,10 @@
  *
  */
 
-#include "linux/tifm.h"
 #include "linux/memstick.h"
 #include <linux/idr.h>
-#include <linux/scatterlist.h>
 #include <linux/fs.h>
+#include <linux/delay.h>
 
 #define DRIVER_NAME "memstick"
 #define DRIVER_VERSION "0.2"
@@ -61,10 +60,10 @@ static int memstick_bus_match(struct device *dev, struct device_driver *drv)
 }
 
 static int memstick_uevent(struct device *dev, char **envp, int num_envp,
-			   char *buffer, int buffer_size)
+                           char *buffer, int buffer_size)
 {
 	struct memstick_dev *card = container_of(dev, struct memstick_dev,
-						  dev);
+						 dev);
 	int i = 0;
 	int length = 0;
 
@@ -80,7 +79,24 @@ static int memstick_uevent(struct device *dev, char **envp, int num_envp,
 
 	return 0;
 }
+/*
+static int memstick_uevent(struct device *dev, struct kobj_uevent_env *env)
+{
+	struct memstick_dev *card = container_of(dev, struct memstick_dev,
+						  dev);
 
+	if (add_uevent_var(env, "MEMSTICK_TYPE=%02X", card->id.type))
+		return -ENOMEM;
+
+	if (add_uevent_var(env, "MEMSTICK_CATEGORY=%02X", card->id.category))
+		return -ENOMEM;
+
+	if (add_uevent_var(env, "MEMSTICK_CLASS=%02X", card->id.class))
+		return -ENOMEM;
+
+	return 0;
+}
+*/
 static int memstick_device_probe(struct device *dev)
 {
 	struct memstick_dev *card = container_of(dev, struct memstick_dev,
@@ -147,8 +163,8 @@ static int memstick_device_resume(struct device *dev)
 
 #else
 
-#define tifm_device_suspend NULL
-#define tifm_device_resume NULL
+#define memstick_device_suspend NULL
+#define memstick_device_resume NULL
 
 #endif /* CONFIG_PM */
 
@@ -209,12 +225,26 @@ static int memstick_dummy_check(struct memstick_dev *card)
 	return 0;
 }
 
+/**
+ * memstick_detect_change - schedule media detection on memstick host
+ * @host - host to use
+ */
 void memstick_detect_change(struct memstick_host *host)
 {
 	queue_work(workqueue, &host->media_checker);
 }
 EXPORT_SYMBOL(memstick_detect_change);
 
+/**
+ * memstick_next_req - called by host driver to obtain next request to process
+ * @host - host to use
+ * @mrq - pointer to stick the request to
+ *
+ * Host calls this function from idle state (*mrq == NULL) or after finishing
+ * previous request (*mrq should point to it). If previous request was
+ * unsuccessful, it is retried for predetermined number of times. Return value
+ * of 0 means that new request was assigned to the host.
+ */
 int memstick_next_req(struct memstick_host *host, struct memstick_request **mrq)
 {
 	int rc = -ENXIO;
@@ -237,6 +267,10 @@ int memstick_next_req(struct memstick_host *host, struct memstick_request **mrq)
 }
 EXPORT_SYMBOL(memstick_next_req);
 
+/**
+ * memstick_new_req - notify the host that some requests are pending
+ * @host - host to use
+ */
 void memstick_new_req(struct memstick_host *host)
 {
 	host->retries = cmd_retries;
@@ -244,6 +278,12 @@ void memstick_new_req(struct memstick_host *host)
 }
 EXPORT_SYMBOL(memstick_new_req);
 
+/**
+ * memstick_init_req_sg - set request fields needed for bulk data transfer
+ * @mrq - request to use
+ * @tpc - memstick Transport Protocol Command
+ * @sg - TPC argument
+ */
 void memstick_init_req_sg(struct memstick_request *mrq, unsigned char tpc,
 			  struct scatterlist *sg)
 {
@@ -265,6 +305,17 @@ void memstick_init_req_sg(struct memstick_request *mrq, unsigned char tpc,
 }
 EXPORT_SYMBOL(memstick_init_req_sg);
 
+/**
+ * memstick_init_req - set request fields needed for short data transfer
+ * @mrq - request to use
+ * @tpc - memstick Transport Protocol Command
+ * @buf - TPC argument buffer
+ * @length - TPC argument size
+ *
+ * The intended use of this function (transfer of data items several bytes
+ * in size) allows us to just copy the value between request structure and
+ * user supplied buffer.
+ */
 void memstick_init_req(struct memstick_request *mrq, unsigned char tpc,
 		       void *buf, size_t length)
 {
@@ -289,6 +340,13 @@ void memstick_init_req(struct memstick_request *mrq, unsigned char tpc,
 }
 EXPORT_SYMBOL(memstick_init_req);
 
+/*
+ * Functions prefixed with "h_" are protocol callbacks. They can be called from
+ * interrupt context. Return value of 0 means that request processing is still
+ * ongoing, while special error value of -EAGAIN means that current request is
+ * finished (and request processor should come back some time later).
+ */
+
 static int h_memstick_read_dev_id(struct memstick_dev *card,
 				  struct memstick_request **mrq)
 {
@@ -301,13 +359,11 @@ static int h_memstick_read_dev_id(struct memstick_dev *card,
 		return 0;
 	} else {
 		if (!(*mrq)->error) {
-			id_reg = *(struct ms_id_register*)((*mrq)->data);
-			card->id = (struct memstick_device_id){
-				.match_flags = MEMSTICK_MATCH_ALL,
-				.type = id_reg.type,
-				.category = id_reg.category,
-				.class = id_reg.class
-			};
+			memcpy(&id_reg, (*mrq)->data, sizeof(id_reg));
+			card->id.match_flags = MEMSTICK_MATCH_ALL;
+			card->id.type = id_reg.type;
+			card->id.category = id_reg.category;
+			card->id.class = id_reg.class;
 		}
 		complete(&card->mrq_complete);
 		return -EAGAIN;
@@ -319,7 +375,7 @@ static int h_memstick_set_rw_addr(struct memstick_dev *card,
 {
 	if (!(*mrq)) {
 		memstick_init_req(&card->current_mrq, MS_TPC_SET_RW_REG_ADRS,
-				  (char*)&card->reg_addr,
+				  (char *)&card->reg_addr,
 				  sizeof(card->reg_addr));
 		*mrq = &card->current_mrq;
 		return 0;
@@ -329,6 +385,11 @@ static int h_memstick_set_rw_addr(struct memstick_dev *card,
 	}
 }
 
+/**
+ * memstick_set_rw_addr - issue SET_RW_REG_ADDR request and wait for it to
+ *                        complete
+ * @card - media device to use
+ */
 int memstick_set_rw_addr(struct memstick_dev *card)
 {
 	card->next_request = h_memstick_set_rw_addr;
@@ -339,7 +400,7 @@ int memstick_set_rw_addr(struct memstick_dev *card)
 }
 EXPORT_SYMBOL(memstick_set_rw_addr);
 
-static struct memstick_dev* memstick_alloc_card(struct memstick_host *host)
+static struct memstick_dev *memstick_alloc_card(struct memstick_host *host)
 {
 	struct memstick_dev *card = kzalloc(sizeof(struct memstick_dev),
 					    GFP_KERNEL);
@@ -355,12 +416,10 @@ static struct memstick_dev* memstick_alloc_card(struct memstick_host *host)
 		card->dev.release = memstick_free_card;
 		card->check = memstick_dummy_check;
 
-		card->reg_addr = (struct ms_register_addr){
-			offsetof(struct ms_register, id),
-			sizeof(id_reg),
-			offsetof(struct ms_register, id),
-			sizeof(id_reg)
-		};
+		card->reg_addr.r_offset = offsetof(struct ms_register, id);
+		card->reg_addr.r_length = sizeof(id_reg);
+		card->reg_addr.w_offset = offsetof(struct ms_register, id);
+		card->reg_addr.w_length = sizeof(id_reg);
 
 		init_completion(&card->mrq_complete);
 
@@ -383,18 +442,10 @@ err_out:
 	return NULL;
 }
 
-static void memstick_power_off(struct memstick_host *host)
-{
-	host->ios.power_mode = MEMSTICK_POWER_OFF;
-	host->ios.interface = MEMSTICK_SERIAL;
-	host->set_ios(host, &host->ios);
-}
-
 static void memstick_power_on(struct memstick_host *host)
 {
-	host->ios.power_mode = MEMSTICK_POWER_ON;
-	host->ios.interface = MEMSTICK_SERIAL;
-	host->set_ios(host, &host->ios);
+	host->set_param(host, MEMSTICK_POWER, MEMSTICK_POWER_ON);
+	host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_SERIAL);
 	msleep(1);
 }
 
@@ -406,7 +457,7 @@ static void memstick_check(struct work_struct *work)
 
 	dev_dbg(host->cdev.dev, "memstick_check started\n");
 	mutex_lock(&host->lock);
-	if (MEMSTICK_POWER_ON != host->ios.power_mode)
+	if (!host->card)
 		memstick_power_on(host);
 
 	card = memstick_alloc_card(host);
@@ -439,11 +490,17 @@ static void memstick_check(struct work_struct *work)
 	}
 
 	if (!host->card)
-		memstick_power_off(host);
+		host->set_param(host, MEMSTICK_POWER, MEMSTICK_POWER_OFF);
+
 	mutex_unlock(&host->lock);
 	dev_dbg(host->cdev.dev, "memstick_check finished\n");
 }
 
+/**
+ * memstick_alloc_host - allocate a memstick_host structure
+ * @extra: size of the user private data to allocate
+ * @dev: parent device of the host
+ */
 struct memstick_host *memstick_alloc_host(unsigned int extra,
 					  struct device *dev)
 {
@@ -461,6 +518,10 @@ struct memstick_host *memstick_alloc_host(unsigned int extra,
 }
 EXPORT_SYMBOL(memstick_alloc_host);
 
+/**
+ * memstick_add_host - start request processing on memstick host
+ * @host - host to use
+ */
 int memstick_add_host(struct memstick_host *host)
 {
 	int rc;
@@ -485,12 +546,16 @@ int memstick_add_host(struct memstick_host *host)
 		return rc;
 	}
 
-	memstick_power_off(host);
+	host->set_param(host, MEMSTICK_POWER, MEMSTICK_POWER_OFF);
 	memstick_detect_change(host);
 	return 0;
 }
 EXPORT_SYMBOL(memstick_add_host);
 
+/**
+ * memstick_remove_host - stop request processing on memstick host
+ * @host - host to use
+ */
 void memstick_remove_host(struct memstick_host *host)
 {
 	flush_workqueue(workqueue);
@@ -498,7 +563,7 @@ void memstick_remove_host(struct memstick_host *host)
 	if (host->card)
 		device_unregister(&host->card->dev);
 	host->card = NULL;
-	memstick_power_off(host);
+	host->set_param(host, MEMSTICK_POWER, MEMSTICK_POWER_OFF);
 	mutex_unlock(&host->lock);
 
 	spin_lock(&memstick_host_lock);
@@ -508,6 +573,10 @@ void memstick_remove_host(struct memstick_host *host)
 }
 EXPORT_SYMBOL(memstick_remove_host);
 
+/**
+ * memstick_free_host - free memstick host
+ * @host - host to use
+ */
 void memstick_free_host(struct memstick_host *host)
 {
 	mutex_destroy(&host->lock);

@@ -1,7 +1,7 @@
 /*
- *  memstick.h - Sony MemoryStick support
+ *  Sony MemoryStick support
  *
- *  Copyright (C) 2006 Alex Dubov <oakad@yahoo.com>
+ *  Copyright (C) 2007 Alex Dubov <oakad@yahoo.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -13,6 +13,10 @@
 #define _MEMSTICK_H
 
 #include <linux/workqueue.h>
+#include <linux/scatterlist.h>
+#include <linux/device.h>
+
+/*** Hardware based structures ***/
 
 struct ms_status_register {
 	unsigned char reserved;
@@ -109,11 +113,11 @@ enum {
 	MS_TPC_READ_LONG_DATA   = 0x02,
 	MS_TPC_READ_SHORT_DATA  = 0x03,
 	MS_TPC_READ_REG         = 0x04,
-	MS_TPC_READ_IO_DATA     = 0x05, // unverified
+	MS_TPC_READ_IO_DATA     = 0x05, /* unverified */
 	MS_TPC_GET_INT          = 0x07,
 	MS_TPC_SET_RW_REG_ADRS  = 0x08,
 	MS_TPC_EX_SET_CMD       = 0x09,
-	MS_TPC_WRITE_IO_DATA    = 0x0a, // unverified
+	MS_TPC_WRITE_IO_DATA    = 0x0a, /* unverified */
 	MS_TPC_WRITE_REG        = 0x0b,
 	MS_TPC_WRITE_SHORT_DATA = 0x0c,
 	MS_TPC_WRITE_LONG_DATA  = 0x0d,
@@ -138,29 +142,30 @@ enum {
 	MSPRO_CMD_ERASE      = 0x26,
 	MSPRO_CMD_SET_IBA    = 0x46,
 	MSPRO_CMD_SET_IBD    = 0x47
-//	MSPRO_CMD_RESET
-//	MSPRO_CMD_WAKEUP
-//	MSPRO_CMD_IN_IO_DATA
-//	MSPRO_CMD_OUT_IO_DATA
-//	MSPRO_CMD_READ_IO_ATRB
-//	MSPRO_CMD_IN_IO_FIFO
-//	MSPRO_CMD_OUT_IO_FIFO
-//	MSPRO_CMD_IN_IOM
-//	MSPRO_CMD_OUT_IOM
+/*
+	MSPRO_CMD_RESET
+	MSPRO_CMD_WAKEUP
+	MSPRO_CMD_IN_IO_DATA
+	MSPRO_CMD_OUT_IO_DATA
+	MSPRO_CMD_READ_IO_ATRB
+	MSPRO_CMD_IN_IO_FIFO
+	MSPRO_CMD_OUT_IO_FIFO
+	MSPRO_CMD_IN_IOM
+	MSPRO_CMD_OUT_IOM
+*/
 };
+
+/*** Driver structures and functions ***/
 
 #define MEMSTICK_PART_SHIFT 3
 
-struct memstick_ios {
-	unsigned char power_mode;
+enum memstick_param { MEMSTICK_POWER = 1, MEMSTICK_INTERFACE };
+
 #define MEMSTICK_POWER_OFF 0
 #define MEMSTICK_POWER_ON  1
 
-	unsigned char interface;
 #define MEMSTICK_SERIAL   0
 #define MEMSTICK_PARALLEL 1
-
-};
 
 struct memstick_host;
 struct memstick_driver;
@@ -208,16 +213,18 @@ struct memstick_request {
 
 struct memstick_dev {
 	struct memstick_device_id id;
-	struct memstick_host      *host;
-	struct ms_register_addr   reg_addr;
-	struct completion         mrq_complete;
-	struct memstick_request   current_mrq;
+	struct memstick_host     *host;
+	struct ms_register_addr  reg_addr;
+	struct completion        mrq_complete;
+	struct memstick_request  current_mrq;
 
-	int                       (*check)(struct memstick_dev *card);
-	int                       (*next_request)(struct memstick_dev *card,
-						  struct memstick_request **mrq);
+	/* Check that media driver is still willing to operate the device. */
+	int                      (*check)(struct memstick_dev *card);
+	/* Get next request from the media driver.                         */
+	int                      (*next_request)(struct memstick_dev *card,
+						 struct memstick_request **mrq);
 
-	struct device             dev;
+	struct device            dev;
 };
 
 struct memstick_host {
@@ -230,13 +237,15 @@ struct memstick_host {
 	struct work_struct  media_checker;
 	struct class_device cdev;
 
-	struct memstick_ios ios;
 	struct memstick_dev *card;
 	unsigned int        retries;
 
+	/* Notify the host that some requests are pending. */
 	void                (*request)(struct memstick_host *host);
-	void                (*set_ios)(struct memstick_host *host,
-				       struct memstick_ios *ios);
+	/* Set host IO parameters (power, clock, etc).     */
+	void                (*set_param)(struct memstick_host *host,
+					 enum memstick_param param,
+					 int value);
 	unsigned long       private[0] ____cacheline_aligned;
 };
 
@@ -266,22 +275,23 @@ void memstick_init_req_sg(struct memstick_request *mrq, unsigned char tpc,
 			  struct scatterlist *sg);
 void memstick_init_req(struct memstick_request *mrq, unsigned char tpc,
 		       void *buf, size_t length);
-int memstick_next_req(struct memstick_host *host, struct memstick_request **mrq);
+int memstick_next_req(struct memstick_host *host,
+		      struct memstick_request **mrq);
 void memstick_new_req(struct memstick_host *host);
 
 int memstick_set_rw_addr(struct memstick_dev *card);
 
-inline void *memstick_priv(struct memstick_host *host)
+static inline void *memstick_priv(struct memstick_host *host)
 {
-        return (void *)host->private;
+	return (void *)host->private;
 }
 
-inline void *memstick_get_drvdata(struct memstick_dev *card)
+static inline void *memstick_get_drvdata(struct memstick_dev *card)
 {
 	return dev_get_drvdata(&card->dev);
 }
 
-inline void memstick_set_drvdata(struct memstick_dev *card, void *data)
+static inline void memstick_set_drvdata(struct memstick_dev *card, void *data)
 {
 	dev_set_drvdata(&card->dev, data);
 }
