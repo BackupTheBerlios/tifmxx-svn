@@ -1,13 +1,14 @@
 #obj-m += tifm_core.o tifm_7xx1.o tifm_sd.o
-#obj-m += memstick.o ms_block.o mspro_block.o
+obj-m += memstick.o mspro_block.o # ms_block.o 
 #obj-m += tifm_ms.o
-obj-m += flash_bd.o
+obj-m += jmb38x_ms.o
+#obj-m += flash_bd.o
 
 KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 #KERNELDIR ?= ~/linux-2.6
 PWD       := $(shell pwd)
 MODULE_INSTALLDIR = /lib/modules/$(shell uname -r)
-EXTRA_CFLAGS = -DDEBUG #-DCONFIG_MEMSTICK_UNSAFE_RESUME
+#EXTRA_CFLAGS = -DDEBUG
 
 all:
 	echo $(PWD)

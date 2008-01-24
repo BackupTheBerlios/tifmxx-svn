@@ -12,15 +12,19 @@
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
 #include <linux/pci.h>
+#include <linux/delay.h>
 
 #include "linux/memstick.h"
 
 #define PCI_DEVICE_ID_JMICRON_JMB38X_MS 0x2383
 #define DRIVER_NAME "jmb38x_ms"
 
+static int no_dma;
+module_param(no_dma, bool, 0644);
+
 enum {
 	DMA_ADDRESS       = 0x00,
-	DMA_BLOCK         = 0x04,
+	BLOCK             = 0x04,
 	DMA_CONTROL       = 0x08,
 	TPC_P0            = 0x0c,
 	TPC_P1            = 0x10,
@@ -43,12 +47,19 @@ enum {
 };
 
 struct jmb38x_ms_host {
-	void __iomem *addr;
-	spinlock_t   lock;
-	int          id;
-	char         host_id[DEVICE_ID_SIZE];
-	int          irq;
-
+	struct jmb38x_ms        *chip;
+	void __iomem            *addr;
+	spinlock_t              lock;
+	int                     id;
+	char                    host_id[DEVICE_ID_SIZE];
+	int                     irq;
+	unsigned short          eject:1,
+				no_dma:1;
+	unsigned short          cmd_flags;
+	unsigned int            block_pos;
+	unsigned long           timeout_jiffies;
+	struct timer_list       timer;
+	struct memstick_request *req;
 };
 
 struct jmb38x_ms {
@@ -56,6 +67,27 @@ struct jmb38x_ms {
 	int                   host_cnt;
 	struct memstick_host  *hosts[];
 };
+
+#define BLOCK_COUNT_MASK       0xffff0000
+#define BLOCK_SIZE_MASK        0x00000fff
+
+#define TPC_DATA_SEL           0x00008000
+#define TPC_DIR                0x00004000
+#define TPC_WAIT_INT           0x00002000
+#define TPC_GET_INT            0x00000800
+#define TPC_CODE_SZ_MASK       0x00000700
+#define TPC_DATA_SZ_MASK       0x00000007
+
+#define HOST_CONTROL_RST       0x00008000
+#define HOST_CONTROL_LED       0x00000400
+#define HOST_CONTROL_FAST_CLK  0x00000200
+#define HOST_CONTROL_DMA_RST   0x00000100
+#define HOST_CONTROL_POWER_EN  0x00000080
+#define HOST_CONTROL_CLOCK_EN  0x00000040
+
+#define HOST_CONTROL_IF_SERIAL 0x0
+#define HOST_CONTROL_IF_PAR4   0x1
+#define HOST_CONTROL_IF_PAR8   0x3
 
 #define INT_STATUS_TPC_ERR      0x00080000
 #define INT_STATUS_CRC_ERR      0x00040000
@@ -69,22 +101,94 @@ struct jmb38x_ms {
 #define INT_STATUS_EOTRAN       0x00000002
 #define INT_STATUS_EOTPC        0x00000001
 
-#define HOST_CONTROL_RST       0x00008000
-#define HOST_CONTROL_LED       0x00000400
-#define HOST_CONTROL_FAST_CLK  0x00000200
-#define HOST_CONTROL_DMA_RST   0x00000100
-#define HOST_CONTROL_POWER_EN  0x00000080
-#define HOST_CONTROL_CLOCK_EN  0x00000040
-
-#define HOST_CONTROL_IF_SERIAL 0x0
-#define HOST_CONTROL_IF_PAR4   0x1
-#define HOST_CONTROL_IF_PAR8   0x3
+#define PAD_OUTPUT_ENABLE_MS  0x0F3F
 
 #define PAD_PU_PD_OFF         0x7FFF0000
 #define PAD_PU_PD_ON_MS_SOCK0 0x5f8f0000
 #define PAD_PU_PD_ON_MS_SOCK1 0x0f0f0000
 
-#define PAD_OUTPUT_ENABLE_MS  0x0F3F
+enum {
+        CMD_READY  = 0x0001,
+        FIFO_READY = 0x0002,
+        CARD_READY = 0x0004,
+        DATA_CARRY = 0x0008
+};
+
+static int jmb38x_ms_issue_cmd(struct jmb38x_ms_host *host)
+{
+	unsigned char *data;
+	unsigned int cnt, data_len, irq_mask, cmd, t_val;
+
+	host->cmd_flags = 0;
+	host->block_pos = 0;
+
+	irq_mask = readl(host->addr + INT_STATUS_ENABLE);
+
+	cmd = host->req->tpc << 16;
+	cmd |= TPC_DATA_SEL;
+
+	if (host->req->data_dir == READ)
+		cmd |= TPC_DIR;
+	if (host->req->need_card_int)
+		cmd |= TPC_WAIT_INT;
+	if (host->req->get_int_reg)
+		cmd |= TPC_GET_INT;
+
+	if (host->req->io_type == MEMSTICK_IO_SG) {
+		if (!host->no_dma) {
+			if (1 != pci_map_sg(host->chip->pdev, &host->req->sg, 1,
+					    host->req->data_dir == READ
+					    ? PCI_DMA_FROMDEVICE
+					    : PCI_DMA_TODEVICE)) {
+				host->req->error = -ENOMEM;
+				return host->req->error;
+			}
+			data_len = sg_dma_len(&host->req->sg);
+			irq_mask &= ~(INT_STATUS_FIFO_RRDY
+				      | INT_STATUS_FIFO_WRDY);
+		} else {
+			data_len = host->req->sg.length;
+			irq_mask |= INT_STATUS_FIFO_RRDY
+				    | INT_STATUS_FIFO_WRDY;
+		}
+
+		writel(irq_mask, host->addr + INT_STATUS_ENABLE);
+		writel(irq_mask, host->addr + INT_SIGNAL_ENABLE);
+	} else if (host->req->io_type == MEMSTICK_IO_VAL) {
+ 		data = host->req->data;
+		data_len = host->req->data_len;
+
+		if (host->req->data_dir == WRITE) {
+			for (cnt = 0; (data_len - cnt) >= 4; cnt += 4)
+				__raw_writel(*(unsigned int *)(data + cnt),
+					     host->addr + DATA);
+
+			t_val = 0;
+			switch (data_len - cnt) {
+			case 3:
+				t_val |= data[cnt + 2] << 16;
+			case 2:
+				t_val |= data[cnt + 1] << 8;
+			case 1:
+				t_val |= data[cnt];
+				writel(t_val, host->addr + DATA);
+                        }
+		}
+	} else
+		BUG();
+
+	writel(((1 << 16) & BLOCK_COUNT_MASK) | (data_len & BLOCK_SIZE_MASK),
+	       host->addr + BLOCK);
+	mod_timer(&host->timer, jiffies + host->timeout_jiffies);
+	writel(HOST_CONTROL_LED | readl(host->addr + HOST_CONTROL),
+	       host->addr + HOST_CONTROL);
+	host->req->error = 0;
+
+	writel(cmd, host->addr + TPC);
+	dev_dbg(&host->chip->pdev->dev, "executing TPC %x, %x\n", cmd,
+		cmd_mask);
+	return 0;
+}
 
 static irqreturn_t jmb38x_ms_isr(int irq, void *dev_id)
 {
@@ -98,16 +202,21 @@ static irqreturn_t jmb38x_ms_isr(int irq, void *dev_id)
 		spin_unlock(&host->lock);
 		return IRQ_NONE;
 	}
-	dev_dbg(msh->cdev.dev, "irq_status = %08x\n", irq_status);
-	
+	dev_dbg(&host->chip->pdev->dev, "irq_status = %08x\n", irq_status);
+
 	if (irq_status & (INT_STATUS_MEDIA_IN | INT_STATUS_MEDIA_OUT)) {
-		dev_dbg(msh->cdev.dev, "media changed\n");
+		dev_dbg(&host->chip->pdev->dev, "media changed\n");
 
 	}
 
 	writel(irq_status, host->addr + INT_STATUS);
 	spin_unlock(&host->lock);
 	return IRQ_HANDLED;
+}
+
+static void jmb38x_ms_abort(unsigned long data)
+{
+#warning Ugh! Ugh!
 }
 
 #ifdef CONFIG_PM
@@ -158,6 +267,7 @@ static struct memstick_host* jmb38x_ms_alloc_host(struct jmb38x_ms *jm, int cnt)
 		return NULL;
 
 	host = memstick_priv(msh);
+	host->chip = jm;
 	host->addr = ioremap(pci_resource_start(jm->pdev, cnt),
 			     pci_resource_len(jm->pdev, cnt));
 	if (!host->addr)
@@ -168,9 +278,12 @@ static struct memstick_host* jmb38x_ms_alloc_host(struct jmb38x_ms *jm, int cnt)
 	snprintf(host->host_id, DEVICE_ID_SIZE, DRIVER_NAME ":slot%d",
 		 host->id);
 	host->irq = jm->pdev->irq;
-	if (host->addr
-	    && !request_irq(host->irq, jmb38x_ms_isr, IRQF_SHARED,
-			    host->host_id, msh))
+	host->timeout_jiffies = msecs_to_jiffies(1000);
+
+	setup_timer(&host->timer, jmb38x_ms_abort, (unsigned long)msh);
+
+	if (!request_irq(host->irq, jmb38x_ms_isr, IRQF_SHARED, host->host_id,
+			 msh))
 		return msh;
 
 	iounmap(host->addr);
