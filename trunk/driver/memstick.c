@@ -106,13 +106,11 @@ static int memstick_device_probe(struct device *dev)
 						   driver);
 	int rc = -ENODEV;
 
-	get_device(dev);
 	if (dev->driver && drv->probe) {
 		rc = drv->probe(card);
 		if (!rc)
-			return 0;
+			get_device(dev);
 	}
-	put_device(dev);
 	return rc;
 }
 
