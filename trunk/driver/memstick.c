@@ -292,7 +292,7 @@ void memstick_init_req_sg(struct memstick_request *mrq, unsigned char tpc,
 		mrq->data_dir = READ;
 
 	mrq->sg = *sg;
-	mrq->io_type = MEMSTICK_IO_SG;
+	mrq->long_data = 1;
 
 	if (tpc == MS_TPC_SET_CMD || tpc == MS_TPC_EX_SET_CMD)
 		mrq->need_card_int = 1;
@@ -327,7 +327,7 @@ void memstick_init_req(struct memstick_request *mrq, unsigned char tpc,
 	if (mrq->data_dir == WRITE)
 		memcpy(mrq->data, buf, mrq->data_len);
 
-	mrq->io_type = MEMSTICK_IO_VAL;
+	mrq->long_data = 0;
 
 	if (tpc == MS_TPC_SET_CMD || tpc == MS_TPC_EX_SET_CMD)
 		mrq->need_card_int = 1;
@@ -581,6 +581,31 @@ void memstick_free_host(struct memstick_host *host)
 	class_device_put(&host->cdev);
 }
 EXPORT_SYMBOL(memstick_free_host);
+
+/**
+ * memstick_suspend_host - notify bus driver of host suspension
+ * @host - host to use
+ */
+void memstick_suspend_host(struct memstick_host *host)
+{
+	mutex_lock(&host->lock);
+	host->set_param(host, MEMSTICK_POWER, MEMSTICK_POWER_OFF);
+	mutex_unlock(&host->lock);
+}
+EXPORT_SYMBOL(memstick_suspend_host);
+
+/**
+ * memstick_resume_host - notify bus driver of host resumption
+ * @host - host to use
+ */
+void memstick_resume_host(struct memstick_host *host)
+{
+	mutex_lock(&host->lock);
+	host->set_param(host, MEMSTICK_POWER, MEMSTICK_POWER_ON);
+	mutex_unlock(&host->lock);
+	memstick_detect_change(host);
+}
+EXPORT_SYMBOL(memstick_resume_host);
 
 int memstick_register_driver(struct memstick_driver *drv)
 {
