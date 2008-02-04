@@ -82,10 +82,10 @@ struct jmb38x_ms {
 #define TPC_CODE_SZ_MASK       0x00000700
 #define TPC_DATA_SZ_MASK       0x00000007
 
-#define HOST_CONTROL_RST       0x00008000
+#define HOST_CONTROL_RESET_BSY 0x00008000
 #define HOST_CONTROL_LED       0x00000400
 #define HOST_CONTROL_FAST_CLK  0x00000200
-#define HOST_CONTROL_DMA_RST   0x00000100
+#define HOST_CONTROL_RESET     0x00000100
 #define HOST_CONTROL_POWER_EN  0x00000080
 #define HOST_CONTROL_CLOCK_EN  0x00000040
 #define HOST_CONTROL_IF_SHIFT  4
@@ -94,6 +94,7 @@ struct jmb38x_ms {
 #define HOST_CONTROL_IF_PAR4   0x1
 #define HOST_CONTROL_IF_PAR8   0x3
 
+#define STATUS_HAS_MEDIA        0x00000400
 #define STATUS_FIFO_EMPTY       0x00000200
 #define STATUS_FIFO_FULL        0x00000100
 
@@ -292,11 +293,22 @@ static int jmb38x_ms_issue_cmd(struct memstick_host *msh)
 	unsigned char *data;
 	unsigned int cnt, data_len, cmd, t_val;
 
+	if (!(STATUS_HAS_MEDIA & readl(host->addr + STATUS))) {
+		dev_dbg(msh->cdev.dev, "no media status\n");
+		host->req->error = -ETIME;
+		return host->req->error;
+	}
+
+	dev_dbg(msh->cdev.dev, "control %08x\n", readl(host->addr + HOST_CONTROL));
+	dev_dbg(msh->cdev.dev, "status %08x\n", readl(host->addr + INT_STATUS));
+	dev_dbg(msh->cdev.dev, "status1 %08x\n", readl(host->addr + INT_STATUS_ENABLE));
+	dev_dbg(msh->cdev.dev, "status2 %08x\n", readl(host->addr + INT_SIGNAL_ENABLE));
+
 	host->cmd_flags = 0;
 	host->block_pos = 0;
 
-	cmd = host->req->tpc << 16;
-	cmd |= TPC_DATA_SEL;
+	cmd = (host->req->tpc << 16) + 4;
+	//cmd |= TPC_DATA_SEL;
 
 	if (host->req->data_dir == READ)
 		cmd |= TPC_DIR;
@@ -334,9 +346,11 @@ static int jmb38x_ms_issue_cmd(struct memstick_host *msh)
 		data_len = host->req->data_len;
 
 		if (host->req->data_dir == WRITE) {
-			for (cnt = 0; (data_len - cnt) >= 4; cnt += 4)
+			for (cnt = 0; (data_len - cnt) >= 4; cnt += 4) {
 				__raw_writel(*(unsigned int *)(data + cnt),
 					     host->addr + DATA);
+				dev_dbg(msh->cdev.dev, "data %08x\n", *(unsigned int *)(data + cnt));
+			}
 
 			t_val = 0;
 			switch (data_len - cnt) {
@@ -347,6 +361,7 @@ static int jmb38x_ms_issue_cmd(struct memstick_host *msh)
 			case 1:
 				t_val |= data[cnt];
 				writel(t_val, host->addr + DATA);
+				dev_dbg(msh->cdev.dev, "data %08x\n", t_val);
                         }
 		}
 	}
@@ -438,12 +453,11 @@ static irqreturn_t jmb38x_ms_isr(int irq, void *dev_id)
 
 	spin_lock(&host->lock);
 	irq_status = readl(host->addr + INT_STATUS);
+	dev_dbg(&host->chip->pdev->dev, "irq_status = %08x\n", irq_status);
 	if (irq_status == 0 || irq_status == (~0)) {
 		spin_unlock(&host->lock);
 		return IRQ_NONE;
 	}
-
-	dev_dbg(&host->chip->pdev->dev, "irq_status = %08x\n", irq_status);
 
 	if (host->req) {
 		if (irq_status & INT_STATUS_ANY_ERR) {
@@ -494,13 +508,13 @@ static void jmb38x_ms_abort(unsigned long data)
 	struct jmb38x_ms_host *host = memstick_priv(msh);
 	unsigned long flags;
 
+	dev_dbg(&host->chip->pdev->dev, "abort\n");
 	spin_lock_irqsave(&host->lock, flags);
 	if (host->req) {
 		host->req->error = -ETIME;
-		jmb38x_ms_complete_cmd(msh, 1);
+		jmb38x_ms_complete_cmd(msh, 0);
 	}
 	spin_unlock_irqrestore(&host->lock, flags);
-	memstick_detect_change(msh);
 }
 
 static void jmb38x_ms_request(struct memstick_host *msh)
@@ -536,6 +550,13 @@ static void jmb38x_ms_set_param(struct memstick_host *msh,
 	case MEMSTICK_POWER:
 		if (value == MEMSTICK_POWER_ON) {
 			host_ctl = readl(host->addr + HOST_CONTROL);
+			writel(host_ctl | HOST_CONTROL_RESET,
+			       host->addr + HOST_CONTROL);
+			do {
+				msleep(10);
+				host_ctl = readl(host->addr + HOST_CONTROL);
+			} while (host_ctl & HOST_CONTROL_RESET_BSY);
+
 			writel(host->id ? PAD_PU_PD_ON_MS_SOCK1
 					  : PAD_PU_PD_ON_MS_SOCK0,
 			       host->addr + PAD_PU_PD);
@@ -559,12 +580,14 @@ static void jmb38x_ms_set_param(struct memstick_host *msh,
 			       | INT_STATUS_MEDIA_IN | INT_STATUS_TPC_ERR
 			       | INT_STATUS_CRC_ERR,
 			       host->addr + INT_SIGNAL_ENABLE);
+			dev_dbg(&host->chip->pdev->dev, "power on\n");
 		} else if (value == MEMSTICK_POWER_OFF) {
 			writel(readl(host->addr + HOST_CONTROL)
 			       & ~HOST_CONTROL_POWER_EN,
 			       host->addr +  HOST_CONTROL);
 			writel(0, host->addr + PAD_OUTPUT_ENABLE);
 			writel(PAD_PU_PD_OFF, host->addr + PAD_PU_PD);
+			dev_dbg(&host->chip->pdev->dev, "power off\n");
 		}
 		break;
 	case MEMSTICK_INTERFACE:
@@ -678,7 +701,7 @@ static struct memstick_host* jmb38x_ms_alloc_host(struct jmb38x_ms *jm, int cnt)
 	snprintf(host->host_id, DEVICE_ID_SIZE, DRIVER_NAME ":slot%d",
 		 host->id);
 	host->irq = jm->pdev->irq;
-	host->timeout_jiffies = msecs_to_jiffies(1000);
+	host->timeout_jiffies = msecs_to_jiffies(4000);
 	msh->request = jmb38x_ms_request;
 	msh->set_param = jmb38x_ms_set_param;
 	msh->caps = MEMSTICK_CAP_AUTO_GET_INT | MEMSTICK_CAP_PAR4
@@ -791,6 +814,7 @@ static void jmb38x_ms_remove(struct pci_dev *dev)
 		writel(0, host->addr + INT_SIGNAL_ENABLE);
 		writel(0, host->addr + INT_STATUS_ENABLE);
 		mmiowb();
+		dev_dbg(&jm->pdev->dev, "interrupts off\n");
 		spin_lock_irqsave(&host->lock, flags);
 		if (host->req) {
 			host->req->error = -ETIME;
@@ -799,6 +823,7 @@ static void jmb38x_ms_remove(struct pci_dev *dev)
 		spin_unlock_irqrestore(&host->lock, flags);
 
 		memstick_remove_host(jm->hosts[cnt]);
+		dev_dbg(&jm->pdev->dev, "host removed\n");
 
 		jmb38x_ms_free_host(jm->hosts[cnt]);
 	}
