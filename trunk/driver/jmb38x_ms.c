@@ -54,14 +54,15 @@ struct jmb38x_ms_host {
 	int                     id;
 	char                    host_id[DEVICE_ID_SIZE];
 	int                     irq;
-	unsigned short          eject:1,
-				no_dma:1;
-	unsigned short          cmd_flags;
 	unsigned int            block_pos;
 	unsigned long           timeout_jiffies;
 	struct timer_list       timer;
 	struct memstick_request *req;
-	unsigned int            io_word;
+	unsigned char           eject:1,
+				no_dma:1;
+	unsigned char           cmd_flags;
+	unsigned char           io_pos;
+	unsigned int            io_word[2];
 };
 
 struct jmb38x_ms {
@@ -82,7 +83,8 @@ struct jmb38x_ms {
 #define TPC_CODE_SZ_MASK       0x00000700
 #define TPC_DATA_SZ_MASK       0x00000007
 
-#define HOST_CONTROL_RESET_BSY 0x00008000
+#define HOST_CONTROL_RESET_REQ 0x00008000
+#define HOST_CONTROL_REI       0x00004000
 #define HOST_CONTROL_LED       0x00000400
 #define HOST_CONTROL_FAST_CLK  0x00000200
 #define HOST_CONTROL_RESET     0x00000100
@@ -111,6 +113,8 @@ struct jmb38x_ms {
 #define INT_STATUS_EOTRAN       0x00000002
 #define INT_STATUS_EOTPC        0x00000001
 
+#define INT_STATUS_ALL          0x000f801f
+
 #define PAD_OUTPUT_ENABLE_MS  0x0F3F
 
 #define PAD_PU_PD_OFF         0x7FFF0000
@@ -118,10 +122,11 @@ struct jmb38x_ms {
 #define PAD_PU_PD_ON_MS_SOCK1 0x0f0f0000
 
 enum {
-        CMD_READY   = 0x0001,
-        FIFO_READY  = 0x0002,
-        DATA_CARRY1 = 0x0004,
-	DATA_CARRY2 = 0x0008,
+	CMD_READY    = 0x01,
+	FIFO_READY   = 0x02,
+	REG_DATA     = 0x04,
+	DMA_DATA     = 0x08,
+	AUTO_GET_INT = 0x10
 };
 
 static inline struct page *sg_page(struct scatterlist *sg)
@@ -129,169 +134,213 @@ static inline struct page *sg_page(struct scatterlist *sg)
         return sg->page;
 }
 
-unsigned int jmb38x_ms_read_data(struct jmb38x_ms_host *host, struct page *pg,
-				 unsigned int page_off, unsigned int length)
+unsigned int jmb38x_ms_read_data(struct jmb38x_ms_host *host,
+				 unsigned char *buf, unsigned int length)
 {
-	unsigned char *buf = kmap_atomic(pg, KM_BIO_DST_IRQ) + page_off;
 	unsigned int t_val = 0, off = 0;
 
-	t_val |= (host->cmd_flags & DATA_CARRY1) ? 1 : 0;
-	t_val |= (host->cmd_flags & DATA_CARRY2) ? 2 : 0;
-
-	while (t_val && length) {
-		buf[off++] = host->io_word & 0xff;
-		host->io_word >>= 8;
+	while (host->io_pos && length) {
+		buf[off++] = host->io_word[0] & 0xff;
+		host->io_word[0] >>= 8;
 		length--;
+		host->io_pos--;
 	}
 
-	host->cmd_flags &= ~(DATA_CARRY1 | DATA_CARRY2);
-
-	if (t_val) {
-		host->cmd_flags |= t_val & 1 ? DATA_CARRY1 : 0;
-		host->cmd_flags |= t_val & 2 ? DATA_CARRY2 : 0;
-		goto out;
-	}
-
-	if (!length)
-		goto out;
+	if (host->io_pos || !length)
+		return off;
 
 	for (t_val = readl(host->addr + STATUS); !(t_val & STATUS_FIFO_EMPTY);
 	     t_val = readl(host->addr + STATUS)) {
 		if (length < 4)
 			break;
 		*(unsigned int *)(buf + off) = __raw_readl(host->addr + DATA);
+		dev_dbg(&host->chip->pdev->dev, "read data %08x\n", *(unsigned int *)(buf + off));
 		length -= 4;
 		off += 4;
 	}
 
 	if (!(t_val & STATUS_FIFO_EMPTY) && length) {
-		host->io_word = readl(host->addr + DATA);
-		for (t_val = 4; t_val; --t_val) {
-			buf[off++] = host->io_word & 0xff;
-			host->io_word >>= 8;
+		host->io_word[0] = readl(host->addr + DATA);
+		dev_dbg(&host->chip->pdev->dev, "read data %08x\n", host->io_word[0]);
+		for (host->io_pos = 4; host->io_pos; --host->io_pos) {
+			buf[off++] = host->io_word[0] & 0xff;
+			host->io_word[0] >>= 8;
 			length--;
 			if (!length)
 				break;
 		}
-		host->cmd_flags |= t_val & 1 ? DATA_CARRY1 : 0;
-		host->cmd_flags |= t_val & 2 ? DATA_CARRY2 : 0;
 	}
-out:
-	kunmap_atomic(buf - page_off, KM_BIO_DST_IRQ);
+
 	return off;
 }
 
-unsigned int jmb38x_ms_write_data(struct jmb38x_ms_host *host, struct page *pg,
-				  unsigned int page_off, unsigned int length)
+unsigned int jmb38x_ms_read_reg_data(struct jmb38x_ms_host *host,
+				     unsigned char *buf, unsigned int length)
 {
-	unsigned char *buf = kmap_atomic(pg, KM_BIO_SRC_IRQ) + page_off;
-	unsigned int t_val = 0, off = 0;
+	unsigned int off = 0;
 
-	t_val = readl(host->addr + STATUS);
-	if (t_val & STATUS_FIFO_FULL)
-		goto out;
-
-	t_val |= (host->cmd_flags & DATA_CARRY1) ? 1 : 0;
-	t_val |= (host->cmd_flags & DATA_CARRY2) ? 2 : 0;
-
-	while (t_val && t_val < 4 && length) {
-		host->io_word |=  buf[off] << (t_val * 8);
-		off++;
-		t_val++;
+	while (host->io_pos > 4 && length) {
+		buf[off++] = host->io_word[0] & 0xff;
+		host->io_word[0] >>= 8;
 		length--;
-	}
-
-	host->cmd_flags &= ~(DATA_CARRY1 | DATA_CARRY2);
-	if (t_val == 4) {
-		writel(host->io_word, host->addr + DATA);
-	} else if (t_val) {
-		host->cmd_flags |= t_val & 1 ? DATA_CARRY1 : 0;
-		host->cmd_flags |= t_val & 2 ? DATA_CARRY2 : 0;
-		goto out;
+		host->io_pos--;
 	}
 
 	if (!length)
-		goto out;
+		return off;
+
+	while (host->io_pos && length) {
+		buf[off++] = host->io_word[1] & 0xff;
+		host->io_word[1] >>= 8;
+		length--;
+		host->io_pos--;
+	}
+
+	return off;
+}
+
+unsigned int jmb38x_ms_write_data(struct jmb38x_ms_host *host,
+				  unsigned char *buf, unsigned int length)
+{
+	unsigned int t_val = 0, off = 0;
+
+	t_val = readl(host->addr + STATUS);
+	dev_dbg(&host->chip->pdev->dev, "write status %08x, length %x\n", t_val, length);
+	if (t_val & STATUS_FIFO_FULL)
+		return off;
+
+	dev_dbg(&host->chip->pdev->dev, "carry %x\n", t_val);
+	while (host->io_pos < 4 && length) {
+		host->io_word[0] |=  buf[off++] << (host->io_pos * 8);
+		host->io_pos++;
+		length--;
+	}
+
+	if (host->io_pos == 4) {
+		writel(host->io_word[0], host->addr + DATA);
+		host->io_pos = 0;
+		host->io_word[0] = 0;
+		dev_dbg(&host->chip->pdev->dev, "write data %08x\n", host->io_word[0]);
+	} else if (host->io_pos) {
+		return off;
+	}
+
+	if (!length)
+		return off;
 
 	for (t_val = readl(host->addr + STATUS); !(t_val & STATUS_FIFO_FULL);
 	     t_val = readl(host->addr + STATUS)) {
 		if (length < 4)
 			break;
 		__raw_writel(*(unsigned int *)(buf + off), host->addr + DATA);
+		dev_dbg(&host->chip->pdev->dev, "write data %08x\n", *(unsigned int *)(buf + off));
 		length -= 4;
 		off += 4;
 	}
 
-	host->io_word = 0;
-	t_val = 0;
-
 	switch (length) {
 	case 3:
-		host->io_word |= buf[off + 2] << 16;
-		t_val++;
+		host->io_word[0] |= buf[off + 2] << 16;
+		host->io_pos++;
 	case 2:
-		host->io_word |= buf[off + 1] << 8;
-		t_val++;
+		host->io_word[0] |= buf[off + 1] << 8;
+		host->io_pos++;
 	case 1:
-		host->io_word |= buf[off];
-		t_val++;
+		host->io_word[0] |= buf[off];
+		host->io_pos++;
 	}
 
-	off += t_val;
-	host->cmd_flags |= t_val & 1 ? DATA_CARRY1 : 0;
-	host->cmd_flags |= t_val & 2 ? DATA_CARRY2 : 0;
+	off += host->io_pos;
 
-out:
-	kunmap_atomic(buf - page_off, KM_BIO_SRC_IRQ);
 	return off;
 }
 
-static int jmb38x_ms_transfer_data(struct jmb38x_ms_host *host, int skip)
+unsigned int jmb38x_ms_write_reg_data(struct jmb38x_ms_host *host,
+				      unsigned char *buf, unsigned int length)
 {
-	unsigned int length = host->req->sg.length - host->block_pos;
-	unsigned int off = host->req->sg.offset + host->block_pos;
+	unsigned int off = 0;
+
+	while (host->io_pos < 4 && length) {
+		host->io_word[0] &= ~(0xff << (host->io_pos * 8));
+		host->io_word[0] |=  buf[off++] << (host->io_pos * 8);
+		host->io_pos++;
+		length--;
+	}
+
+	if (!length)
+		return off;
+
+	while (host->io_pos < 8 && length) {
+		host->io_word[1] &= ~(0xff << (host->io_pos * 8));
+		host->io_word[1] |=  buf[off++] << (host->io_pos * 8);
+		host->io_pos++;
+		length--;
+	}
+
+	return off;
+}
+
+static int jmb38x_ms_transfer_data(struct jmb38x_ms_host *host)
+{
+	unsigned int length;
+	unsigned int off;
 	unsigned int t_size, p_off, p_cnt;
+	unsigned char *buf;
 	struct page *pg;
 	unsigned long flags;
 
-	if (!length)
-		return 1;
+	if (host->req->long_data) {
+		length = host->req->sg.length - host->block_pos;
+		off = host->req->sg.offset + host->block_pos;
+	} else {
+		length = host->req->data_len - host->block_pos;
+		off = 0;
+	}
 
-	if (!skip) {
-		local_irq_save(flags);
-		while (length) {
+	local_irq_save(flags);
+	while (length) {
+		if (host->req->long_data) {
 			pg = nth_page(sg_page(&host->req->sg),
 				      off >> PAGE_SHIFT);
 			p_off = offset_in_page(off);
 			p_cnt = PAGE_SIZE - p_off;
 			p_cnt = min(p_cnt, length);
 
-			if (host->req->data_dir == WRITE)
-				t_size = jmb38x_ms_write_data(host, pg, p_off,
-							      p_cnt);
-			else
-				t_size = jmb38x_ms_read_data(host, pg, p_off,
-							     p_cnt);
-
-			host->block_pos += t_size;
-			length -= t_size;
-			off += t_size;
+			buf = kmap_atomic(pg, KM_BIO_SRC_IRQ) + p_off;
+		} else {
+			buf = host->req->data + host->block_pos;
+			p_cnt = host->req->data_len - host->block_pos;
 		}
-		local_irq_restore(flags);
+
+		if (host->req->data_dir == WRITE)
+			t_size = !(host->cmd_flags & REG_DATA)
+				 ? jmb38x_ms_write_data(host, buf, p_cnt)
+				 : jmb38x_ms_write_reg_data(host, buf, p_cnt);
+		else
+			t_size = !(host->cmd_flags & REG_DATA)
+				 ? jmb38x_ms_read_data(host, buf, p_cnt)
+				 : jmb38x_ms_read_reg_data(host, buf, p_cnt);
+
+		if (host->req->long_data)
+			kunmap_atomic(buf - p_off, KM_BIO_SRC_IRQ);
+
+		if (!t_size)
+			break;
+		host->block_pos += t_size;
+		length -= t_size;
+		off += t_size;
 	}
+	local_irq_restore(flags);
 
-	if ((host->req->data_dir == READ)
-	    && (host->block_pos == host->req->sg.length))
-		return 1;
 
-	return 0;
+	return !length;
 }
 
 static int jmb38x_ms_issue_cmd(struct memstick_host *msh)
 {
 	struct jmb38x_ms_host *host = memstick_priv(msh);
 	unsigned char *data;
-	unsigned int cnt, data_len, cmd, t_val;
+	unsigned int data_len, cmd, t_val;
 
 	if (!(STATUS_HAS_MEDIA & readl(host->addr + STATUS))) {
 		dev_dbg(msh->cdev.dev, "no media status\n");
@@ -301,14 +350,16 @@ static int jmb38x_ms_issue_cmd(struct memstick_host *msh)
 
 	dev_dbg(msh->cdev.dev, "control %08x\n", readl(host->addr + HOST_CONTROL));
 	dev_dbg(msh->cdev.dev, "status %08x\n", readl(host->addr + INT_STATUS));
-	dev_dbg(msh->cdev.dev, "status1 %08x\n", readl(host->addr + INT_STATUS_ENABLE));
-	dev_dbg(msh->cdev.dev, "status2 %08x\n", readl(host->addr + INT_SIGNAL_ENABLE));
+	dev_dbg(msh->cdev.dev, "hstatus %08x\n", readl(host->addr + STATUS));
 
 	host->cmd_flags = 0;
 	host->block_pos = 0;
+	host->io_pos = 0;
+	host->io_word[0] = 0;
+	host->io_word[1] = 0;
 
-	cmd = (host->req->tpc << 16) + 4;
-	//cmd |= TPC_DATA_SEL;
+	cmd = host->req->tpc << 16;
+	cmd |= TPC_DATA_SEL;
 
 	if (host->req->data_dir == READ)
 		cmd |= TPC_DIR;
@@ -317,8 +368,12 @@ static int jmb38x_ms_issue_cmd(struct memstick_host *msh)
 	if (host->req->get_int_reg)
 		cmd |= TPC_GET_INT;
 
+	data = host->req->data;
+	data_len = host->req->data_len;
+
 	if (host->req->long_data) {
 		if (!host->no_dma) {
+			host->cmd_flags |= DMA_DATA;
 			if (1 != pci_map_sg(host->chip->pdev, &host->req->sg, 1,
 					    host->req->data_dir == READ
 					    ? PCI_DMA_FROMDEVICE
@@ -332,101 +387,82 @@ static int jmb38x_ms_issue_cmd(struct memstick_host *msh)
 			writel(DMA_CONTROL_ENABLE, host->addr + DMA_CONTROL);
 		} else {
 			data_len = host->req->sg.length;
-			jmb38x_ms_transfer_data(host,
-						host->req->data_dir == READ);
-
-			t_val = readl(host->addr + INT_STATUS_ENABLE);
-			t_val |= INT_STATUS_FIFO_RRDY
-				 | INT_STATUS_FIFO_WRDY;
-			writel(t_val, host->addr + INT_STATUS_ENABLE);
-			writel(t_val, host->addr + INT_SIGNAL_ENABLE);
-		}
-	} else {
- 		data = host->req->data;
-		data_len = host->req->data_len;
-
-		if (host->req->data_dir == WRITE) {
-			for (cnt = 0; (data_len - cnt) >= 4; cnt += 4) {
-				__raw_writel(*(unsigned int *)(data + cnt),
-					     host->addr + DATA);
-				dev_dbg(msh->cdev.dev, "data %08x\n", *(unsigned int *)(data + cnt));
-			}
-
-			t_val = 0;
-			switch (data_len - cnt) {
-			case 3:
-				t_val |= data[cnt + 2] << 16;
-			case 2:
-				t_val |= data[cnt + 1] << 8;
-			case 1:
-				t_val |= data[cnt];
-				writel(t_val, host->addr + DATA);
-				dev_dbg(msh->cdev.dev, "data %08x\n", t_val);
-                        }
 		}
 	}
 
-	writel(((1 << 16) & BLOCK_COUNT_MASK) | (data_len & BLOCK_SIZE_MASK),
-	       host->addr + BLOCK);
+	if (data_len > 8)
+		writel(((1 << 16) & BLOCK_COUNT_MASK)
+		       | (data_len & BLOCK_SIZE_MASK),
+		       host->addr + BLOCK);
+	else {
+		cmd &= ~(TPC_DATA_SEL | 0xf);
+		host->cmd_flags |= REG_DATA;
+		cmd |= data_len & 0xf;
+	}
+
 	mod_timer(&host->timer, jiffies + host->timeout_jiffies);
 	writel(HOST_CONTROL_LED | readl(host->addr + HOST_CONTROL),
 	       host->addr + HOST_CONTROL);
 	host->req->error = 0;
 
+	if (!(host->cmd_flags & DMA_DATA)) {
+		if (!(host->cmd_flags & REG_DATA)) {
+			t_val = readl(host->addr + INT_STATUS_ENABLE);
+			t_val |= host->req->data_dir == READ
+				 ? INT_STATUS_FIFO_RRDY
+				 : INT_STATUS_FIFO_WRDY;
+
+			writel(t_val, host->addr + INT_STATUS_ENABLE);
+			writel(t_val, host->addr + INT_SIGNAL_ENABLE);
+		}
+
+		if (host->req->data_dir == WRITE) {
+			jmb38x_ms_transfer_data(host);
+
+			if (host->cmd_flags & REG_DATA) {
+				writel(host->io_word[0], host->addr + TPC_P0);
+				writel(host->io_word[1], host->addr + TPC_P1);
+			}
+		}
+	}
+
 	writel(cmd, host->addr + TPC);
-	dev_dbg(msh->cdev.dev, "executing TPC %08x\n", cmd);
+	dev_dbg(msh->cdev.dev, "executing TPC %08x, len %x\n", cmd, data_len);
+
 	return 0;
 }
 
 static void jmb38x_ms_complete_cmd(struct memstick_host *msh, int last)
 {
 	struct jmb38x_ms_host *host = memstick_priv(msh);
-	unsigned int cnt, data_len, t_val = 0;
-	unsigned char *data;
+	unsigned int t_val = 0;
 	int rc;
 
 	del_timer(&host->timer);
+
+	dev_dbg(msh->cdev.dev, "c control %08x\n", readl(host->addr + HOST_CONTROL));
+	dev_dbg(msh->cdev.dev, "c status %08x\n", readl(host->addr + INT_STATUS));
+	dev_dbg(msh->cdev.dev, "c hstatus %08x\n", readl(host->addr + STATUS));
 
 	if (host->req->get_int_reg) {
 		t_val = readl(host->addr + TPC_P0);
 		host->req->int_reg = (t_val & 0xff);
 	}
 
-	if (host->req->long_data) {
-		if (!host->no_dma) {
-			writel(0, host->addr + DMA_CONTROL);
-			pci_unmap_sg(host->chip->pdev, &host->req->sg, 1,
-				     host->req->data_dir == READ
-				     ? PCI_DMA_FROMDEVICE : PCI_DMA_TODEVICE);
-		} else {
-			t_val = readl(host->addr + INT_STATUS_ENABLE);
-			t_val &= ~(INT_STATUS_FIFO_RRDY
-				   | INT_STATUS_FIFO_WRDY);
-			writel(t_val, host->addr + INT_STATUS_ENABLE);
-			writel(t_val, host->addr + INT_SIGNAL_ENABLE);
-		}
+	if (host->cmd_flags && DMA_DATA) {
+		writel(0, host->addr + DMA_CONTROL);
+		pci_unmap_sg(host->chip->pdev, &host->req->sg, 1,
+			     host->req->data_dir == READ
+			     ? PCI_DMA_FROMDEVICE : PCI_DMA_TODEVICE);
 	} else {
-		data = host->req->data;
-		data_len = host->req->data_len;
+		t_val = readl(host->addr + INT_STATUS_ENABLE);
+		if (host->req->data_dir == READ)
+			t_val &= ~INT_STATUS_FIFO_RRDY;
+		else
+			t_val &= ~INT_STATUS_FIFO_WRDY;
 
-		if (!host->req->error && host->req->data_dir == READ) {
-			for (cnt = 0; (data_len - cnt) >= 4; cnt += 4)
-				*(unsigned int *)(data + cnt)
-					= __raw_readl(host->addr
-						      + DATA);
-
-			if (data_len - cnt)
-				t_val = readl(host->addr + DATA);
-			switch (data_len - cnt) {
-			case 3:
-				data[cnt + 2] = (t_val >> 16) & 0xff;
-                        case 2:
-				data[cnt + 1] = (t_val >> 8) & 0xff;
-                        case 1:
-				data[cnt] = t_val & 0xff;
-                        }
-
-		}
+		writel(t_val, host->addr + INT_STATUS_ENABLE);
+		writel(t_val, host->addr + INT_SIGNAL_ENABLE);
 	}
 
 	writel((~HOST_CONTROL_LED) & readl(host->addr + HOST_CONTROL),
@@ -466,21 +502,36 @@ static irqreturn_t jmb38x_ms_isr(int irq, void *dev_id)
 			else
 				host->req->error = -ETIME;
 		} else {
-			if (host->no_dma
-			    && host->req->long_data) {
+			if (!(host->cmd_flags & DMA_DATA)) {
 				if (irq_status & (INT_STATUS_FIFO_RRDY
 						  | INT_STATUS_FIFO_WRDY))
-					jmb38x_ms_transfer_data(host, 0);
+					jmb38x_ms_transfer_data(host);
 
 				if ((irq_status & INT_STATUS_EOTRAN)
-				    && jmb38x_ms_transfer_data(host, 0))
+				    && jmb38x_ms_transfer_data(host))
 					host->cmd_flags |= FIFO_READY;
-			} else if (irq_status & INT_STATUS_EOTRAN) {
-				host->cmd_flags |= FIFO_READY;
+			} else {
+				if (irq_status & INT_STATUS_EOTRAN)
+					host->cmd_flags |= FIFO_READY;
 			}
 
-			if (irq_status & INT_STATUS_EOTPC)
+			if (irq_status & INT_STATUS_EOTPC) {
 				host->cmd_flags |= CMD_READY;
+				if (host->cmd_flags & REG_DATA) {
+					if (host->req->data_dir == READ) {
+						host->io_word[0]
+							= readl(host->addr
+								+ TPC_P0);
+						host->io_word[1]
+							= readl(host->addr
+								+ TPC_P1);
+						host->io_pos = 8;
+
+						jmb38x_ms_transfer_data(host);
+					}
+					host->cmd_flags |= FIFO_READY;
+				}
+			}
 		}
 	}
 
@@ -491,11 +542,10 @@ static irqreturn_t jmb38x_ms_isr(int irq, void *dev_id)
 
 	writel(irq_status, host->addr + INT_STATUS);
 
-	if ((host->cmd_flags & CMD_READY)
-	    && (!host->req->long_data
-		|| (host->cmd_flags & FIFO_READY)))
-		jmb38x_ms_complete_cmd(msh, 0);
-	else if (host->req && host->req->error)
+	if (host->req
+	    && (((host->cmd_flags & CMD_READY)
+		 && (host->cmd_flags & FIFO_READY))
+		|| host->req->error))
 		jmb38x_ms_complete_cmd(msh, 0);
 
 	spin_unlock(&host->lock);
@@ -550,12 +600,17 @@ static void jmb38x_ms_set_param(struct memstick_host *msh,
 	case MEMSTICK_POWER:
 		if (value == MEMSTICK_POWER_ON) {
 			host_ctl = readl(host->addr + HOST_CONTROL);
-			writel(host_ctl | HOST_CONTROL_RESET,
+			writel(host_ctl | HOST_CONTROL_RESET_REQ
+			       | HOST_CONTROL_RESET,
 			       host->addr + HOST_CONTROL);
-			do {
-				msleep(10);
-				host_ctl = readl(host->addr + HOST_CONTROL);
-			} while (host_ctl & HOST_CONTROL_RESET_BSY);
+
+			while (HOST_CONTROL_RESET_REQ
+			       & (host_ctl = readl(host->addr + HOST_CONTROL))) {
+				ndelay(100);
+				dev_dbg(msh->cdev.dev, "reset\n");
+			}
+
+			dev_dbg(msh->cdev.dev, "reset\n");
 
 			writel(host->id ? PAD_PU_PD_ON_MS_SOCK1
 					  : PAD_PU_PD_ON_MS_SOCK0,
@@ -568,18 +623,9 @@ static void jmb38x_ms_set_param(struct memstick_host *msh,
 					   | HOST_CONTROL_CLOCK_EN),
 			       host->addr + HOST_CONTROL);
 
-			msleep(10);
+			writel(INT_STATUS_ALL, host->addr + INT_STATUS_ENABLE);
+			writel(INT_STATUS_ALL, host->addr + INT_SIGNAL_ENABLE);
 
-			writel(INT_STATUS_EOTPC | INT_STATUS_EOTRAN
-			       | INT_STATUS_DMA_BOUNDARY | INT_STATUS_MEDIA_OUT
-			       | INT_STATUS_MEDIA_IN | INT_STATUS_TPC_ERR
-			       | INT_STATUS_CRC_ERR,
-			       host->addr + INT_STATUS_ENABLE);
-			writel(INT_STATUS_EOTPC | INT_STATUS_EOTRAN
-			       | INT_STATUS_DMA_BOUNDARY | INT_STATUS_MEDIA_OUT
-			       | INT_STATUS_MEDIA_IN | INT_STATUS_TPC_ERR
-			       | INT_STATUS_CRC_ERR,
-			       host->addr + INT_SIGNAL_ENABLE);
 			dev_dbg(&host->chip->pdev->dev, "power on\n");
 		} else if (value == MEMSTICK_POWER_OFF) {
 			writel(readl(host->addr + HOST_CONTROL)
@@ -598,14 +644,17 @@ static void jmb38x_ms_set_param(struct memstick_host *msh,
 			host_ctl &= ~HOST_CONTROL_FAST_CLK;
 			host_ctl |= HOST_CONTROL_IF_SERIAL
 				    << HOST_CONTROL_IF_SHIFT;
+			//host_ctl |= HOST_CONTROL_REI;
 		} else if (value == MEMSTICK_PAR4) {
 			host_ctl |= HOST_CONTROL_FAST_CLK;
 			host_ctl |= HOST_CONTROL_IF_PAR4
 				    << HOST_CONTROL_IF_SHIFT;
+			//host_ctl &= ~HOST_CONTROL_REI;
 		} else if (value == MEMSTICK_PAR8) {
 			host_ctl |= HOST_CONTROL_FAST_CLK;
 			host_ctl |= HOST_CONTROL_IF_PAR8
 				    << HOST_CONTROL_IF_SHIFT;
+			//host_ctl &= ~HOST_CONTROL_REI;
 		}
 		writel(host_ctl, host->addr + HOST_CONTROL);
 		break;
@@ -645,6 +694,9 @@ static int jmb38x_ms_resume(struct pci_dev *dev)
 	if (rc)
 		return rc;
 	pci_set_master(dev);
+
+	pci_read_config_dword(dev, 0xac, &rc);
+	pci_write_config_dword(dev, 0xac, rc | 0x00470000);
 
 	for (rc = 0; rc < jm->host_cnt; ++rc) {
 		if (!jm->hosts[rc])
@@ -750,6 +802,9 @@ static int jmb38x_ms_probe(struct pci_dev *pdev,
 		pci_dev_busy = 1;
 		goto err_out;
 	}
+
+	pci_read_config_dword(pdev, 0xac, &rc);
+	pci_write_config_dword(pdev, 0xac, rc | 0x00470000);
 
 	cnt = jmb38x_ms_count_slots(pdev);
 	if (!cnt) {

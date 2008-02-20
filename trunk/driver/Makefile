@@ -8,7 +8,7 @@ KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 #KERNELDIR ?= ~/linux-2.6
 PWD       := $(shell pwd)
 MODULE_INSTALLDIR = /lib/modules/$(shell uname -r)
-EXTRA_CFLAGS = -DDEBUG
+EXTRA_CFLAGS = -DDEBUG -DCONFIG_MEMSTICK_UNSAFE_RESUME
 
 all:
 	echo $(PWD)

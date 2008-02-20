@@ -799,12 +799,12 @@ static int mspro_block_switch_to_parallel(struct memstick_dev *card)
 	struct memstick_host *host = card->host;
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
 	struct mspro_param_register param = {
-		.system = MEMSTICK_SYS_PAR4,
+		.system = msb->system, // MEMSTICK_SYS_PAR4,
 		.data_count = 0,
 		.data_address = 0,
 		.tpc_param = 0
 	};
-
+/*
 	card->next_request = h_mspro_block_req_init;
 	msb->mrq_handler = h_mspro_block_default;
 	memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, &param,
@@ -816,7 +816,7 @@ static int mspro_block_switch_to_parallel(struct memstick_dev *card)
 
 	msb->system = MEMSTICK_SYS_PAR4;
 	host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_PAR4);
-
+*/
 	card->next_request = h_mspro_block_req_init;
 	msb->mrq_handler = h_mspro_block_default;
 	memstick_init_req(&card->current_mrq, MS_TPC_GET_INT, NULL, 1);
@@ -1278,7 +1278,7 @@ static int mspro_block_resume(struct memstick_dev *card)
 
 	struct mspro_block_data *new_msb;
 	struct memstick_host *host = card->host;
-	struct mspro_sys_attr s_attr, r_attr;
+	struct mspro_sys_attr *s_attr, *r_attr;
 	unsigned char cnt;
 
 	mutex_lock(&host->lock);
@@ -1295,12 +1295,8 @@ static int mspro_block_resume(struct memstick_dev *card)
 
 	for (cnt = 0; new_msb->attr_group.attrs[cnt]
 		      && msb->attr_group.attrs[cnt]; ++cnt) {
-		s_attr = container_of(new_msb->attr_group.attrs[cnt],
-				      struct mspro_sys_attr,
-				      dev_attr);
-		r_attr = container_of(msb->attr_group.attrs[cnt],
-				      struct mspro_sys_attr,
-				      dev_attr);
+		s_attr = mspro_from_sysfs_attr(new_msb->attr_group.attrs[cnt]);
+		r_attr = mspro_from_sysfs_attr(msb->attr_group.attrs[cnt]);
 
 		if (s_attr->id == MSPRO_BLOCK_ID_SYSINFO
 		    && r_attr->id == s_attr->id) {
