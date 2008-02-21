@@ -17,7 +17,7 @@
 
 #include "linux/memstick.h"
 
-#define PCI_DEVICE_ID_JMICRON_JMB238x_MS 0x2383
+#define PCI_DEVICE_ID_JMICRON_JMB238X_MS 0x2383
 #define DRIVER_NAME "jmb238x_ms"
 
 static int no_dma;
@@ -587,6 +587,25 @@ static void jmb238x_ms_request(struct memstick_host *msh)
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
+static void jmb238x_ms_reset(struct jmb238x_ms_host *host)
+{
+	unsigned int host_ctl = readl(host->addr + HOST_CONTROL);
+
+	writel(host_ctl | HOST_CONTROL_RESET_REQ | HOST_CONTROL_RESET,
+	       host->addr + HOST_CONTROL);
+
+	while (HOST_CONTROL_RESET_REQ
+	       & (host_ctl = readl(host->addr + HOST_CONTROL))) {
+		ndelay(100);
+		dev_dbg(&host->chip->pdev->dev, "reset\n");
+	}
+
+	writel(INT_STATUS_ALL, host->addr + INT_STATUS_ENABLE);
+	writel(INT_STATUS_ALL, host->addr + INT_SIGNAL_ENABLE);
+
+	dev_dbg(&host->chip->pdev->dev, "reset\n");
+}
+
 static void jmb238x_ms_set_param(struct memstick_host *msh,
 				enum memstick_param param,
 				int value)
@@ -600,18 +619,7 @@ static void jmb238x_ms_set_param(struct memstick_host *msh,
 	switch(param) {
 	case MEMSTICK_POWER:
 		if (value == MEMSTICK_POWER_ON) {
-			host_ctl = readl(host->addr + HOST_CONTROL);
-			writel(host_ctl | HOST_CONTROL_RESET_REQ
-			       | HOST_CONTROL_RESET,
-			       host->addr + HOST_CONTROL);
-
-			while (HOST_CONTROL_RESET_REQ
-			       & (host_ctl = readl(host->addr + HOST_CONTROL))) {
-				ndelay(100);
-				dev_dbg(msh->cdev.dev, "reset\n");
-			}
-
-			dev_dbg(msh->cdev.dev, "reset\n");
+			jmb238x_ms_reset(host);
 
 			writel(host->id ? PAD_PU_PD_ON_MS_SOCK1
 					  : PAD_PU_PD_ON_MS_SOCK0,
@@ -620,12 +628,11 @@ static void jmb238x_ms_set_param(struct memstick_host *msh,
 			writel(PAD_OUTPUT_ENABLE_MS,
 			       host->addr + PAD_OUTPUT_ENABLE);
 
+			host_ctl = readl(host->addr + HOST_CONTROL);
+			host_ctl |= 7;
 			writel(host_ctl | (HOST_CONTROL_POWER_EN
 					   | HOST_CONTROL_CLOCK_EN),
 			       host->addr + HOST_CONTROL);
-
-			writel(INT_STATUS_ALL, host->addr + INT_STATUS_ENABLE);
-			writel(INT_STATUS_ALL, host->addr + INT_SIGNAL_ENABLE);
 
 			dev_dbg(&host->chip->pdev->dev, "power on\n");
 		} else if (value == MEMSTICK_POWER_OFF) {
@@ -638,24 +645,30 @@ static void jmb238x_ms_set_param(struct memstick_host *msh,
 		}
 		break;
 	case MEMSTICK_INTERFACE:
+		jmb238x_ms_reset(host);
+
 		host_ctl = readl(host->addr + HOST_CONTROL);
 		host_ctl &= ~(3 << HOST_CONTROL_IF_SHIFT);
+		host_ctl |= 7;
 
 		if (value == MEMSTICK_SERIAL) {
 			host_ctl &= ~HOST_CONTROL_FAST_CLK;
 			host_ctl |= HOST_CONTROL_IF_SERIAL
 				    << HOST_CONTROL_IF_SHIFT;
 			host_ctl |= HOST_CONTROL_REI;
+			writel(0, host->addr + CLOCK_DELAY);
 		} else if (value == MEMSTICK_PAR4) {
 			host_ctl |= HOST_CONTROL_FAST_CLK;
 			host_ctl |= HOST_CONTROL_IF_PAR4
 				    << HOST_CONTROL_IF_SHIFT;
 			host_ctl &= ~HOST_CONTROL_REI;
+			writel(4, host->addr + CLOCK_DELAY);
 		} else if (value == MEMSTICK_PAR8) {
 			host_ctl |= HOST_CONTROL_FAST_CLK;
 			host_ctl |= HOST_CONTROL_IF_PAR8
 				    << HOST_CONTROL_IF_SHIFT;
 			host_ctl &= ~HOST_CONTROL_REI;
+			writel(4, host->addr + CLOCK_DELAY);
 		}
 		writel(host_ctl, host->addr + HOST_CONTROL);
 		break;
@@ -891,7 +904,7 @@ static void jmb238x_ms_remove(struct pci_dev *dev)
 }
 
 static struct pci_device_id jmb238x_ms_id_tbl [] = {
-	{ PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_jmb238x_MS, PCI_ANY_ID,
+	{ PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB238X_MS, PCI_ANY_ID,
 	  PCI_ANY_ID, 0, 0, 0 },
 	{ }
 };
