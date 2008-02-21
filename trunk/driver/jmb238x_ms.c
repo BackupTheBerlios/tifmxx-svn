@@ -637,7 +637,8 @@ static void jmb238x_ms_set_param(struct memstick_host *msh,
 			dev_dbg(&host->chip->pdev->dev, "power on\n");
 		} else if (value == MEMSTICK_POWER_OFF) {
 			writel(readl(host->addr + HOST_CONTROL)
-			       & ~HOST_CONTROL_POWER_EN,
+			       & ~(HOST_CONTROL_POWER_EN
+				   | HOST_CONTROL_CLOCK_EN),
 			       host->addr +  HOST_CONTROL);
 			writel(0, host->addr + PAD_OUTPUT_ENABLE);
 			writel(PAD_PU_PD_OFF, host->addr + PAD_PU_PD);
@@ -645,11 +646,11 @@ static void jmb238x_ms_set_param(struct memstick_host *msh,
 		}
 		break;
 	case MEMSTICK_INTERFACE:
-		jmb238x_ms_reset(host);
+		//jmb238x_ms_reset(host);
 
 		host_ctl = readl(host->addr + HOST_CONTROL);
 		host_ctl &= ~(3 << HOST_CONTROL_IF_SHIFT);
-		host_ctl |= 7;
+		//host_ctl |= 7;
 
 		if (value == MEMSTICK_SERIAL) {
 			host_ctl &= ~HOST_CONTROL_FAST_CLK;
