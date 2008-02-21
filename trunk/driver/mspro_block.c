@@ -804,7 +804,7 @@ static int mspro_block_switch_to_parallel(struct memstick_dev *card)
 		.data_address = 0,
 		.tpc_param = 0
 	};
-/*
+
 	card->next_request = h_mspro_block_req_init;
 	msb->mrq_handler = h_mspro_block_default;
 	memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, &param,
@@ -816,7 +816,7 @@ static int mspro_block_switch_to_parallel(struct memstick_dev *card)
 
 	msb->system = MEMSTICK_SYS_PAR4;
 	host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_PAR4);
-*/
+
 	card->next_request = h_mspro_block_req_init;
 	msb->mrq_handler = h_mspro_block_default;
 	memstick_init_req(&card->current_mrq, MS_TPC_GET_INT, NULL, 1);
