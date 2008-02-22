@@ -1,5 +1,5 @@
 /*
- *  jmb238x_ms.c - JMicron jmb238x MemoryStick card reader
+ *  jmb38x_ms.c - JMicron jmb38x MemoryStick card reader
  *
  *  Copyright (C) 2008 Alex Dubov <oakad@yahoo.com>
  *
@@ -17,8 +17,8 @@
 
 #include "linux/memstick.h"
 
-#define PCI_DEVICE_ID_JMICRON_JMB238X_MS 0x2383
-#define DRIVER_NAME "jmb238x_ms"
+#define PCI_DEVICE_ID_JMICRON_JMB38X_MS 0x2383
+#define DRIVER_NAME "jmb38x_ms"
 
 static int no_dma;
 module_param(no_dma, bool, 0644);
@@ -47,8 +47,8 @@ enum {
 	VERSION           = 0x50
 };
 
-struct jmb238x_ms_host {
-	struct jmb238x_ms        *chip;
+struct jmb38x_ms_host {
+	struct jmb38x_ms        *chip;
 	void __iomem            *addr;
 	spinlock_t              lock;
 	int                     id;
@@ -65,7 +65,7 @@ struct jmb238x_ms_host {
 	unsigned int            io_word[2];
 };
 
-struct jmb238x_ms {
+struct jmb38x_ms {
 	struct pci_dev        *pdev;
 	int                   host_cnt;
 	struct memstick_host  *hosts[];
@@ -134,7 +134,7 @@ static inline struct page *sg_page(struct scatterlist *sg)
         return sg->page;
 }
 
-unsigned int jmb238x_ms_read_data(struct jmb238x_ms_host *host,
+unsigned int jmb38x_ms_read_data(struct jmb38x_ms_host *host,
 				 unsigned char *buf, unsigned int length)
 {
 	unsigned int t_val = 0, off = 0;
@@ -174,7 +174,7 @@ unsigned int jmb238x_ms_read_data(struct jmb238x_ms_host *host,
 	return off;
 }
 
-unsigned int jmb238x_ms_read_reg_data(struct jmb238x_ms_host *host,
+unsigned int jmb38x_ms_read_reg_data(struct jmb38x_ms_host *host,
 				     unsigned char *buf, unsigned int length)
 {
 	unsigned int off = 0;
@@ -199,7 +199,7 @@ unsigned int jmb238x_ms_read_reg_data(struct jmb238x_ms_host *host,
 	return off;
 }
 
-unsigned int jmb238x_ms_write_data(struct jmb238x_ms_host *host,
+unsigned int jmb38x_ms_write_data(struct jmb38x_ms_host *host,
 				  unsigned char *buf, unsigned int length)
 {
 	unsigned int t_val = 0, off = 0;
@@ -255,7 +255,7 @@ unsigned int jmb238x_ms_write_data(struct jmb238x_ms_host *host,
 	return off;
 }
 
-unsigned int jmb238x_ms_write_reg_data(struct jmb238x_ms_host *host,
+unsigned int jmb38x_ms_write_reg_data(struct jmb38x_ms_host *host,
 				      unsigned char *buf, unsigned int length)
 {
 	unsigned int off = 0;
@@ -280,7 +280,7 @@ unsigned int jmb238x_ms_write_reg_data(struct jmb238x_ms_host *host,
 	return off;
 }
 
-static int jmb238x_ms_transfer_data(struct jmb238x_ms_host *host)
+static int jmb38x_ms_transfer_data(struct jmb38x_ms_host *host)
 {
 	unsigned int length;
 	unsigned int off;
@@ -314,12 +314,12 @@ static int jmb238x_ms_transfer_data(struct jmb238x_ms_host *host)
 
 		if (host->req->data_dir == WRITE)
 			t_size = !(host->cmd_flags & REG_DATA)
-				 ? jmb238x_ms_write_data(host, buf, p_cnt)
-				 : jmb238x_ms_write_reg_data(host, buf, p_cnt);
+				 ? jmb38x_ms_write_data(host, buf, p_cnt)
+				 : jmb38x_ms_write_reg_data(host, buf, p_cnt);
 		else
 			t_size = !(host->cmd_flags & REG_DATA)
-				 ? jmb238x_ms_read_data(host, buf, p_cnt)
-				 : jmb238x_ms_read_reg_data(host, buf, p_cnt);
+				 ? jmb38x_ms_read_data(host, buf, p_cnt)
+				 : jmb38x_ms_read_reg_data(host, buf, p_cnt);
 
 		if (host->req->long_data)
 			kunmap_atomic(buf - p_off, KM_BIO_SRC_IRQ);
@@ -336,9 +336,9 @@ static int jmb238x_ms_transfer_data(struct jmb238x_ms_host *host)
 	return !length;
 }
 
-static int jmb238x_ms_issue_cmd(struct memstick_host *msh)
+static int jmb38x_ms_issue_cmd(struct memstick_host *msh)
 {
-	struct jmb238x_ms_host *host = memstick_priv(msh);
+	struct jmb38x_ms_host *host = memstick_priv(msh);
 	unsigned char *data;
 	unsigned int data_len, cmd, t_val;
 
@@ -417,7 +417,7 @@ static int jmb238x_ms_issue_cmd(struct memstick_host *msh)
 		}
 
 		if (host->req->data_dir == WRITE) {
-			jmb238x_ms_transfer_data(host);
+			jmb38x_ms_transfer_data(host);
 
 			if (host->cmd_flags & REG_DATA) {
 				writel(host->io_word[0], host->addr + TPC_P0);
@@ -432,9 +432,9 @@ static int jmb238x_ms_issue_cmd(struct memstick_host *msh)
 	return 0;
 }
 
-static void jmb238x_ms_complete_cmd(struct memstick_host *msh, int last)
+static void jmb38x_ms_complete_cmd(struct memstick_host *msh, int last)
 {
-	struct jmb238x_ms_host *host = memstick_priv(msh);
+	struct jmb38x_ms_host *host = memstick_priv(msh);
 	unsigned int t_val = 0;
 	int rc;
 
@@ -471,7 +471,7 @@ static void jmb238x_ms_complete_cmd(struct memstick_host *msh, int last)
 	if (!last) {
 		do {
 			rc = memstick_next_req(msh, &host->req);
-		} while (!rc && jmb238x_ms_issue_cmd(msh));
+		} while (!rc && jmb38x_ms_issue_cmd(msh));
 	} else {
 		do {
 			rc = memstick_next_req(msh, &host->req);
@@ -481,10 +481,10 @@ static void jmb238x_ms_complete_cmd(struct memstick_host *msh, int last)
 	}
 }
 
-static irqreturn_t jmb238x_ms_isr(int irq, void *dev_id)
+static irqreturn_t jmb38x_ms_isr(int irq, void *dev_id)
 {
 	struct memstick_host *msh = dev_id;
-	struct jmb238x_ms_host *host = memstick_priv(msh);
+	struct jmb38x_ms_host *host = memstick_priv(msh);
 	unsigned int irq_status;
 
 	spin_lock(&host->lock);
@@ -505,10 +505,10 @@ static irqreturn_t jmb238x_ms_isr(int irq, void *dev_id)
 			if (!(host->cmd_flags & DMA_DATA)) {
 				if (irq_status & (INT_STATUS_FIFO_RRDY
 						  | INT_STATUS_FIFO_WRDY))
-					jmb238x_ms_transfer_data(host);
+					jmb38x_ms_transfer_data(host);
 
 				if (irq_status & INT_STATUS_EOTRAN) {
-					jmb238x_ms_transfer_data(host);
+					jmb38x_ms_transfer_data(host);
 					host->cmd_flags |= FIFO_READY;
 				}
 			} else {
@@ -528,7 +528,7 @@ static irqreturn_t jmb238x_ms_isr(int irq, void *dev_id)
 								+ TPC_P1);
 						host->io_pos = 8;
 
-						jmb238x_ms_transfer_data(host);
+						jmb38x_ms_transfer_data(host);
 					}
 					host->cmd_flags |= FIFO_READY;
 				}
@@ -547,30 +547,30 @@ static irqreturn_t jmb238x_ms_isr(int irq, void *dev_id)
 	    && (((host->cmd_flags & CMD_READY)
 		 && (host->cmd_flags & FIFO_READY))
 		|| host->req->error))
-		jmb238x_ms_complete_cmd(msh, 0);
+		jmb38x_ms_complete_cmd(msh, 0);
 
 	spin_unlock(&host->lock);
 	return IRQ_HANDLED;
 }
 
-static void jmb238x_ms_abort(unsigned long data)
+static void jmb38x_ms_abort(unsigned long data)
 {
 	struct memstick_host *msh = (struct memstick_host *)data;
-	struct jmb238x_ms_host *host = memstick_priv(msh);
+	struct jmb38x_ms_host *host = memstick_priv(msh);
 	unsigned long flags;
 
 	dev_dbg(&host->chip->pdev->dev, "abort\n");
 	spin_lock_irqsave(&host->lock, flags);
 	if (host->req) {
 		host->req->error = -ETIME;
-		jmb238x_ms_complete_cmd(msh, 0);
+		jmb38x_ms_complete_cmd(msh, 0);
 	}
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
-static void jmb238x_ms_request(struct memstick_host *msh)
+static void jmb38x_ms_request(struct memstick_host *msh)
 {
-	struct jmb238x_ms_host *host = memstick_priv(msh);
+	struct jmb38x_ms_host *host = memstick_priv(msh);
 	unsigned long flags;
 	int rc;
 
@@ -583,11 +583,11 @@ static void jmb238x_ms_request(struct memstick_host *msh)
 
 	do {
 		rc = memstick_next_req(msh, &host->req);
-	} while (!rc && jmb238x_ms_issue_cmd(msh));
+	} while (!rc && jmb38x_ms_issue_cmd(msh));
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
-static void jmb238x_ms_reset(struct jmb238x_ms_host *host)
+static void jmb38x_ms_reset(struct jmb38x_ms_host *host)
 {
 	unsigned int host_ctl = readl(host->addr + HOST_CONTROL);
 
@@ -606,11 +606,11 @@ static void jmb238x_ms_reset(struct jmb238x_ms_host *host)
 	dev_dbg(&host->chip->pdev->dev, "reset\n");
 }
 
-static void jmb238x_ms_set_param(struct memstick_host *msh,
+static void jmb38x_ms_set_param(struct memstick_host *msh,
 				enum memstick_param param,
 				int value)
 {
-	struct jmb238x_ms_host *host = memstick_priv(msh);
+	struct jmb38x_ms_host *host = memstick_priv(msh);
 	unsigned int host_ctl;
 	unsigned long flags;
 
@@ -619,7 +619,7 @@ static void jmb238x_ms_set_param(struct memstick_host *msh,
 	switch(param) {
 	case MEMSTICK_POWER:
 		if (value == MEMSTICK_POWER_ON) {
-			jmb238x_ms_reset(host);
+			jmb38x_ms_reset(host);
 
 			writel(host->id ? PAD_PU_PD_ON_MS_SOCK1
 					  : PAD_PU_PD_ON_MS_SOCK0,
@@ -646,7 +646,7 @@ static void jmb238x_ms_set_param(struct memstick_host *msh,
 		}
 		break;
 	case MEMSTICK_INTERFACE:
-		//jmb238x_ms_reset(host);
+		//jmb38x_ms_reset(host);
 
 		host_ctl = readl(host->addr + HOST_CONTROL);
 		host_ctl &= ~(3 << HOST_CONTROL_IF_SHIFT);
@@ -680,9 +680,9 @@ static void jmb238x_ms_set_param(struct memstick_host *msh,
 
 #ifdef CONFIG_PM
 
-static int jmb238x_ms_suspend(struct pci_dev *dev, pm_message_t state)
+static int jmb38x_ms_suspend(struct pci_dev *dev, pm_message_t state)
 {
-	struct jmb238x_ms *jm = pci_get_drvdata(dev);
+	struct jmb38x_ms *jm = pci_get_drvdata(dev);
 	int cnt;
 
 	for (cnt = 0; cnt < jm->host_cnt; ++cnt) {
@@ -698,9 +698,9 @@ static int jmb238x_ms_suspend(struct pci_dev *dev, pm_message_t state)
 	return 0;
 }
 
-static int jmb238x_ms_resume(struct pci_dev *dev)
+static int jmb38x_ms_resume(struct pci_dev *dev)
 {
-	struct jmb238x_ms *jm = pci_get_drvdata(dev);
+	struct jmb38x_ms *jm = pci_get_drvdata(dev);
 	int rc;
 
 	pci_set_power_state(dev, PCI_D0);
@@ -725,12 +725,12 @@ static int jmb238x_ms_resume(struct pci_dev *dev)
 
 #else
 
-#define jmb238x_ms_suspend NULL
-#define jmb238x_ms_resume NULL
+#define jmb38x_ms_suspend NULL
+#define jmb38x_ms_resume NULL
 
 #endif /* CONFIG_PM */
 
-static int jmb238x_ms_count_slots(struct pci_dev *pdev)
+static int jmb38x_ms_count_slots(struct pci_dev *pdev)
 {
 	int cnt, rc = 0;
 
@@ -746,12 +746,12 @@ static int jmb238x_ms_count_slots(struct pci_dev *pdev)
 	return rc;
 }
 
-static struct memstick_host* jmb238x_ms_alloc_host(struct jmb238x_ms *jm, int cnt)
+static struct memstick_host* jmb38x_ms_alloc_host(struct jmb38x_ms *jm, int cnt)
 {
 	struct memstick_host *msh;
-	struct jmb238x_ms_host *host;
+	struct jmb38x_ms_host *host;
 
-	msh = memstick_alloc_host(sizeof(struct jmb238x_ms_host),
+	msh = memstick_alloc_host(sizeof(struct jmb38x_ms_host),
 				  &jm->pdev->dev);
 	if (!msh)
 		return NULL;
@@ -769,14 +769,14 @@ static struct memstick_host* jmb238x_ms_alloc_host(struct jmb238x_ms *jm, int cn
 		 host->id);
 	host->irq = jm->pdev->irq;
 	host->timeout_jiffies = msecs_to_jiffies(4000);
-	msh->request = jmb238x_ms_request;
-	msh->set_param = jmb238x_ms_set_param;
+	msh->request = jmb38x_ms_request;
+	msh->set_param = jmb38x_ms_set_param;
 	msh->caps = MEMSTICK_CAP_AUTO_GET_INT | MEMSTICK_CAP_PAR4
 		    | MEMSTICK_CAP_PAR8;
 
-	setup_timer(&host->timer, jmb238x_ms_abort, (unsigned long)msh);
+	setup_timer(&host->timer, jmb38x_ms_abort, (unsigned long)msh);
 
-	if (!request_irq(host->irq, jmb238x_ms_isr, IRQF_SHARED, host->host_id,
+	if (!request_irq(host->irq, jmb38x_ms_isr, IRQF_SHARED, host->host_id,
 			 msh))
 		return msh;
 
@@ -786,19 +786,19 @@ err_out_free:
 	return NULL;
 }
 
-static void jmb238x_ms_free_host(struct memstick_host *msh)
+static void jmb38x_ms_free_host(struct memstick_host *msh)
 {
-	struct jmb238x_ms_host *host = memstick_priv(msh);
+	struct jmb38x_ms_host *host = memstick_priv(msh);
 
 	free_irq(host->irq, msh);
 	iounmap(host->addr);
 	memstick_free_host(msh);
 }
 
-static int jmb238x_ms_probe(struct pci_dev *pdev,
+static int jmb38x_ms_probe(struct pci_dev *pdev,
 			   const struct pci_device_id *dev_id)
 {
-	struct jmb238x_ms *jm;
+	struct jmb38x_ms *jm;
 	int pci_dev_busy = 0;
 	int rc, cnt;
 
@@ -821,14 +821,14 @@ static int jmb238x_ms_probe(struct pci_dev *pdev,
 	pci_read_config_dword(pdev, 0xac, &rc);
 	pci_write_config_dword(pdev, 0xac, rc | 0x00470000);
 
-	cnt = jmb238x_ms_count_slots(pdev);
+	cnt = jmb38x_ms_count_slots(pdev);
 	if (!cnt) {
 		rc = -ENODEV;
 		pci_dev_busy = 1;
 		goto err_out;
 	}
 
-	jm = kzalloc(sizeof(struct jmb238x_ms)
+	jm = kzalloc(sizeof(struct jmb38x_ms)
 		     + cnt * sizeof(struct memstick_host*), GFP_KERNEL);
 	if (!jm) {
 		rc = -ENOMEM;
@@ -840,14 +840,14 @@ static int jmb238x_ms_probe(struct pci_dev *pdev,
 	pci_set_drvdata(pdev, jm);
 
 	for (cnt = 0; cnt < jm->host_cnt; ++cnt) {
-		jm->hosts[cnt] = jmb238x_ms_alloc_host(jm, cnt);
+		jm->hosts[cnt] = jmb38x_ms_alloc_host(jm, cnt);
 		if (!jm->hosts[cnt])
 			break;
 
 		rc = memstick_add_host(jm->hosts[cnt]);
 
 		if (rc) {
-			jmb238x_ms_free_host(jm->hosts[cnt]);
+			jmb38x_ms_free_host(jm->hosts[cnt]);
 			jm->hosts[cnt] = NULL;
 			break;
 		}
@@ -868,10 +868,10 @@ err_out:
 	return rc;
 }
 
-static void jmb238x_ms_remove(struct pci_dev *dev)
+static void jmb38x_ms_remove(struct pci_dev *dev)
 {
-	struct jmb238x_ms *jm = pci_get_drvdata(dev);
-	struct jmb238x_ms_host *host;
+	struct jmb38x_ms *jm = pci_get_drvdata(dev);
+	struct jmb38x_ms_host *host;
 	int cnt;
 	unsigned long flags;
 
@@ -888,14 +888,14 @@ static void jmb238x_ms_remove(struct pci_dev *dev)
 		spin_lock_irqsave(&host->lock, flags);
 		if (host->req) {
 			host->req->error = -ETIME;
-			jmb238x_ms_complete_cmd(jm->hosts[cnt], 1);
+			jmb38x_ms_complete_cmd(jm->hosts[cnt], 1);
 		}
 		spin_unlock_irqrestore(&host->lock, flags);
 
 		memstick_remove_host(jm->hosts[cnt]);
 		dev_dbg(&jm->pdev->dev, "host removed\n");
 
-		jmb238x_ms_free_host(jm->hosts[cnt]);
+		jmb38x_ms_free_host(jm->hosts[cnt]);
 	}
 
 	pci_set_drvdata(dev, NULL);
@@ -904,35 +904,35 @@ static void jmb238x_ms_remove(struct pci_dev *dev)
 	kfree(jm);
 }
 
-static struct pci_device_id jmb238x_ms_id_tbl [] = {
-	{ PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB238X_MS, PCI_ANY_ID,
+static struct pci_device_id jmb38x_ms_id_tbl [] = {
+	{ PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB38X_MS, PCI_ANY_ID,
 	  PCI_ANY_ID, 0, 0, 0 },
 	{ }
 };
 
-static struct pci_driver jmb238x_ms_driver = {
+static struct pci_driver jmb38x_ms_driver = {
 	.name = DRIVER_NAME,
-	.id_table = jmb238x_ms_id_tbl,
-	.probe = jmb238x_ms_probe,
-	.remove = jmb238x_ms_remove,
-	.suspend = jmb238x_ms_suspend,
-	.resume = jmb238x_ms_resume
+	.id_table = jmb38x_ms_id_tbl,
+	.probe = jmb38x_ms_probe,
+	.remove = jmb38x_ms_remove,
+	.suspend = jmb38x_ms_suspend,
+	.resume = jmb38x_ms_resume
 };
 
-static int __init jmb238x_ms_init(void)
+static int __init jmb38x_ms_init(void)
 {
-        return pci_register_driver(&jmb238x_ms_driver);
+        return pci_register_driver(&jmb38x_ms_driver);
 }
 
-static void __exit jmb238x_ms_exit(void)
+static void __exit jmb38x_ms_exit(void)
 {
-        pci_unregister_driver(&jmb238x_ms_driver);
+        pci_unregister_driver(&jmb38x_ms_driver);
 }
 
 MODULE_AUTHOR("Alex Dubov");
-MODULE_DESCRIPTION("JMicron jmb238x MemoryStick driver");
+MODULE_DESCRIPTION("JMicron jmb38x MemoryStick driver");
 MODULE_LICENSE("GPL");
-MODULE_DEVICE_TABLE(pci, jmb238x_ms_id_tbl);
+MODULE_DEVICE_TABLE(pci, jmb38x_ms_id_tbl);
 
-module_init(jmb238x_ms_init);
-module_exit(jmb238x_ms_exit);
+module_init(jmb38x_ms_init);
+module_exit(jmb38x_ms_exit);
