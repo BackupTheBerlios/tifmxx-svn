@@ -148,6 +148,17 @@ struct mspro_mbr {
 	unsigned int  sectors_per_partition;
 } __attribute__((packed));
 
+struct mspro_specfile {
+	char           name[8];
+	char           ext[3];
+	unsigned char  attr;
+	unsigned char  reserved[10];
+	unsigned short time;
+	unsigned short date;
+	unsigned short cluster;
+	unsigned int   size;
+} __attribute__((packed));
+
 struct mspro_devinfo {
 	unsigned short cylinders;
 	unsigned short heads;
@@ -331,60 +342,74 @@ static ssize_t mspro_block_attr_show_sysinfo(struct device *dev,
 						     dev_attr);
 	struct mspro_sys_info *x_sys = x_attr->data;
 	ssize_t rc = 0;
+	int date_tz = 0, date_tz_f = 0;
 
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "class: %x\n",
-		       x_sys->class);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "block size: %x\n",
-		       be16_to_cpu(x_sys->block_size));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "block count: %x\n",
-		       be16_to_cpu(x_sys->block_count));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "user block count: %x\n",
-		       be16_to_cpu(x_sys->user_block_count));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "page size: %x\n",
-		       be16_to_cpu(x_sys->page_size));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "assembly date: "
-		       "%d %04u-%02u-%02u %02u:%02u:%02u\n",
-		       x_sys->assembly_date[0],
-		       be16_to_cpu(*(unsigned short *)&x_sys->assembly_date[1]),
-		       x_sys->assembly_date[3], x_sys->assembly_date[4],
-		       x_sys->assembly_date[5], x_sys->assembly_date[6],
-		       x_sys->assembly_date[7]);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "serial number: %x\n",
-		       be32_to_cpu(x_sys->serial_number));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "assembly maker code: %x\n",
-		       x_sys->assembly_maker_code);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "assembly model code: "
-		       "%02x%02x%02x\n", x_sys->assembly_model_code[0],
-		       x_sys->assembly_model_code[1],
-		       x_sys->assembly_model_code[2]);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "memory maker code: %x\n",
-		       be16_to_cpu(x_sys->memory_maker_code));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "memory model code: %x\n",
-		       be16_to_cpu(x_sys->memory_model_code));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "vcc: %x\n",
-		       x_sys->vcc);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "vpp: %x\n",
-		       x_sys->vpp);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "controller number: %x\n",
-		       be16_to_cpu(x_sys->controller_number));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "controller function: %x\n",
-		       be16_to_cpu(x_sys->controller_function));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "start sector: %x\n",
-		       be16_to_cpu(x_sys->start_sector));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "unit size: %x\n",
-		       be16_to_cpu(x_sys->unit_size));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "sub class: %x\n",
-		       x_sys->ms_sub_class);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "interface type: %x\n",
-		       x_sys->interface_type);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "controller code: %x\n",
-		       be16_to_cpu(x_sys->controller_code));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "format type: %x\n",
-		       x_sys->format_type);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "device type: %x\n",
-		       x_sys->device_type);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "mspro id: %s\n",
-		       x_sys->mspro_id);
+	if (x_sys->assembly_date[0] > 0x80U) {
+		date_tz = (~x_sys->assembly_date[0]) + 1;
+		date_tz_f = date_tz & 3;
+		date_tz >>= 2;
+		date_tz = -date_tz;
+		date_tz_f *= 15;
+	} else if (x_sys->assembly_date[0] < 0x80U) {
+		date_tz = x_sys->assembly_date[0];
+		date_tz_f = date_tz & 3;
+		date_tz >>= 2;
+		date_tz_f *= 15;
+	}
+
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "class: %x\n",
+			x_sys->class);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "block size: %x\n",
+			be16_to_cpu(x_sys->block_size));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "block count: %x\n",
+			be16_to_cpu(x_sys->block_count));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "user block count: %x\n",
+			be16_to_cpu(x_sys->user_block_count));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "page size: %x\n",
+			be16_to_cpu(x_sys->page_size));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "assembly date: "
+			"GMT%+d:%d %04u-%02u-%02u %02u:%02u:%02u\n",
+			date_tz, date_tz_f,
+			be16_to_cpu(*(unsigned short *)&x_sys->assembly_date[1]),
+			x_sys->assembly_date[3], x_sys->assembly_date[4],
+			x_sys->assembly_date[5], x_sys->assembly_date[6],
+			x_sys->assembly_date[7]);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "serial number: %x\n",
+			be32_to_cpu(x_sys->serial_number));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "assembly maker code: %x\n",
+			x_sys->assembly_maker_code);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "assembly model code: "
+			"%02x%02x%02x\n", x_sys->assembly_model_code[0],
+			x_sys->assembly_model_code[1],
+			x_sys->assembly_model_code[2]);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "memory maker code: %x\n",
+			be16_to_cpu(x_sys->memory_maker_code));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "memory model code: %x\n",
+			be16_to_cpu(x_sys->memory_model_code));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "vcc: %x\n",
+			x_sys->vcc);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "vpp: %x\n",
+			x_sys->vpp);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "controller number: %x\n",
+			be16_to_cpu(x_sys->controller_number));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "controller function: %x\n",
+			be16_to_cpu(x_sys->controller_function));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "start sector: %x\n",
+			be16_to_cpu(x_sys->start_sector));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "unit size: %x\n",
+			be16_to_cpu(x_sys->unit_size));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "sub class: %x\n",
+			x_sys->ms_sub_class);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "interface type: %x\n",
+			x_sys->interface_type);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "controller code: %x\n",
+			be16_to_cpu(x_sys->controller_code));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "format type: %x\n",
+			x_sys->format_type);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "device type: %x\n",
+			x_sys->device_type);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "mspro id: %s\n",
+			x_sys->mspro_id);
 	return rc;
 }
 
@@ -409,27 +434,62 @@ static ssize_t mspro_block_attr_show_mbr(struct device *dev,
 	struct mspro_mbr *x_mbr = x_attr->data;
 	ssize_t rc = 0;
 
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "boot partition: %x\n",
-		       x_mbr->boot_partition);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "start head: %x\n",
-		       x_mbr->start_head);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "start sector: %x\n",
-		       x_mbr->start_sector);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "start cylinder: %x\n",
-		       x_mbr->start_cylinder);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "partition type: %x\n",
-		       x_mbr->partition_type);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "end head: %x\n",
-		       x_mbr->end_head);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "end sector: %x\n",
-		       x_mbr->end_sector);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "end cylinder: %x\n",
-		       x_mbr->end_cylinder);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "start sectors: %x\n",
-		       x_mbr->start_sectors);
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc,
-		       "sectors per partition: %x\n",
-		       x_mbr->sectors_per_partition);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "boot partition: %x\n",
+			x_mbr->boot_partition);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "start head: %x\n",
+			x_mbr->start_head);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "start sector: %x\n",
+			x_mbr->start_sector);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "start cylinder: %x\n",
+			x_mbr->start_cylinder);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "partition type: %x\n",
+			x_mbr->partition_type);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "end head: %x\n",
+			x_mbr->end_head);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "end sector: %x\n",
+			x_mbr->end_sector);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "end cylinder: %x\n",
+			x_mbr->end_cylinder);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "start sectors: %x\n",
+			x_mbr->start_sectors);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc,
+			"sectors per partition: %x\n",
+			x_mbr->sectors_per_partition);
+	return rc;
+}
+
+static ssize_t mspro_block_attr_show_specfile(struct device *dev,
+					      struct device_attribute *attr,
+					      char *buffer)
+{
+	struct mspro_sys_attr *x_attr = container_of(attr,
+						     struct mspro_sys_attr,
+						     dev_attr);
+	struct mspro_specfile *x_spfile = x_attr->data;
+	char name[9], ext[4];
+	ssize_t rc = 0;
+
+	memcpy(name, x_spfile->name, 8);
+	name[8] = 0;
+	memcpy(ext, x_spfile->ext, 3);
+	ext[3] = 0;
+
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "name: %s\n", name);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "ext: %s\n", ext);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "attribute: %x\n",
+			x_spfile->attr);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "time: %d:%d:%d\n",
+			x_spfile->time >> 11,
+			(x_spfile->time >> 5) & 0x3f,
+			(x_spfile->time & 0x1f) * 2);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "date: %d-%d-%d\n",
+			(x_spfile->date >> 9) + 1980,
+			(x_spfile->date >> 5) & 0xf,
+			x_spfile->date & 0x1f);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "start cluster: %x\n",
+			x_spfile->cluster);
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "size: %x\n",
+			x_spfile->size);
 	return rc;
 }
 
@@ -443,16 +503,16 @@ static ssize_t mspro_block_attr_show_devinfo(struct device *dev,
 	struct mspro_devinfo *x_devinfo = x_attr->data;
 	ssize_t rc = 0;
 
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "cylinders: %x\n",
-		       be16_to_cpu(x_devinfo->cylinders));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "heads: %x\n",
-		       be16_to_cpu(x_devinfo->heads));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "bytes per track: %x\n",
-		       be16_to_cpu(x_devinfo->bytes_per_track));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "bytes per sector: %x\n",
-		       be16_to_cpu(x_devinfo->bytes_per_sector));
-	rc += snprintf(buffer + rc, PAGE_SIZE - rc, "sectors per track: %x\n",
-		       be16_to_cpu(x_devinfo->sectors_per_track));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "cylinders: %x\n",
+			be16_to_cpu(x_devinfo->cylinders));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "heads: %x\n",
+			be16_to_cpu(x_devinfo->heads));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "bytes per track: %x\n",
+			be16_to_cpu(x_devinfo->bytes_per_track));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "bytes per sector: %x\n",
+			be16_to_cpu(x_devinfo->bytes_per_sector));
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "sectors per track: %x\n",
+			be16_to_cpu(x_devinfo->sectors_per_track));
 	return rc;
 }
 
@@ -465,6 +525,9 @@ static sysfs_show_t mspro_block_attr_show(unsigned char tag)
 		return mspro_block_attr_show_modelname;
 	case MSPRO_BLOCK_ID_MBR:
 		return mspro_block_attr_show_mbr;
+	case MSPRO_BLOCK_ID_SPECFILEVALUES1:
+	case MSPRO_BLOCK_ID_SPECFILEVALUES2:
+		return mspro_block_attr_show_specfile;
 	case MSPRO_BLOCK_ID_DEVINFO:
 		return mspro_block_attr_show_devinfo;
 	default:
@@ -936,10 +999,10 @@ static int mspro_block_read_attributes(struct memstick_dev *card)
 			"size %x\n", cnt, attr->entries[cnt].id, addr, rc);
 		s_attr->id = attr->entries[cnt].id;
 		if (mspro_block_attr_name(s_attr->id))
-			snprintf(s_attr->name, sizeof(s_attr->name), "%s",
+			scnprintf(s_attr->name, sizeof(s_attr->name), "%s",
 				 mspro_block_attr_name(attr->entries[cnt].id));
 		else
-			snprintf(s_attr->name, sizeof(s_attr->name),
+			scnprintf(s_attr->name, sizeof(s_attr->name),
 				 "attr_x%02x", attr->entries[cnt].id);
 
 		s_attr->dev_attr.attr.name = s_attr->name;

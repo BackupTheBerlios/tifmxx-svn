@@ -1,6 +1,6 @@
-#obj-m += tifm_core.o tifm_7xx1.o tifm_sd.o
+obj-m += tifm_core.o tifm_7xx1.o tifm_sd.o
 obj-m += memstick.o mspro_block.o # ms_block.o 
-#obj-m += tifm_ms.o
+obj-m += tifm_ms.o
 obj-m += jmb38x_ms.o
 #obj-m += flash_bd.o
 
