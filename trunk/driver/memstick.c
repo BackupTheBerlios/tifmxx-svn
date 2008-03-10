@@ -298,8 +298,6 @@ void memstick_init_req_sg(struct memstick_request *mrq, unsigned char tpc,
 		mrq->need_card_int = 1;
 	else
 		mrq->need_card_int = 0;
-
-	mrq->get_int_reg = 0;
 }
 EXPORT_SYMBOL(memstick_init_req_sg);
 
@@ -333,8 +331,6 @@ void memstick_init_req(struct memstick_request *mrq, unsigned char tpc,
 		mrq->need_card_int = 1;
 	else
 		mrq->need_card_int = 0;
-
-	mrq->get_int_reg = 0;
 }
 EXPORT_SYMBOL(memstick_init_req);
 
@@ -364,6 +360,7 @@ static int h_memstick_read_dev_id(struct memstick_dev *card,
 			card->id.class = id_reg.class;
 		}
 		complete(&card->mrq_complete);
+		dev_dbg(&card->dev, "if_mode = %02x\n", id_reg.if_mode);
 		return -EAGAIN;
 	}
 }

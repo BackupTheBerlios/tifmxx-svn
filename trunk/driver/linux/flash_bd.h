@@ -1,5 +1,5 @@
 /*
- *  flash_bd.h - Simple flash to block device translation layer
+ *  Simple flash to block device translation layer
  *
  *  Copyright (C) 2008 Alex Dubov <oakad@yahoo.com>
  *
@@ -42,35 +42,22 @@ enum flash_bd_cmd {
 
 struct flash_bd_request {
 	enum flash_bd_cmd  cmd;
+	unsigned int       phy_block;
+	unsigned int       page_off;
+	unsigned int       page_cnt;
 	union {
-		struct { /* FBD_READ, FBD_WRITE, FBD_SKIP, FBD_ERASE */
+		 /* FBD_READ, FBD_WRITE - must be supplied elsewhere
+		  * FBD_READ_BUF, FBD_WRITE_BUF, FBD_FLUSH_BUF, FBD_FILL_BUF -
+		  * will be supplied by the flash_bd
+		  */
+		struct scatterlist *sg;
+		/* FBD_COPY */
+		struct {
 			unsigned int phy_block;
 			unsigned int page_off;
-			unsigned int page_cnt;
-		} rw_cmd;
-		struct { /* FBD_READ_BUF, FBD_WRITE_BUF */
-			unsigned int phy_block;
-			unsigned int page_off;
-			unsigned int page_cnt;
-			struct scatterlist sg;
-		} buf_rw_cmd;
-		struct { /* FBD_FLUSH_BUF, FBD_FILL_BUF */
-			unsigned int byte_cnt;
-			struct scatterlist sg;
-		} buf_ff_cmd;
-		struct { /* FBD_COPY */
-			unsigned int src_phy_block;
-			unsigned int src_page_off;
-			unsigned int dst_phy_block;
-			unsigned int dst_page_off;
-			unsigned int page_cnt;
-		} copy_cmd;
-		struct { /* FBD_BLOCK_MARK_1, FBD_BLOCK_MARK_2 */
-			unsigned int log_block;
-			unsigned int phy_block;
-			unsigned int page_off;
-			unsigned int page_cnt;
-		} mark_cmd;
+		} dst;
+		/* FBD_BLOCK_MARK_1, FBD_BLOCK_MARK_2 */
+		unsigned int log_block;
 	};
 };
 

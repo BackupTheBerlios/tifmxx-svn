@@ -343,6 +343,10 @@ static void tifm_ms_complete_cmd(struct tifm_ms *host)
 
 	del_timer(&host->timer);
 
+	host->req->int_reg = readl(sock->addr + SOCK_MS_STATUS) & 0xff;
+	host->req->int_reg = (host->req->int_reg & 1)
+			     | ((host->req->int_reg << 4) & 0xe0);
+
 	if (host->use_dma)
 		tifm_unmap_sg(sock, &host->req->sg, 1,
 			      host->req->data_dir == READ

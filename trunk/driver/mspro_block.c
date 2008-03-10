@@ -171,6 +171,7 @@ struct mspro_devinfo {
 struct mspro_block_data {
 	struct memstick_dev   *card;
 	unsigned int          usage_count;
+	unsigned int          caps;
 	struct gendisk        *disk;
 	struct request_queue  *queue;
 	spinlock_t            q_lock;
@@ -612,7 +613,6 @@ static int h_mspro_block_wait_for_ced(struct memstick_dev *card,
 static int h_mspro_block_transfer_data(struct memstick_dev *card,
 				       struct memstick_request **mrq)
 {
-	struct memstick_host *host = card->host;
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
 	unsigned char t_val = 0;
 	struct scatterlist t_sg = { 0 };
@@ -626,12 +626,12 @@ static int h_mspro_block_transfer_data(struct memstick_dev *card,
 	switch ((*mrq)->tpc) {
 	case MS_TPC_WRITE_REG:
 		memstick_init_req(*mrq, MS_TPC_SET_CMD, &msb->transfer_cmd, 1);
-		(*mrq)->get_int_reg = 1;
+		(*mrq)->need_card_int = 1;
 		return 0;
 	case MS_TPC_SET_CMD:
 		t_val = (*mrq)->int_reg;
 		memstick_init_req(*mrq, MS_TPC_GET_INT, NULL, 1);
-		if (host->caps & MEMSTICK_CAP_AUTO_GET_INT)
+		if (msb->caps & MEMSTICK_CAP_AUTO_GET_INT)
 			goto has_int_reg;
 		return 0;
 	case MS_TPC_GET_INT:
@@ -681,12 +681,12 @@ has_int_reg:
 					   ? MS_TPC_READ_LONG_DATA
 					   : MS_TPC_WRITE_LONG_DATA,
 				     &t_sg);
-		(*mrq)->get_int_reg = 1;
+		(*mrq)->need_card_int = 1;
 		return 0;
 	case MS_TPC_READ_LONG_DATA:
 	case MS_TPC_WRITE_LONG_DATA:
 		msb->current_page++;
-		if (host->caps & MEMSTICK_CAP_AUTO_GET_INT) {
+		if (msb->caps & MEMSTICK_CAP_AUTO_GET_INT) {
 			t_val = (*mrq)->int_reg;
 			goto has_int_reg;
 		} else {
@@ -858,15 +858,32 @@ static int mspro_block_wait_for_ced(struct memstick_dev *card)
 	return card->current_mrq.error;
 }
 
-static int mspro_block_switch_to_parallel(struct memstick_dev *card)
+static int mspro_block_switch_interface(struct memstick_dev *card,
+					unsigned int interface)
 {
 	struct memstick_host *host = card->host;
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
 	struct mspro_param_register param = {
-		.system = MEMSTICK_SYS_PAR4,
+		.system = 0,
 		.data_count = 0,
 		.data_address = 0,
 		.tpc_param = 0
+	};
+
+	switch (interface) {
+	case MEMSTICK_SERIAL:
+		param.system = MEMSTICK_SYS_SERIAL;
+		break;
+	case MEMSTICK_PAR4:
+		param.system = MEMSTICK_SYS_PAR4;
+		break;
+	case MEMSTICK_PAR8:
+		if (msb->system != MEMSTICK_SYS_PAR4)
+			return -EINVAL;
+		param.system = MEMSTICK_SYS_PAR8;
+		break;
+	default:
+		return -EINVAL;
 	};
 
 	card->next_request = h_mspro_block_req_init;
@@ -875,11 +892,13 @@ static int mspro_block_switch_to_parallel(struct memstick_dev *card)
 			  sizeof(param));
 	memstick_new_req(host);
 	wait_for_completion(&card->mrq_complete);
+	dev_dbg(&card->dev, "switch interface to %x, error %d\n", interface,
+		card->current_mrq.error);
 	if (card->current_mrq.error)
 		return card->current_mrq.error;
 
-	msb->system = MEMSTICK_SYS_PAR4;
-	host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_PAR4);
+	msb->system = param.system;
+	host->set_param(host, MEMSTICK_INTERFACE, interface);
 
 	card->next_request = h_mspro_block_req_init;
 	msb->mrq_handler = h_mspro_block_default;
@@ -890,7 +909,7 @@ static int mspro_block_switch_to_parallel(struct memstick_dev *card)
 	if (card->current_mrq.error) {
 		msb->system = MEMSTICK_SYS_SERIAL;
 		host->set_param(host, MEMSTICK_POWER, MEMSTICK_POWER_OFF);
-		msleep(1000);
+		msleep(10);
 		host->set_param(host, MEMSTICK_POWER, MEMSTICK_POWER_ON);
 		host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_SERIAL);
 
@@ -1094,16 +1113,29 @@ static int mspro_block_init_card(struct memstick_dev *card)
 	if (memstick_set_rw_addr(card))
 		return -EIO;
 
-	if (host->caps & MEMSTICK_CAP_PAR4) {
-		if (mspro_block_switch_to_parallel(card))
+	msb->caps = host->caps;
+	if (msb->caps & MEMSTICK_CAP_PAR4) {
+		if (mspro_block_switch_interface(card, MEMSTICK_PAR4)) {
 			printk(KERN_WARNING "%s: could not switch to "
-			       "parallel interface\n", card->dev.bus_id);
+			       "4-bit mode\n", card->dev.bus_id);
+			msb->caps &= ~MEMSTICK_CAP_PAR4;
+		} else if (msb->caps & MEMSTICK_CAP_PAR8) {
+			if (mspro_block_switch_interface(card,
+							 MEMSTICK_PAR8)) {
+				printk(KERN_WARNING "%s: could not switch to "
+				       "8-bit mode\n", card->dev.bus_id);
+				msb->caps &= ~MEMSTICK_CAP_PAR8;
+			}
+		}
 	}
 
+	msleep(200);
 	rc = mspro_block_wait_for_ced(card);
 	if (rc)
 		return rc;
 	dev_dbg(&card->dev, "card activated\n");
+	if (msb->system != MEMSTICK_SYS_SERIAL)
+		msb->caps |= MEMSTICK_CAP_AUTO_GET_INT;
 
 	card->next_request = h_mspro_block_req_init;
 	msb->mrq_handler = h_mspro_block_get_ro;
