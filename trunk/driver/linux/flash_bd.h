@@ -27,38 +27,43 @@ struct flash_bd;
 
 enum flash_bd_cmd {
 	FBD_NONE = 0,
-	FBD_READ,           /* read from media                             */
-	FBD_READ_BUF,       /* read from media into supplied buffer        */
-	FBD_FLUSH_BUF,      /* copy data from supplied buffer              */
-	FBD_SKIP,           /* pretend like reading from media             */
-	FBD_ERASE,          /* erase media block                           */
-	FBD_COPY,           /* media side page copy                        */
-	FBD_WRITE,          /* write to media                              */
-	FBD_WRITE_BUF,      /* write to media from supplied buffer         */
-	FBD_FILL_BUF,       /* copy data to supplied buffer                */
+	FBD_READ,           /* read from media                               */
+	FBD_READ_TMP,       /* read from media into temporary storage        */
+	FBD_FLUSH_TMP,      /* copy data from temporary to permanent storage */
+	FBD_SKIP,           /* pretend like reading from media               */
+	FBD_ERASE,          /* erase media block                             */
+	FBD_COPY,           /* media side page copy                          */
+	FBD_WRITE,          /* write to media                                */
+	FBD_WRITE_TMP,      /* write to media from temporary storage         */
+	FBD_FILL_TMP,       /* copy data from permanent to temporary storage */
 	FBD_BLOCK_MARK_1,   /* set media block log->phy entry (pre-write)  */
 	FBD_BLOCK_MARK_2    /* set media block log->phy entry (post-write) */
 };
 
 struct flash_bd_request {
 	enum flash_bd_cmd  cmd;
+	unsigned int       log_block;
 	unsigned int       phy_block;
-	unsigned int       page_off;
-	unsigned int       page_cnt;
 	union {
-		 /* FBD_READ, FBD_WRITE - must be supplied elsewhere
-		  * FBD_READ_BUF, FBD_WRITE_BUF, FBD_FLUSH_BUF, FBD_FILL_BUF -
-		  * will be supplied by the flash_bd
-		  */
-		struct scatterlist *sg;
-		/* FBD_COPY */
-		struct {
-			unsigned int phy_block;
-			unsigned int page_off;
-		} dst;
-		/* FBD_BLOCK_MARK_1, FBD_BLOCK_MARK_2 */
-		unsigned int log_block;
+		unsigned int page_off;
+		unsigned int byte_off; /* for FBD_FILL/FLUSH_TMP */
 	};
+	union {
+		unsigned int page_cnt;
+		unsigned int byte_cnt; /* for FBD_FILL/FLUSH_TMP */
+	};
+	/* FBD_READ, FBD_WRITE - must be supplied elsewhere
+	 * FBD_READ_BUF, FBD_WRITE_BUF, FBD_FLUSH_BUF, FBD_FILL_BUF, FBD_COPY -
+	 * will be supplied by the flash_bd
+	 * 
+	 */
+	struct scatterlist *sg;
+	unsigned int       extra_offset;
+	unsigned int       sg_count;
+	struct { /* used by FBD_COPY */
+		unsigned int phy_block;
+		unsigned int page_off;
+	} dst;
 };
 
 struct flash_bd* flash_bd_init(unsigned int phy_block_cnt,

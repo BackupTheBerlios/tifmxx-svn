@@ -441,7 +441,6 @@ static void memstick_power_on(struct memstick_host *host)
 {
 	host->set_param(host, MEMSTICK_POWER, MEMSTICK_POWER_ON);
 	host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_SERIAL);
-	msleep(1);
 }
 
 static void memstick_check(struct work_struct *work)
@@ -598,7 +597,8 @@ EXPORT_SYMBOL(memstick_suspend_host);
 void memstick_resume_host(struct memstick_host *host)
 {
 	mutex_lock(&host->lock);
-	host->set_param(host, MEMSTICK_POWER, MEMSTICK_POWER_ON);
+	if (host->card)
+		memstick_power_on(host);
 	mutex_unlock(&host->lock);
 	memstick_detect_change(host);
 }
