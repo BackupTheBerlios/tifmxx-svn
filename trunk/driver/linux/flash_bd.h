@@ -19,8 +19,6 @@
 #ifndef _FLASH_BD_H
 #define _FLASH_BD_H
 
-#include <linux/scatterlist.h>
-
 #define FLASH_BD_INVALID 0xffffffffU
 
 struct flash_bd;
@@ -36,14 +34,14 @@ enum flash_bd_cmd {
 	FBD_WRITE,          /* write to media                                */
 	FBD_WRITE_TMP,      /* write to media from temporary storage         */
 	FBD_FILL_TMP,       /* copy data from permanent to temporary storage */
-	FBD_BLOCK_MARK_1,   /* set media block log->phy entry (pre-write)  */
-	FBD_BLOCK_MARK_2    /* set media block log->phy entry (post-write) */
+	FBD_MARK            /* write only extradata to some pages            */
 };
 
 struct flash_bd_request {
-	enum flash_bd_cmd  cmd;
-	unsigned int       log_block;
-	unsigned int       phy_block;
+	enum flash_bd_cmd cmd;
+	unsigned int      zone;
+	unsigned int      log_block;
+	unsigned int      phy_block;
 	union {
 		unsigned int page_off;
 		unsigned int byte_off; /* for FBD_FILL/FLUSH_TMP */
@@ -52,24 +50,26 @@ struct flash_bd_request {
 		unsigned int page_cnt;
 		unsigned int byte_cnt; /* for FBD_FILL/FLUSH_TMP */
 	};
-	/* FBD_READ, FBD_WRITE - must be supplied elsewhere
-	 * FBD_READ_BUF, FBD_WRITE_BUF, FBD_FLUSH_BUF, FBD_FILL_BUF, FBD_COPY -
-	 * will be supplied by the flash_bd
-	 * 
-	 */
-	struct scatterlist *sg;
-	unsigned int       extra_offset;
-	unsigned int       sg_count;
 	struct { /* used by FBD_COPY */
 		unsigned int phy_block;
 		unsigned int page_off;
 	} dst;
 };
 
-struct flash_bd* flash_bd_init(unsigned int phy_block_cnt,
+struct flash_bd* flash_bd_init(unsigned int zone_cnt,
+			       unsigned int phy_block_cnt,
 			       unsigned int log_block_cnt,
 			       unsigned int page_cnt,
 			       unsigned int page_size);
 void flash_bd_destroy(struct flash_bd *fbd);
+int flash_bd_set_empty(struct flash_bd *fbd, unsigned int zone,
+		       unsigned int phy_block, int erased);
+int flash_bd_set_full(struct flash_bd *fbd, unsigned int zone,
+		      unsigned int phy_block, unsigned int log_block);
+int flash_bd_next_req(struct flash_bd *fbd, struct flash_bd_request *req,
+		      unsigned int count, int error);
+unsigned int flash_bd_end(struct flash_bd *fbd);
+int flash_bd_start_reading(struct flash_bd *fbd, unsigned long long offset,
+			   unsigned int count);
 
 #endif

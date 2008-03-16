@@ -15,6 +15,7 @@
 #include <linux/blkdev.h>
 #include <linux/hdreg.h>
 #include <linux/kthread.h>
+#include <linux/scatterlist.h>
 #include "flash_bd.h"
 
 struct xd_card_id1 {
@@ -164,6 +165,7 @@ struct xd_card_media {
 	unsigned int            zone_pos;
 	unsigned int            block_pos;
 	unsigned int            page_pos;
+	unsigned int            trans_cnt;
 };
 
 enum xd_card_param {

@@ -165,8 +165,137 @@ static struct block_device_operations xd_card_bdops = {
 	.owner   = THIS_MODULE
 };
 
-/*** Protocol handlers ***/
+/*** Information ***/
 
+static ssize_t xd_card_id_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct xd_card_host *host = dev_get_drvdata(dev);
+	ssize_t rc = 0;
+
+	mutex_lock(&host->lock);
+	if (!host->card)
+		goto out;
+
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "ID 1:\n");
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\tmaker code: %02x\n",
+			host->card->id1.maker_code);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\tdevice code: %02x\n",
+			host->card->id1.device_code);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\toption code 1: %02x\n",
+			host->card->id1.option_code1);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\toption code 2: %02x\n",
+			host->card->id1.option_code2);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\nID 2:\n");
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\tcharacteristics code: "
+			"%02x\n", host->card->id2.characteristics_code);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\tvendor code 1: %02x\n",
+			host->card->id2.vendor_code1);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\tsize code: %02x\n",
+			host->card->id2.size_code);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\tvendor code 2: %02x\n",
+			host->card->id2.vendor_code2);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\tvendor code 3: %02x\n",
+			host->card->id2.vendor_code3);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\nID 3:\n");
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\tvendor code 1: %02x\n",
+			host->card->id3.vendor_code1);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\tvendor code 2: %02x\n",
+			host->card->id3.vendor_code2);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\tid code: %02x\n",
+			host->card->id3.id_code);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "\tvendor code 3: %02x\n",
+			host->card->id3.vendor_code3);
+out:
+	mutex_unlock(&host->lock);
+	return rc;
+}
+
+
+static ssize_t xd_card_cis_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct xd_card_host *host = dev_get_drvdata(dev);
+	struct xd_card_media *card;
+	ssize_t rc = 0;
+	size_t cnt;
+
+	mutex_lock(&host->lock);
+	if (!host->card)
+		goto out;
+	card = host->card;
+
+	for (cnt = 0; cnt < sizeof(card->cis); ++cnt) {
+		if (cnt && !(cnt & 0xf)) {
+			if (PAGE_SIZE - rc)
+				buf[rc++] = '\n';
+		}
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%02x ",
+				card->cis[cnt]);
+	}
+
+out:
+	mutex_unlock(&host->lock);
+	return rc;
+}
+
+static ssize_t xd_card_idi_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct xd_card_host *host = dev_get_drvdata(dev);
+	struct xd_card_media *card;
+	ssize_t rc = 0;
+	size_t cnt;
+
+	mutex_lock(&host->lock);
+	if (!host->card)
+		goto out;
+	card = host->card;
+
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "vendor code 1: ");
+	for (cnt = 0; cnt < sizeof(card->idi.vendor_code1); ++cnt) {
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%02x ",
+				card->idi.vendor_code1[cnt]);
+	}
+	if (PAGE_SIZE - rc)
+		buf[rc++] = '\n';
+
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "serial number: ");
+	for (cnt = 0; cnt < sizeof(card->idi.serial_number); ++cnt) {
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%02x ",
+				card->idi.serial_number[cnt]);
+	}
+	if (PAGE_SIZE - rc)
+		buf[rc++] = '\n';
+
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "model number: ");
+	for (cnt = 0; cnt < sizeof(card->idi.model_number); ++cnt) {
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%02x ",
+				card->idi.model_number[cnt]);
+	}
+	if (PAGE_SIZE - rc)
+		buf[rc++] = '\n';
+
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "vendor code 2: ");
+	for (cnt = 0; cnt < sizeof(card->idi.vendor_code2); ++cnt) {
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%02x ",
+				card->idi.vendor_code1[cnt]);
+	}
+	if (PAGE_SIZE - rc)
+		buf[rc++] = '\n';
+
+out:
+	mutex_unlock(&host->lock);
+	return rc;
+}
+
+static DEVICE_ATTR(xd_card_id, S_IRUGO, xd_card_id_show, NULL);
+static DEVICE_ATTR(xd_card_cis, S_IRUGO, xd_card_cis_show, NULL);
+static DEVICE_ATTR(xd_card_idi, S_IRUGO, xd_card_idi_show, NULL);
+
+
+
+/*** Protocol handlers ***/
 
 /**
  * xd_card_next_req - called by host driver to obtain next request to process
@@ -427,16 +556,22 @@ static int h_xd_card_read(struct xd_card_media *card,
 {
 	unsigned int p_cnt = (*req)->count / card->page_size;
 
+	dev_dbg(card->host->dev, "read %d of %d at %d:%d:%d (%d:%d)\n", p_cnt,
+		card->trans_cnt, card->zone_pos, card->block_pos,
+		card->page_pos, card->current_seg, card->current_page);
 	if (p_cnt) {
-		if (card->auto_ecc)
+		if (card->auto_ecc) {
 			xd_card_advance(card, p_cnt);
-		else {
+			card->trans_cnt -= p_cnt;
+		} else {
 			/* this assumes p_cnt to be equal 1 */
 			if (!card->host->extra_pos) {
 				xd_card_rewind(card, card->page_inc - 1);
 				(*req)->error = xd_card_check_ecc(card);
-				if (!(*req)->error)
+				if (!(*req)->error) {
 					xd_card_advance(card, card->page_inc);
+					card->trans_cnt -= p_cnt;
+				}
 			} else
 				xd_card_advance(card, 1);
 		}
@@ -447,7 +582,7 @@ static int h_xd_card_read(struct xd_card_media *card,
 		return (*req)->error;
 	}
 
-	if (card->current_seg == card->seg_count) {
+	if (!card->trans_cnt || (card->current_seg == card->seg_count)) {
 		complete(&card->req_complete);
 		return -EAGAIN;
 	}
@@ -482,24 +617,28 @@ static int h_xd_card_read(struct xd_card_media *card,
 	return 0;
 }
 
-static int xd_card_get_status(struct xd_card_media *card,
+static int xd_card_get_status(struct xd_card_host *host,
 			      unsigned char cmd, unsigned char *status)
 {
+	struct xd_card_media *card = host->card;
+
 	card->req.cmd = cmd;
 	card->req.flags = XD_CARD_REQ_STATUS;
 	card->req.error = 0;
 
 	card->next_request[0] = h_xd_card_req_init;
 	card->next_request[1] = h_xd_card_default;
-	xd_card_new_req(card->host);
+	xd_card_new_req(host);
 	wait_for_completion(&card->req_complete);
 	*status = card->req.status;
 	return card->req.error;
 }
 
-static int xd_card_get_id(struct xd_card_media *card, unsigned char cmd,
+static int xd_card_get_id(struct xd_card_host *host, unsigned char cmd,
 			  void *data, unsigned int count)
 {
+	struct xd_card_media *card = host->card;
+
 	card->req.cmd = cmd;
 	card->req.flags = XD_CARD_REQ_ID;
 	card->req.count = count;
@@ -507,35 +646,35 @@ static int xd_card_get_id(struct xd_card_media *card, unsigned char cmd,
 	card->req.error = 0;
 	card->next_request[0] = h_xd_card_req_init;
 	card->next_request[1] = h_xd_card_default;
-	xd_card_new_req(card->host);
+	xd_card_new_req(host);
 	wait_for_completion(&card->req_complete);
 	return card->req.error;
 }
 
 
-static int xd_card_bad_data(struct xd_card_media *card)
+static int xd_card_bad_data(struct xd_card_host *host)
 {
-	if (card->host->extra.data_status != 0xff) {
-		if (hweight8(card->host->extra.block_status) < 5)
+	if (host->extra.data_status != 0xff) {
+		if (hweight8(host->extra.block_status) < 5)
 			return -1;
 	}
 
 	return 0;
 }
 
-static int xd_card_bad_block(struct xd_card_media *card)
+static int xd_card_bad_block(struct xd_card_host *host)
 {
-	if (card->host->extra.block_status != 0xff) {
-		if (hweight8(card->host->extra.block_status) < 7)
+	if (host->extra.block_status != 0xff) {
+		if (hweight8(host->extra.block_status) < 7)
 			return -1;
 	}
 
 	return 0;
 }
 
-static int xd_card_find_cis(struct xd_card_host *host,
-			    struct xd_card_media *card)
+static int xd_card_find_cis(struct xd_card_host *host)
 {
+	struct xd_card_media *card = host->card;
 	unsigned int r_size = sizeof(card->cis) + sizeof(card->idi);
 	unsigned int p_cnt, b_cnt;
 	unsigned char *buf;
@@ -556,32 +695,45 @@ static int xd_card_find_cis(struct xd_card_host *host,
 	card->seg_count = 1;
 	card->zone_pos = 0;
 
+	dev_dbg(host->dev, "looking for cis in %d blocks\n", last_block);
+
 	for (b_cnt = 0; b_cnt < last_block; ++b_cnt) {
 		card->req.cmd = XD_CARD_CMD_READ1;
 		card->req.flags = XD_CARD_REQ_DATA | XD_CARD_REQ_EXTRA
 				  | XD_CARD_REQ_NO_ECC;
-		sg_set_buf(&card->req.sg, buf,
-			   card->page_inc * card->page_size);
 		card->page_pos = 0;
 
+		dev_dbg(host->dev, "checking block %d\n", b_cnt);
+
 		while (!good_page) {
-			card->req.error = 0;
-			card->req.count = 0;
 			card->next_request[0] = h_xd_card_req_init;
 			card->next_request[1] = h_xd_card_read;
 			card->current_seg = 0;
 			card->current_page = 0;
 			card->block_pos = b_cnt;
+			card->trans_cnt = card->page_inc;
 			host->extra_pos = 0;
+			card->req.addr = card->zone_pos;
+			card->req.addr <<= card->block_addr_bits;
+			card->req.addr |= card->block_pos;
+			card->req.addr <<= card->page_addr_bits;
+			card->req.addr |= card->page_pos;
+			card->req.addr <<= 8;
+			card->req.error = 0;
+			card->req.count = 0;
+			sg_set_buf(&card->req.sg, buf, card->page_size);
+
+			dev_dbg(host->dev, "checking page %d\n",
+				card->page_pos);
 
 			xd_card_new_req(host);
 			wait_for_completion(&card->req_complete);
 			rc = card->req.error;
 
 			if (!rc) {
-				if (xd_card_bad_block(card))
+				if (xd_card_bad_block(host))
 					goto next_block;
-				else if (xd_card_bad_data(card)) {
+				else if (xd_card_bad_data(host)) {
 					if (!card->page_pos)
 						goto next_block;
 				} else
@@ -931,9 +1083,10 @@ out_release_id:
 	return rc;
 }
 
-static void xd_card_set_media_param(struct xd_card_host *host,
-				    struct xd_card_media *card)
+static void xd_card_set_media_param(struct xd_card_host *host)
 {
+	struct xd_card_media *card = host->card;
+
 	host->set_param(host, XD_CARD_PAGE_SIZE, card->page_size);
 	host->set_param(host, XD_CARD_EXTRA_SIZE, card->extra_size);
 	if (card->capacity < 32768)
@@ -942,17 +1095,55 @@ static void xd_card_set_media_param(struct xd_card_host *host,
 		host->set_param(host, XD_CARD_ADDR_SIZE, 4);
 }
 
-static int xd_card_init_media(struct xd_card_media *card)
+static int xd_card_sysfs_register(struct xd_card_host *host)
 {
-	xd_card_set_media_param(card->host, card);
+	int rc;
 
-	return -ENODEV;
+	rc = device_create_file(host->dev, &dev_attr_xd_card_id);
+	if (rc)
+		return rc;
+
+	rc = device_create_file(host->dev, &dev_attr_xd_card_cis);
+	if (rc)
+		goto out_remove_id;
+
+	rc = device_create_file(host->dev, &dev_attr_xd_card_idi);
+	if (rc)
+		goto out_remove_cis;
+
+	return 0;
+
+out_remove_cis:
+	device_remove_file(host->dev, &dev_attr_xd_card_cis);
+out_remove_id:
+	device_remove_file(host->dev, &dev_attr_xd_card_id);
+	return rc;
+}
+
+static void xd_card_sysfs_unregister(struct xd_card_host *host)
+{
+	device_remove_file(host->dev, &dev_attr_xd_card_idi);
+	device_remove_file(host->dev, &dev_attr_xd_card_cis);
+	device_remove_file(host->dev, &dev_attr_xd_card_id);
+}
+
+static int xd_card_init_media(struct xd_card_host *host)
+{
+	int rc;
+
+	xd_card_set_media_param(host);
+	rc = xd_card_sysfs_register(host);
+	if (rc)
+		return rc;
+
+	return 0;
 }
 
 struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 {
 	struct xd_card_media *card = kzalloc(sizeof(struct xd_card_media),
 					     GFP_KERNEL);
+	struct xd_card_media *old_card = host->card;
 	int rc = -ENOMEM;
 	unsigned char status;
 
@@ -960,22 +1151,23 @@ struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 		goto out;
 
 	card->host = host;
+	host->card = card;
 	card->usage_count = 1;
 	spin_lock_init(&card->q_lock);
 	init_completion(&card->req_complete);
 
-	rc = xd_card_get_status(card, XD_CARD_CMD_RESET, &status);
+	rc = xd_card_get_status(host, XD_CARD_CMD_RESET, &status);
 	if (rc)
 		goto out;
 
-	rc = xd_card_get_status(card, XD_CARD_CMD_STATUS1, &status);
+	rc = xd_card_get_status(host, XD_CARD_CMD_STATUS1, &status);
 	if (rc)
 		goto out;
 
 	if (!(status & XD_CARD_STTS_RW))
 		card->read_only = 1;
 
-	rc = xd_card_get_id(card, XD_CARD_CMD_ID1, &card->id1,
+	rc = xd_card_get_id(host, XD_CARD_CMD_ID1, &card->id1,
 			    sizeof(card->id1));
 	if (rc)
 		goto out;
@@ -984,8 +1176,16 @@ struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 	if (rc)
 		goto out;
 
-	card->page_addr_bits = fls(card->page_cnt);
-	card->block_addr_bits = fls(card->phy_block_cnt);
+	card->page_addr_bits = fls(card->page_cnt - 1);
+	if ((1 << card->page_addr_bits) < card->page_cnt)
+		card->page_addr_bits++;
+
+	card->block_addr_bits = fls(card->phy_block_cnt - 1);
+	if ((1 << card->block_addr_bits) < card->phy_block_cnt)
+		card->block_addr_bits++;
+
+	dev_dbg(host->dev, "address bits: page %d, block %d\n",
+		card->page_addr_bits, card->block_addr_bits);
 
 	if (host->caps & XD_CARD_CAP_AUTO_ECC)
 		card->auto_ecc = 1;
@@ -996,7 +1196,7 @@ struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 	}
 
 	if (!card->sm_media) {
-		rc = xd_card_get_id(card, XD_CARD_CMD_ID2, &card->id2,
+		rc = xd_card_get_id(host, XD_CARD_CMD_ID2, &card->id2,
 				    sizeof(card->id2));
 		if (rc)
 			goto out;
@@ -1004,24 +1204,25 @@ struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 
 	if (!card->sm_media) {
 		/* This appears to be totally optional */
-		xd_card_get_id(card, XD_CARD_CMD_ID3, &card->id3,
+		xd_card_get_id(host, XD_CARD_CMD_ID3, &card->id3,
 			       sizeof(card->id3));
 	}
 
-	xd_card_set_media_param(host, card);
+	xd_card_set_media_param(host);
 	card->page_inc = sizeof(struct xd_card_extra) / card->extra_size;
 	if (!card->page_inc)
 		card->page_inc = 1;
-	rc = xd_card_find_cis(host, card);
+	rc = xd_card_find_cis(host);
 	if (rc)
 		goto out;
 
-	if (memcmp(xd_card_cis_header, card->cis, sizeof(xd_card_cis_header)))
-		rc = -EMEDIUMTYPE;
+//	if (memcmp(xd_card_cis_header, card->cis, sizeof(xd_card_cis_header)))
+//		rc = -EMEDIUMTYPE;
 
 out:
+	host->card = old_card;
 	if (host->card)
-		xd_card_set_media_param(host, host->card);
+		xd_card_set_media_param(host);
 	if (rc) {
 		kfree(card);
 		return ERR_PTR(rc);
@@ -1036,6 +1237,7 @@ static void xd_card_remove_media(struct xd_card_media *card)
 	struct gendisk *disk = card->disk;
 	unsigned long flags;
 
+/*
 	del_gendisk(card->disk);
 	dev_dbg(host->dev, "xd card remove\n");
 	spin_lock_irqsave(&card->q_lock, flags);
@@ -1053,8 +1255,12 @@ static void xd_card_remove_media(struct xd_card_media *card)
 
 	blk_cleanup_queue(card->queue);
 	card->queue = NULL;
-
+*/
+	xd_card_sysfs_unregister(host);
+/*
 	xd_card_disk_release(disk);
+*/
+	kfree(card);
 }
 
 static void xd_card_check(struct work_struct *work)
@@ -1070,6 +1276,7 @@ static void xd_card_check(struct work_struct *work)
 		host->set_param(host, XD_CARD_POWER, XD_CARD_POWER_ON);
 
 	card = xd_card_alloc_media(host);
+	dev_dbg(host->dev, "card allocated %p\n", card);
 
 	if (IS_ERR(card)) {
 		dev_dbg(host->dev, "error %ld allocating card\n",
@@ -1079,9 +1286,9 @@ static void xd_card_check(struct work_struct *work)
 			host->card = NULL;
 		}
 	} else {
-		dev_dbg(host->dev, "new card %02x, %02x, %02x\n",
+		dev_dbg(host->dev, "new card %02x, %02x, %02x, %02x\n",
 			card->id1.maker_code, card->id1.device_code,
-			card->id3.id_code);
+			card->id1.option_code1, card->id1.option_code2);
 		if (host->card) {
 			if (host->card->bad_media
 			    || xd_card_compare_media(card, host->card)) {
@@ -1092,7 +1299,7 @@ static void xd_card_check(struct work_struct *work)
 
 		if (!host->card) {
 			host->card = card;
-			if (xd_card_init_media(card)) {
+			if (xd_card_init_media(host)) {
 				kfree(host->card);
 				host->card = NULL;
 			}

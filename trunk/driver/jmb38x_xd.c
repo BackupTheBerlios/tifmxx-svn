@@ -13,7 +13,6 @@
 #include <linux/interrupt.h>
 #include <linux/pci.h>
 #include <linux/delay.h>
-#include <linux/highmem.h>
 
 #include "linux/xd_card.h"
 
@@ -142,9 +141,10 @@ static int jmb38x_xd_issue_cmd(struct xd_card_host *host)
 
 		writel(sg_dma_address(&jhost->req->sg),
 		       jhost->addr + DMA_ADDRESS);
-
 		p_cnt = sg_dma_len(&jhost->req->sg) / jhost->page_size;
 		p_cnt <<= HOST_CONTROL_PAGE_CNT_SHIFT;
+		dev_dbg(host->dev, "trans count %d, %08x\n",
+			sg_dma_len(&jhost->req->sg), p_cnt);
 	}
 
 	if ((jhost->req->flags & XD_CARD_REQ_EXTRA)
@@ -166,12 +166,17 @@ static int jmb38x_xd_issue_cmd(struct xd_card_host *host)
 	else
 		jhost->host_ctl &= ~HOST_CONTROL_ECC_EN;
 
+	writel(jhost->req->addr, jhost->addr + MEDIA_ADDRESS_LO);
+	writel(jhost->req->addr >> 32, jhost->addr + MEDIA_ADDRESS_HI);
+
 	writel(jhost->host_ctl | HOST_CONTROL_LED
 	       | (p_cnt & HOST_CONTROL_PAGE_CNT_MASK),
 	       jhost->addr + HOST_CONTROL);
 	mod_timer(&jhost->timer, jiffies + jhost->timeout_jiffies);
 	jhost->req->error = 0;
 	writel(jhost->req->cmd << 16, jhost->addr + COMMAND);
+	dev_dbg(host->dev, "issue command %02x, %08x\n", jhost->req->cmd,
+		readl(jhost->addr + HOST_CONTROL));
 	return 0;
 }
 
@@ -216,6 +221,9 @@ static void jmb38x_xd_complete_cmd(struct xd_card_host *host, int last)
 
 	p_cnt = (host_ctl & HOST_CONTROL_PAGE_CNT_MASK)
 		 >> HOST_CONTROL_PAGE_CNT_SHIFT;
+
+	if (p_cnt)
+		p_cnt--;
 
 	p_cnt = sg_dma_len(&jhost->req->sg) - p_cnt * jhost->page_size;
 	
@@ -335,6 +343,7 @@ static void jmb38x_xd_request(struct xd_card_host *host)
 	unsigned long flags;
 	int rc;
 
+	dev_dbg(host->dev, "new request\n");
 	spin_lock_irqsave(&jhost->lock, flags);
 	if (jhost->req) {
 		spin_unlock_irqrestore(&jhost->lock, flags);
@@ -395,8 +404,6 @@ static void jmb38x_xd_set_param(struct xd_card_host *host,
 			writel(jhost->host_ctl, jhost->addr + HOST_CONTROL);
 
 			jmb38x_xd_reset(jhost);
-			writel(0, jhost->addr + INT_STATUS_ENABLE);
-			writel(0, jhost->addr + INT_SIGNAL_ENABLE);
 			msleep(1);
 
 			if (readl(jhost->addr + PAD_OUTPUT_ENABLE))
@@ -418,32 +425,33 @@ static void jmb38x_xd_set_param(struct xd_card_host *host,
 		}
 		break;
 	case XD_CARD_CLOCK:
-		if (param == XD_CARD_SLOW)
+		if (value == XD_CARD_SLOW)
 			jhost->host_ctl |= HOST_CONTROL_SLOW_CLK;
-		else if (param == XD_CARD_NORMAL)
+		else if (value == XD_CARD_NORMAL)
 			jhost->host_ctl &= ~HOST_CONTROL_SLOW_CLK;
 
 		writel(jhost->host_ctl, jhost->addr + HOST_CONTROL);
 		break;
 	case XD_CARD_PAGE_SIZE:
-		jhost->page_size = 0xfff & param;
+		jhost->page_size = 0xfff & value;
+		dev_dbg(host->dev, "set page size %d\n", jhost->page_size);
 		t_val = readl(jhost->addr + DEBUG_PARAM);
 		t_val &= ~0xfff;
 		t_val |= jhost->page_size;
 		writel(t_val, jhost->addr + DEBUG_PARAM);
 		break;
 	case XD_CARD_EXTRA_SIZE:
-		BUG_ON(param > JMB38X_XD_EXTRA_DATA_SIZE);
-		jhost->extra_size = param;
+		BUG_ON(value > JMB38X_XD_EXTRA_DATA_SIZE);
+		jhost->extra_size = value;
 		t_val = readl(jhost->addr + DEBUG_PARAM);
 		t_val &= ~(0xff << 16);
-		t_val |= param << 16;
+		t_val |= value << 16;
 		writel(t_val, jhost->addr + DEBUG_PARAM);
 		break;
 	case XD_CARD_ADDR_SIZE:
-		BUG_ON((param < 3) || (param > 6));
+		BUG_ON((value < 3) || (value > 6));
 		jhost->host_ctl &= ~ HOST_CONTROL_ADDR_SIZE_MASK;
-		jhost->host_ctl |= (param - 3) << 1;
+		jhost->host_ctl |= (value - 3) << 1;
 		writel(jhost->host_ctl, jhost->addr + HOST_CONTROL);
 		break;
 	};
@@ -477,9 +485,10 @@ static int jmb38x_xd_resume(struct pci_dev *pdev)
 		return rc;
 	pci_set_master(pdev);
 
-	//pci_read_config_dword(pdev, 0xac, &rc);
-	//pci_write_config_dword(pdev, 0xac, rc | 0x00470000);
-
+	pci_read_config_dword(pdev, 0xac, &rc);
+	pci_write_config_dword(pdev, 0xac, rc | 0x00470000);
+	pci_read_config_dword(pdev, 0xb0, &rc);
+	pci_write_config_dword(pdev, 0xb0, rc & 0xffff0000);
 
 	xd_card_resume_host(host);
 	xd_card_detect_change(host);
@@ -517,10 +526,11 @@ static int jmb38x_xd_probe(struct pci_dev *pdev,
 		pci_dev_busy = 1;
 		goto err_out;
 	}
-/*
+
 	pci_read_config_dword(pdev, 0xac, &rc);
 	pci_write_config_dword(pdev, 0xac, rc | 0x00470000);
-*/
+	pci_read_config_dword(pdev, 0xb0, &rc);
+	pci_write_config_dword(pdev, 0xb0, rc & 0xffff0000);
 
 	host = xd_card_alloc_host(sizeof(struct jmb38x_xd_host), &pdev->dev);
 
@@ -550,13 +560,16 @@ static int jmb38x_xd_probe(struct pci_dev *pdev,
 
 	snprintf(jhost->id, DEVICE_ID_SIZE, DRIVER_NAME);
 
+	spin_lock_init(&jhost->lock);
 	setup_timer(&jhost->timer, jmb38x_xd_abort, (unsigned long)host);
 
 	rc = request_irq(pdev->irq, jmb38x_xd_isr, IRQF_SHARED, jhost->id,
 			 host);
 
-	if(!rc)
+	if(!rc) {
+		xd_card_detect_change(host);
 		return 0;
+	}
 
 	iounmap(jhost->addr);
 	pci_set_drvdata(pdev, NULL);
