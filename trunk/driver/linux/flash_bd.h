@@ -48,7 +48,7 @@ struct flash_bd_request {
 	};
 	union {
 		unsigned int page_cnt;
-		unsigned int byte_cnt; /* for FBD_FILL/FLUSH_TMP */
+		unsigned int byte_cnt; /* for FBD_FILL/FLUSH_TMP, FBD_SKIP */
 	};
 	struct { /* used by FBD_COPY */
 		unsigned int phy_block;

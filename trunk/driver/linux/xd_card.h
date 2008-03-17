@@ -128,6 +128,7 @@ struct xd_card_media {
 	wait_queue_head_t       q_wait;
 	struct task_struct      *q_thread;
 	struct flash_bd_request flash_req;
+	struct flash_bd         *fbd;
 	struct xd_card_request  req;
 	struct completion       req_complete;
 	int                   (*next_request[2])(struct xd_card_media *card,
@@ -139,33 +140,38 @@ struct xd_card_media {
 				has_request:1,
 				bad_media:1,
 				auto_ecc:1;
+
 	unsigned int            capacity;
 	unsigned int            cylinders;
 	unsigned int            heads;
 	unsigned int            sectors_per_head;
-	unsigned short          page_size;
-	unsigned char           extra_size;
-	unsigned char           page_inc;
+
+	unsigned int            page_size;
+	unsigned int            page_inc;
+
 	unsigned int            zone_cnt;
 	unsigned int            phy_block_cnt;
 	unsigned int            log_block_cnt;
 	unsigned int            page_cnt;
+
 	unsigned char           page_addr_bits;
 	unsigned char           block_addr_bits;
+
 	struct xd_card_id1      id1;
 	struct xd_card_id2      id2;
 	struct xd_card_id3      id3;
 	unsigned char           cis[128];
 	struct xd_card_idi      idi;
+
 #define XD_CARD_MAX_SEGS 32
 	struct scatterlist      req_sg[XD_CARD_MAX_SEGS];
 	unsigned int            seg_count;
-	unsigned int            current_seg;
-	unsigned int            current_page;
-	unsigned int            zone_pos;
-	unsigned int            block_pos;
-	unsigned int            page_pos;
+	unsigned int            seg_pos;
+	unsigned int            seg_off;
+
 	unsigned int            trans_cnt;
+	unsigned int            trans_len;
+	unsigned char           *t_buf;
 };
 
 enum xd_card_param {
