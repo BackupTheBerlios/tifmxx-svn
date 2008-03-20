@@ -53,7 +53,7 @@ struct flash_bd_request {
 	struct { /* used by FBD_COPY */
 		unsigned int phy_block;
 		unsigned int page_off;
-	} dst;
+	} src;
 };
 
 struct flash_bd* flash_bd_init(unsigned int zone_cnt,

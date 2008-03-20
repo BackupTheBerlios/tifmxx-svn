@@ -536,7 +536,7 @@ process_next:
 		       sizeof(struct scatterlist));
 		req->sg.offset += card->seg_off;
 
-		count = (req->sg.length - card->seg_off) / card->page_size;
+		count = req->sg.length - card->seg_off;
 		card->trans_cnt = 0;
 		card->trans_len = min(count, card->flash_req.page_cnt)
 				  * card->page_size;
@@ -552,10 +552,6 @@ process_next:
 		card->next_request[1] = h_xd_card_read; 
 		return 0;
 	case FBD_READ_TMP:
-		if (card->flash_req.page_cnt > 1) {
-			rc = -EINVAL;
-			break;
-		}
 		req->cmd = XD_CARD_CMD_READ1;
 		req->flags |= XD_CARD_REQ_DATA;
 		req->flags &= ~XD_CARD_REQ_DIR;
@@ -563,10 +559,10 @@ process_next:
 		req->error = 0;
 		req->count = 0;
 		card->trans_cnt = 0;
-		card->trans_len = card->page_size;
+		card->trans_len = card->flash_req.page_cnt * card->page_size;
 
 		if (card->auto_ecc)
-			sg_set_buf(&req->sg, card->t_buf, card->page_size);
+			sg_set_buf(&req->sg, card->t_buf, card->trans_len);
 		else {
 			req->flags |= XD_CARD_REQ_EXTRA;
 			sg_set_buf(&req->sg, card->t_buf,
@@ -697,6 +693,52 @@ static int xd_card_check_ecc(struct xd_card_media *card)
 	return 0;
 }
 
+static int xd_card_check_ecc_tmp(struct xd_card_media *card)
+{
+	unsigned int ref_ecc, act_ecc;
+	unsigned int e_pos = 0, e_state = 0, c_pos, len = card->page_size;
+	unsigned char c_mask;
+	unsigned char *buf = card->t_buf + card->trans_cnt - card->page_size;
+	int rc;
+
+	if (card->trans_cnt < card->page_size)
+		return -EILSEQ;
+
+	ref_ecc = card->host->extra.ecc_lo[0]
+		  | (card->host->extra.ecc_lo[1] << 8)
+		  | (card->host->extra.ecc_lo[2] << 16);
+
+	xd_card_ecc_step(&e_state, &e_pos, buf, len);
+
+	act_ecc = xd_card_ecc_value(e_state);
+	rc = xd_card_fix_ecc(&c_pos, &c_mask, act_ecc, ref_ecc);
+
+	if (rc == -1)
+		return -EILSEQ;
+	else if (rc == 1)
+		buf[c_pos] ^= c_mask;
+
+	ref_ecc = card->host->extra.ecc_hi[0]
+		  | (card->host->extra.ecc_hi[1] << 8)
+		  | (card->host->extra.ecc_hi[2] << 16);
+
+	e_state = 0;
+	buf += e_pos;
+	len -= e_pos;
+	e_pos = 0;
+	xd_card_ecc_step(&e_state, &e_pos, buf, len);
+
+	act_ecc = xd_card_ecc_value(e_state);
+	rc = xd_card_fix_ecc(&c_pos, &c_mask, act_ecc, ref_ecc);
+
+	if (rc == -1)
+		return -EILSEQ;
+	else if (rc == 1)
+		buf[c_pos] ^= c_mask;
+
+	return 0;
+}
+
 static int h_xd_card_read(struct xd_card_media *card,
 			  struct xd_card_request **req)
 {
@@ -734,7 +776,7 @@ static int h_xd_card_read(struct xd_card_media *card,
 					card->trans_cnt -= card->page_size;
 			}
 
-			if (!rc && card->trans_cnt < card->trans_len) {
+			if (!rc && (card->trans_cnt < card->trans_len)) {
 				(*req)->count = 0;
 				(*req)->error = 0;
 				(*req)->addr
@@ -779,31 +821,42 @@ static int h_xd_card_read_tmp(struct xd_card_media *card,
 	dev_dbg(card->host->dev, "read tmp %d of %d\n",
 		(*req)->count, card->trans_cnt);
 
-	if (card->auto_ecc) {
-		if ((*req)->count != card->page_size)
-			rc = -EILSEQ;
-	} else {
-		rc = card->page_size / card->page_inc;
-
-		if ((*req)->count != rc)
-			rc =  -EILSEQ;
+	if ((*req)->count) {
+		if (card->auto_ecc)
+			card->trans_cnt = (*req)->count;
 		else {
-			card->trans_cnt += rc;
-			if (card->trans_cnt != card->page_size) {
-				(*req)->error = 0;
+			rc = card->page_size / card->page_inc;
+
+			if ((*req)->count != rc) {
+				rc *= card->host->extra_pos
+				      / (sizeof(struct xd_card_extra)
+					 / card->page_inc);
+				card->trans_cnt -= rc;
+				rc = -EILSEQ;
+			} else {
+				card->trans_cnt += rc;
+				rc = 0;
+			}
+
+			if (!rc && !card->host->extra_pos) {
+				rc = xd_card_check_ecc_tmp(card);
+				if (rc)
+					card->trans_cnt -= card->page_size;
+			}
+
+			if (!rc && (card->trans_cnt < card->trans_len)) {
 				(*req)->count = 0;
+				(*req)->error = 0;
+				(*req)->addr
+					= xd_card_req_address(card,
+							      card->trans_cnt);
 				sg_set_buf(&(*req)->sg,
 					   card->t_buf + card->trans_cnt,
-					   rc);
+					   card->page_size / card->page_inc);
 				return 0;
-			} else {
-				rc = xd_card_check_ecc(card);
 			}
 		}
 	}
-
-	if (rc)
-		card->trans_cnt = 0;
 
 	rc = flash_bd_next_req(card->fbd, &card->flash_req, card->trans_cnt,
 			       rc);
@@ -1392,7 +1445,7 @@ struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 
 	xd_card_set_media_param(host);
 
-	card->t_buf = kmalloc(card->page_size, GFP_KERNEL);
+	card->t_buf = kmalloc(card->page_size * card->page_cnt, GFP_KERNEL);
 	if (!card->t_buf) {
 		rc = -ENOMEM;
 		goto out;
