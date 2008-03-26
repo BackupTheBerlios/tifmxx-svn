@@ -354,6 +354,7 @@ static void jmb38x_xd_request(struct xd_card_host *host)
 	do {
 		rc = xd_card_next_req(host, &jhost->req);
 	} while (!rc && jmb38x_xd_issue_cmd(host));
+
 	spin_unlock_irqrestore(&jhost->lock, flags);
 }
 
@@ -554,7 +555,7 @@ static int jmb38x_xd_probe(struct pci_dev *pdev,
 
 	host->request = jmb38x_xd_request;
 	host->set_param = jmb38x_xd_set_param;
-	host->caps = XD_CARD_CAP_AUTO_ECC | XD_CARD_FIXED_EXTRA;
+	host->caps = XD_CARD_CAP_AUTO_ECC | XD_CARD_CAP_FIXED_EXTRA;
 	
 	pci_set_drvdata(pdev, host);
 

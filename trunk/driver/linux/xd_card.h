@@ -129,6 +129,7 @@ struct xd_card_media {
 	struct task_struct      *q_thread;
 	struct flash_bd_request flash_req;
 	struct flash_bd         *fbd;
+	struct bin_attribute    dev_attr_block_map;
 	struct xd_card_request  req;
 	struct completion       req_complete;
 	int                   (*next_request[2])(struct xd_card_media *card,
@@ -198,8 +199,8 @@ struct xd_card_host {
 
 	unsigned int            retries;
 	unsigned int            caps;
-#define XD_CARD_CAP_AUTO_ECC 1
-#define XD_CARD_FIXED_EXTRA  2
+#define XD_CARD_CAP_AUTO_ECC    1
+#define XD_CARD_CAP_FIXED_EXTRA 2
 
 	/* Notify the host that some flash memory requests are pending. */
 	void (*request)(struct xd_card_host *host);

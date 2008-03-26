@@ -62,6 +62,8 @@ struct flash_bd {
 
 	int                (*cmd_handler)(struct flash_bd *fbd,
 					  struct flash_bd_request *req);
+	unsigned int       p_line_size;
+	char               *p_line;
 };
 
 /* For each block two bits are maintained:
@@ -157,6 +159,9 @@ static struct block_node* flash_bd_find_useful(struct flash_bd *fbd,
 	struct rb_node *n = fbd->useful_blocks.rb_node;
 	struct block_node *rv;
 
+	if (phy_block == FLASH_BD_INVALID)
+		return NULL;
+
 	while (n) {
 		rv = rb_entry(n, struct block_node, node);
 
@@ -246,11 +251,15 @@ static void flash_bd_free_all_useful(struct flash_bd *fbd)
 
 static void flash_bd_retire_useful(struct flash_bd *fbd, unsigned int phy_block)
 {
-	if (fbd->c_block->address != phy_block)
-		fbd->c_block = flash_bd_find_useful(fbd, phy_block);
-
 	if (!fbd->c_block)
 		return;
+
+	if (fbd->c_block->address != phy_block) {
+		fbd->c_block = flash_bd_find_useful(fbd, phy_block);
+
+		if (!fbd->c_block)
+			return;
+	}
 
 	rb_erase(&fbd->c_block->node, &fbd->useful_blocks);
 	fbd->c_block->node.rb_left = NULL;
@@ -313,52 +322,76 @@ struct flash_bd* flash_bd_init(unsigned int zone_cnt,
 
 {
 	unsigned int cnt;
-	struct flash_bd *rv = kzalloc(sizeof(struct flash_bd), GFP_KERNEL);
-	if (!rv)
+	struct flash_bd *fbd = kzalloc(sizeof(struct flash_bd), GFP_KERNEL);
+
+	if (!fbd)
 		return NULL;
 
+	fbd->zone_cnt = zone_cnt;
+	fbd->phy_block_cnt = phy_block_cnt;
+	fbd->log_block_cnt = log_block_cnt;
+	fbd->page_cnt = page_cnt;
+	fbd->page_size = page_size;
+	fbd->block_size = page_size * page_cnt;
 
-	rv->zone_cnt = zone_cnt;
-	rv->phy_block_cnt = phy_block_cnt;
-	rv->log_block_cnt = log_block_cnt;
-	rv->page_cnt = page_cnt;
-	rv->page_size = page_size;
-	rv->block_size = page_size * page_cnt;
+	fbd->block_addr_bits = fls(fbd->phy_block_cnt - 1);
+	if ((1 << fbd->block_addr_bits) < fbd->phy_block_cnt)
+		fbd->block_addr_bits++;
 
-	rv->block_addr_bits = fls(rv->phy_block_cnt - 1);
-	if ((1 << rv->block_addr_bits) < rv->phy_block_cnt)
-		rv->block_addr_bits++;
+	fbd->p_line_size = (page_cnt + 3) / 4;
+	cnt = (fbd->block_addr_bits + 3) / 4;
 
-	rv->free_cnt = kmalloc(sizeof(unsigned int) * rv->zone_cnt, GFP_KERNEL);
-	if (!rv->free_cnt)
+	if (fbd->zone_cnt < 2)
+		/* <log_block> <phy_block> <mode> <map> */
+		fbd->p_line_size += 2 * cnt + 7;
+	else {
+		/* <zone>: <log_block> <phy_block> <mode> <map> */
+		fbd->p_line_size += 2 * cnt;
+		cnt = fls(fbd->zone_cnt - 1);
+		if ((1 << cnt) < fbd->zone_cnt)
+			cnt++;
+
+		cnt = (cnt + 3) / 4;
+		fbd->p_line_size += cnt + 9;
+	}
+
+	fbd->p_line = kmalloc(fbd->p_line_size, GFP_KERNEL);
+	if (!fbd->p_line)
 		goto err_out;
 
-	for (cnt = 0; cnt < rv->zone_cnt; ++cnt)
-		rv->free_cnt[cnt] = rv->phy_block_cnt;
-
-	rv->block_table = kmalloc(sizeof(unsigned int)
-				  * (rv->zone_cnt << rv->block_addr_bits),
-				  GFP_KERNEL);
-	if (!rv->block_table)
+	fbd->free_cnt = kmalloc(sizeof(unsigned int) * fbd->zone_cnt,
+				GFP_KERNEL);
+	if (!fbd->free_cnt)
 		goto err_out;
 
-	for (cnt = 0; cnt < (rv->zone_cnt << rv->block_addr_bits); ++cnt)
-		rv->block_table[cnt] = FLASH_BD_INVALID;
+	for (cnt = 0; cnt < fbd->zone_cnt; ++cnt)
+		fbd->free_cnt[cnt] = fbd->phy_block_cnt;
 
-	rv->erase_map = kzalloc(BITS_TO_LONGS(rv->zone_cnt
-					      << rv->block_addr_bits)
+	fbd->block_table = kmalloc(sizeof(unsigned int)
+				   * (fbd->zone_cnt << fbd->block_addr_bits),
+				   GFP_KERNEL);
+	if (!fbd->block_table)
+		goto err_out;
+
+	for (cnt = 0; cnt < (fbd->zone_cnt << fbd->block_addr_bits); ++cnt)
+		fbd->block_table[cnt] = FLASH_BD_INVALID;
+
+	fbd->erase_map = kzalloc(BITS_TO_LONGS(fbd->zone_cnt
+					       << fbd->block_addr_bits)
+				 * sizeof(unsigned long), GFP_KERNEL);
+	if (!fbd->erase_map)
+		goto err_out;
+
+	fbd->data_map = kzalloc(BITS_TO_LONGS(fbd->zone_cnt
+					      << fbd->block_addr_bits)
 				* sizeof(unsigned long), GFP_KERNEL);
-	if (!rv->erase_map)
+	if (!fbd->data_map)
 		goto err_out;
 
-	rv->data_map = kzalloc(BITS_TO_LONGS(rv->zone_cnt
-					     << rv->block_addr_bits)
-			       * sizeof(unsigned long), GFP_KERNEL);
-	if (!rv->data_map)
-		goto err_out;
+	return fbd;
 
 err_out:
-	flash_bd_destroy(rv);
+	flash_bd_destroy(fbd);
 	return NULL;
 }
 EXPORT_SYMBOL(flash_bd_init);
@@ -382,6 +415,7 @@ void flash_bd_destroy(struct flash_bd *fbd)
 		kfree(b);
 	}
 
+	kfree(fbd->p_line);
 	kfree(fbd);
 }
 EXPORT_SYMBOL(flash_bd_destroy);
@@ -403,21 +437,29 @@ unsigned int flash_bd_get_logical(struct flash_bd *fbd, unsigned int phy_block)
 	return FLASH_BD_INVALID;
 }
 
-unsigned int flash_bd_get_physical(struct flash_bd *fbd, unsigned int log_block)
+unsigned int flash_bd_get_physical(struct flash_bd *fbd, unsigned int zone,
+				   unsigned int log_block)
 {
 	if (log_block == FLASH_BD_INVALID
-	    || log_block >= (fbd->zone_cnt << fbd->block_addr_bits))
+	    || log_block >= fbd->log_block_cnt)
 		return FLASH_BD_INVALID;
 
-	return fbd->block_table[log_block];
+	log_block |= zone << fbd->block_addr_bits;
+
+	return fbd->block_table[log_block] == FLASH_BD_INVALID
+	       ? FLASH_BD_INVALID
+	       : (fbd->block_table[log_block]
+		  & ((1 << fbd->block_addr_bits) - 1));
 }
+EXPORT_SYMBOL(flash_bd_get_physical);
 
 int flash_bd_set_empty(struct flash_bd *fbd, unsigned int zone,
 		       unsigned int phy_block, int erased)
 {
 	unsigned int log_block;
 
-	if (phy_block >= fbd->phy_block_cnt)
+	if (phy_block == FLASH_BD_INVALID
+	    || phy_block >= fbd->phy_block_cnt)
 		return -EINVAL;
 
 	phy_block |= zone << fbd->block_addr_bits;
@@ -466,8 +508,8 @@ int flash_bd_set_full(struct flash_bd *fbd, unsigned int zone,
 
 	if (!test_bit(phy_block, fbd->data_map)) {
 		set_bit(phy_block, fbd->data_map);
-		if (fbd->free_cnt)
-			fbd->free_cnt--;
+		if (fbd->free_cnt[zone])
+			fbd->free_cnt[zone]--;
 	} else
 		flash_bd_retire_useful(fbd, phy_block);
 
@@ -542,8 +584,8 @@ unsigned int flash_bd_end(struct flash_bd *fbd)
 
 	/* Any excess of two retired nodes can be disposed of. */
 	if (fbd->retired_nodes && fbd->retired_nodes->rb_right) {
-		p = fbd->retired_nodes->rb_right;
-		fbd->retired_nodes->rb_right = NULL;
+		p = fbd->retired_nodes->rb_right->rb_right;
+		fbd->retired_nodes->rb_right->rb_right = NULL;
 		while (p) {
 			q = p->rb_right;
 			kfree(rb_entry(p, struct block_node, node));
@@ -554,6 +596,165 @@ unsigned int flash_bd_end(struct flash_bd *fbd)
 	return fbd->t_count;
 }
 EXPORT_SYMBOL(flash_bd_end);
+
+static void flash_bd_print_line(struct flash_bd *fbd, unsigned int log_block)
+{
+	unsigned int zone = log_block / fbd->log_block_cnt;
+	unsigned int phy_block;
+	unsigned int line_pos = 0, b_fmt;
+	struct block_node *b;
+	char s_fmt[] = "%08x";
+
+	log_block = log_block % fbd->log_block_cnt;
+	if (zone >= fbd->zone_cnt)
+		goto fill_out;
+
+	phy_block = flash_bd_get_physical(fbd, zone, log_block);
+
+	if (fbd->zone_cnt > 1) {
+		b_fmt = fls(fbd->zone_cnt - 1);
+		if ((1 << b_fmt) < fbd->zone_cnt)
+			b_fmt++;
+
+		b_fmt = (b_fmt + 3) / 4;
+		s_fmt[2] = b_fmt | 0x30;
+	
+		line_pos += scnprintf(fbd->p_line + line_pos,
+				      fbd->p_line_size - line_pos,
+				      s_fmt, zone);
+		line_pos += scnprintf(fbd->p_line + line_pos,
+				      fbd->p_line_size - line_pos,
+				      ": ");
+	}
+
+	b_fmt = (fbd->block_addr_bits + 3) / 4;
+	s_fmt[2] = b_fmt | 0x30;
+	line_pos += scnprintf(fbd->p_line + line_pos,
+			      fbd->p_line_size - line_pos,
+			      s_fmt, log_block
+				     & ((1 << fbd->block_addr_bits) - 1));
+	line_pos += scnprintf(fbd->p_line + line_pos,
+			      fbd->p_line_size - line_pos,
+			      " ");
+
+	if (phy_block == FLASH_BD_INVALID) {
+		line_pos += scnprintf(fbd->p_line + line_pos,
+				      fbd->p_line_size - line_pos,
+				      "--");
+		goto fill_out;
+	}
+
+	line_pos += scnprintf(fbd->p_line + line_pos,
+			      fbd->p_line_size - line_pos, s_fmt, phy_block);
+
+	b_fmt = 0;
+
+	phy_block |= zone << fbd->block_addr_bits;
+
+	if (test_bit(phy_block, fbd->data_map))
+		b_fmt = 1;
+
+	if (test_bit(phy_block, fbd->erase_map))
+		b_fmt |= 2;
+
+	switch (b_fmt) {
+	case 0:
+		line_pos += scnprintf(fbd->p_line + line_pos,
+				      fbd->p_line_size - line_pos,
+				      " U");
+		break;
+	case 1:
+		line_pos += scnprintf(fbd->p_line + line_pos,
+				      fbd->p_line_size - line_pos,
+				      " F");
+		break;
+	case 2:
+		line_pos += scnprintf(fbd->p_line + line_pos,
+				      fbd->p_line_size - line_pos,
+				      " C");
+		break;
+	case 3:
+		line_pos += scnprintf(fbd->p_line + line_pos,
+				      fbd->p_line_size - line_pos,
+				      " S");
+		break;
+	}
+
+	b = flash_bd_find_useful(fbd, phy_block);
+	if (b) {
+		unsigned int b_cnt;
+
+		line_pos += scnprintf(fbd->p_line + line_pos,
+				      fbd->p_line_size - line_pos,
+				      " ");
+		for (b_cnt = 0; b_cnt < ((fbd->page_cnt + 3) / 4); b_cnt += 4) {
+			b_fmt = b_cnt / (8 * sizeof(unsigned long));
+			b_fmt = b->page_map[b_fmt]
+				>> (b_cnt % (8 * sizeof(unsigned long)));
+			line_pos += scnprintf(fbd->p_line + line_pos,
+					      fbd->p_line_size - line_pos,
+					      "%x", b_fmt & 0xf);
+		}
+	}
+
+fill_out:
+	memset(fbd->p_line + line_pos, ' ', fbd->p_line_size - line_pos);
+	fbd->p_line[fbd->p_line_size - 1] = '\n';
+}
+
+/**
+ * flash_bd_map_size - calculate size of the complete block map text dump
+ * Return number of characters needed.
+ * fbd: owner of the map
+ */
+size_t flash_bd_map_size(struct flash_bd *fbd)
+{
+	return fbd->p_line_size * fbd->zone_cnt * fbd->log_block_cnt;
+}
+EXPORT_SYMBOL(flash_bd_map_size);
+
+/**
+ * flash_bd_read_map - read current block map as text.
+ * Return number of characters written into buffer.
+ * fbd: owner of the map
+ * buf: where to put the printout
+ * offset: offset into the text representation of the map
+ * count: size of the buffer
+ */
+ssize_t flash_bd_read_map(struct flash_bd *fbd, char *buf, loff_t offset,
+			  size_t count)
+{
+	unsigned int l_begin = offset / fbd->p_line_size;
+	unsigned int l_end = (offset + count - 1) / fbd->p_line_size;
+	ssize_t rc = 0;
+
+	if (!count)
+		return 0;
+
+	flash_bd_print_line(fbd, l_begin);
+
+	if (l_begin != l_end) {
+		rc = offset % fbd->p_line_size;
+		memcpy(buf, fbd->p_line + rc,
+		       fbd->p_line_size - rc);
+		rc = fbd->p_line_size - rc;
+	} else {
+		memcpy(buf, fbd->p_line + (offset % fbd->p_line_size), count);
+		return count;
+	}
+
+	for (++l_begin; l_begin < l_end; ++l_begin) {
+		flash_bd_print_line(fbd, l_begin);
+		memcpy(buf + rc, fbd->p_line, fbd->p_line_size);
+		rc += fbd->p_line_size;
+	}
+
+	flash_bd_print_line(fbd, l_end);
+	memcpy(buf + rc, fbd->p_line, count - rc);
+
+	return count;
+}
+EXPORT_SYMBOL(flash_bd_read_map);
 
 /*** Protocol processing ***/
 
@@ -625,10 +826,9 @@ static int h_flash_bd_read(struct flash_bd *fbd, struct flash_bd_request *req)
 	req->log_block = log_block;
 	log_block |= req->zone << fbd->block_addr_bits;
 
-	req->phy_block = flash_bd_get_physical(fbd, log_block);
-	if (req->phy_block != FLASH_BD_INVALID)
-		req->phy_block &= (1 << fbd->block_addr_bits) - 1;
-	else {
+	req->phy_block = flash_bd_get_physical(fbd, zone_off, log_block);
+
+	if (req->phy_block == FLASH_BD_INVALID) {
 		req->cmd = FBD_SKIP;
 		req->byte_off = 0;
 		req->byte_cnt = fbd->buf_count;
@@ -991,8 +1191,9 @@ static int h_flash_bd_write(struct flash_bd *fbd,
 	if (req->zone >= fbd->zone_cnt)
 		return -ENOSPC;
 
+	fbd->w_src_block = flash_bd_get_physical(fbd, zone_off, req->log_block);
 	fbd->w_log_block = req->log_block | req->zone << fbd->block_addr_bits;
-	fbd->w_src_block = flash_bd_get_physical(fbd, fbd->w_log_block);
+	fbd->w_src_block |= req->zone << fbd->block_addr_bits;
 
 	if (flash_bd_can_merge(fbd, fbd->w_src_block, fbd->buf_page_off,
 			       fbd->buf_page_cnt)) {

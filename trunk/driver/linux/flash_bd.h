@@ -19,6 +19,8 @@
 #ifndef _FLASH_BD_H
 #define _FLASH_BD_H
 
+#include <linux/types.h>
+
 #define FLASH_BD_INVALID 0xffffffffU
 
 struct flash_bd;
@@ -66,10 +68,15 @@ int flash_bd_set_empty(struct flash_bd *fbd, unsigned int zone,
 		       unsigned int phy_block, int erased);
 int flash_bd_set_full(struct flash_bd *fbd, unsigned int zone,
 		      unsigned int phy_block, unsigned int log_block);
+unsigned int flash_bd_get_physical(struct flash_bd *fbd, unsigned int zone,
+				   unsigned int log_block);
 int flash_bd_next_req(struct flash_bd *fbd, struct flash_bd_request *req,
 		      unsigned int count, int error);
 unsigned int flash_bd_end(struct flash_bd *fbd);
 int flash_bd_start_reading(struct flash_bd *fbd, unsigned long long offset,
 			   unsigned int count);
+size_t flash_bd_map_size(struct flash_bd *fbd);
+ssize_t flash_bd_read_map(struct flash_bd *fbd, char *buf, loff_t offset,
+			  size_t count);
 
 #endif
