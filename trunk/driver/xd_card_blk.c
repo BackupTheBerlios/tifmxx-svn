@@ -11,7 +11,12 @@
 
 #include "linux/xd_card.h"
 #include <linux/idr.h>
+/*
+#undef dev_dbg
 
+#define dev_dbg(dev, format, arg...)   \
+	dev_printk(KERN_EMERG , dev , format , ## arg)
+*/
 static inline void sg_set_page(struct scatterlist *sg, struct page *page,
                                unsigned int len, unsigned int offset)
 {
@@ -468,17 +473,22 @@ static int h_xd_card_default(struct xd_card_media *card,
 static int h_xd_card_read_extra(struct xd_card_media *card,
 				struct xd_card_request **req)
 {
-	if ((*req)->error)
+	if ((*req)->error) {
+		complete(&card->req_complete);
 		return (*req)->error;
+	}
 
-	if (!card->host->extra_pos)
+	if (!card->host->extra_pos) {
+		complete(&card->req_complete);
 		return -EAGAIN;
-	else {
+	} else {
+		unsigned int extra_pos = sizeof(struct xd_card_extra)
+					 / card->page_inc;
+		extra_pos = card->host->extra_pos / extra_pos;
+		extra_pos *= card->page_size / card->page_inc;
 		(*req)->count = 0;
 		(*req)->error = 0;
-		(*req)->addr = xd_card_req_address(card,
-						   card->page_size
-						   / card->page_inc);
+		(*req)->addr = xd_card_req_address(card, extra_pos);
 		return 0;
 	}
 }
@@ -602,9 +612,13 @@ process_next:
 		req->addr = xd_card_req_address(card, 0);
 		req->error = 0;
 		req->count = 0;
-		memcpy(&req->sg, &card->req_sg[card->seg_pos],
-		       sizeof(struct scatterlist));
-		req->sg.offset += card->seg_off;
+		sg_set_page(&req->sg, sg_page(&card->req_sg[card->seg_pos]),
+			    card->req_sg[card->seg_pos].length,
+			    card->req_sg[card->seg_pos].offset
+			    + card->seg_off);
+
+		dev_dbg(card->host->dev, "trans %d, %d, %p, %x, %x\n", card->seg_pos,
+			card->seg_off, req->sg.page, req->sg.offset, req->sg.length);
 
 		count = (req->sg.length - card->seg_off) / card->page_size;
 		card->trans_cnt = 0;
@@ -814,8 +828,9 @@ static int h_xd_card_read(struct xd_card_media *card,
 {
 	int rc = 0;
 
-	dev_dbg(card->host->dev, "read %d of %d at %d:%d\n",
-		(*req)->count, card->trans_cnt, card->seg_pos, card->seg_off);
+	dev_dbg(card->host->dev, "read %d (%d) of %d at %d:%d\n",
+		(*req)->count, (*req)->error, card->trans_cnt, card->seg_pos,
+		card->seg_off);
 
 	if ((*req)->count) {
 		if (card->auto_ecc) {
@@ -852,12 +867,11 @@ static int h_xd_card_read(struct xd_card_media *card,
 				(*req)->addr
 					= xd_card_req_address(card,
 							      card->trans_cnt);
-				memcpy(&(*req)->sg,
-				       &card->req_sg[card->seg_pos],
-				       sizeof(struct scatterlist));
-				(*req)->sg.offset += card->seg_off;
-				(*req)->sg.length = card->page_size
-						    / card->page_inc;
+				sg_set_page(&(*req)->sg,
+					sg_page(&card->req_sg[card->seg_pos]),
+					card->page_size / card->page_inc,
+					card->req_sg[card->seg_pos].offset
+					+ card->seg_off);
 				return 0;
 			}
 		}
@@ -963,6 +977,7 @@ static int xd_card_get_status(struct xd_card_host *host,
 	xd_card_new_req(host);
 	wait_for_completion(&card->req_complete);
 	*status = card->req.status;
+	card->req.flags = 0;
 	return card->req.error;
 }
 
@@ -979,6 +994,7 @@ static int xd_card_get_id(struct xd_card_host *host, unsigned char cmd,
 	card->next_request[1] = h_xd_card_default;
 	xd_card_new_req(host);
 	wait_for_completion(&card->req_complete);
+	card->req.flags = 0;
 	return card->req.error;
 }
 
@@ -1012,7 +1028,7 @@ static int xd_card_find_cis(struct xd_card_host *host)
 	unsigned int last_block = card->phy_block_cnt - card->log_block_cnt - 1;
 	int rc = 0;
 
-	buf = kmalloc(2 * r_size, GFP_KERNEL);
+	buf = kmalloc(20 * r_size, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 
@@ -1049,18 +1065,31 @@ static int xd_card_find_cis(struct xd_card_host *host)
 
 			xd_card_trans_req(card, &card->req);
 
-			card->req.flags |= XD_CARD_REQ_NO_ECC;
-
+			card->req.flags |= XD_CARD_REQ_NO_ECC
+					   | XD_CARD_REQ_EXTRA;
+			
 			xd_card_new_req(host);
 			wait_for_completion(&card->req_complete);
 			rc = card->req.error;
 
 			flash_bd_end(card->fbd);
 
+			dev_dbg(host->dev, "data: %08x %08x\n", *(unsigned int *)buf,
+				*(unsigned int *)(buf + 4));
+			dev_dbg(host->dev, "extra: %08x, %02x, %02x, %04x "
+				"(%02x, %02x, %02x), %04x, (%02x, %02x, %02x)\n",
+				host->extra.reserved, host->extra.data_status,
+				host->extra.block_status, host->extra.addr1,
+				host->extra.ecc_hi[0], host->extra.ecc_hi[1],
+				host->extra.ecc_hi[2], host->extra.addr2,
+				host->extra.ecc_lo[0], host->extra.ecc_lo[1],
+				host->extra.ecc_lo[2]);
+
 			if (!rc) {
 				if (xd_card_bad_block(host))
 					break;
 				else if (!xd_card_bad_data(host)) {
+					dev_dbg(host->dev, "memcpy\n");
 					memcpy(&card->cis, buf,
 					       sizeof(card->cis));
 					rc = sizeof(card->cis);
@@ -1501,6 +1530,11 @@ static void xd_card_set_media_param(struct xd_card_host *host)
 		host->set_param(host, XD_CARD_ADDR_SIZE, 3);
 	else if (card->capacity < 8388608)
 		host->set_param(host, XD_CARD_ADDR_SIZE, 4);
+
+	if (!card->sm_media)
+		host->set_param(host, XD_CARD_CLOCK, XD_CARD_NORMAL);
+	else
+		host->set_param(host, XD_CARD_CLOCK, XD_CARD_SLOW);
 }
 
 static int xd_card_sysfs_register(struct xd_card_host *host)
@@ -1557,6 +1591,13 @@ static int xd_card_init_media(struct xd_card_host *host)
 		return rc;
 
 	return 0;
+}
+
+static void xd_card_free_media(struct xd_card_media *card)
+{
+	flash_bd_destroy(card->fbd);
+	kfree(card->t_buf);
+	kfree(card);
 }
 
 struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
@@ -1660,9 +1701,7 @@ out:
 	if (host->card)
 		xd_card_set_media_param(host);
 	if (rc) {
-		flash_bd_destroy(card->fbd);
-		kfree(card->t_buf);
-		kfree(card);
+		xd_card_free_media(card);
 		return ERR_PTR(rc);
 	} else
 		return card;
@@ -1698,9 +1737,7 @@ static void xd_card_remove_media(struct xd_card_media *card)
 /*
 	xd_card_disk_release(disk);
 */
-	flash_bd_destroy(card->fbd);
-	kfree(card->t_buf);
-	kfree(card);
+	xd_card_free_media(card);
 }
 
 static void xd_card_check(struct work_struct *work)
@@ -1722,7 +1759,9 @@ static void xd_card_check(struct work_struct *work)
 		dev_dbg(host->dev, "error %ld allocating card\n",
 			PTR_ERR(card));
 		if (host->card) {
+			dev_dbg(host->dev, "x1 %p\n", host->card);
 			xd_card_remove_media(host->card);
+			dev_dbg(host->dev, "x2\n");
 			host->card = NULL;
 		}
 	} else {
@@ -1740,13 +1779,13 @@ static void xd_card_check(struct work_struct *work)
 		if (!host->card) {
 			host->card = card;
 			if (xd_card_init_media(host)) {
-				kfree(host->card);
+				xd_card_free_media(host->card);
 				host->card = NULL;
 			}
 		} else
-			kfree(card);
+			xd_card_free_media(card);
 	}
-
+	dev_dbg(host->dev, "x3\n");
 	if (!host->card)
 		host->set_param(host, XD_CARD_POWER, XD_CARD_POWER_OFF);
 

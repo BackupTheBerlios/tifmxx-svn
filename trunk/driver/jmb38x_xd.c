@@ -15,7 +15,12 @@
 #include <linux/delay.h>
 
 #include "linux/xd_card.h"
+/*
+#undef dev_dbg
 
+#define dev_dbg(dev, format, arg...)          \
+        dev_printk(KERN_EMERG , dev , format , ## arg)
+*/
 #define PCI_DEVICE_ID_JMICRON_JMB38X_XD 0x2384
 #define DRIVER_NAME "jmb38x_xd"
 
@@ -109,6 +114,7 @@ enum {
 #define ECC_GOOD0                   0x00000100
 #define ECC_XD_STATUS_MASK          0x000000ff
 
+#define INT_STATUS_OC_ERROR         0x00000080
 #define INT_STATUS_ECC_ERROR        0x00000040
 #define INT_STATUS_DMA_BOUNDARY     0x00000020
 #define INT_STATUS_TIMER_TO         0x00000010
@@ -117,7 +123,12 @@ enum {
 #define INT_STATUS_EOTRAN           0x00000002
 #define INT_STATUS_EOCMD            0x00000001
 
-#define INT_STATUS_ALL              0x0000007f
+#define INT_STATUS_ALL              0x000000ff
+
+#define CLOCK_CONTROL_MMIO          0x00000008
+#define CLOCK_CONTROL_62_5MHZ       0x00000004
+#define CLOCK_CONTROL_50MHZ         0x00000002
+#define CLOCK_CONTROL_40MHZ         0x00000001
 
 static int jmb38x_xd_issue_cmd(struct xd_card_host *host)
 {
@@ -129,6 +140,9 @@ static int jmb38x_xd_issue_cmd(struct xd_card_host *host)
 		jhost->req->error = -ETIME;
 		return jhost->req->error;
 	}
+
+	writel(jhost->req->addr, jhost->addr + MEDIA_ADDRESS_LO);
+	writel(jhost->req->addr >> 32, jhost->addr + MEDIA_ADDRESS_HI);
 
 	if (jhost->req->flags & XD_CARD_REQ_DATA) {
 		if (1 != pci_map_sg(jhost->pdev, &jhost->req->sg, 1,
@@ -166,15 +180,21 @@ static int jmb38x_xd_issue_cmd(struct xd_card_host *host)
 	else
 		jhost->host_ctl &= ~HOST_CONTROL_ECC_EN;
 
-	writel(jhost->req->addr, jhost->addr + MEDIA_ADDRESS_LO);
-	writel(jhost->req->addr >> 32, jhost->addr + MEDIA_ADDRESS_HI);
+	if (jhost->req->flags & XD_CARD_REQ_DIR)
+		jhost->host_ctl &= ~HOST_CONTROL_DATA_DIR;
+	else
+		jhost->host_ctl |= HOST_CONTROL_DATA_DIR;
 
 	writel(jhost->host_ctl | HOST_CONTROL_LED
 	       | (p_cnt & HOST_CONTROL_PAGE_CNT_MASK),
 	       jhost->addr + HOST_CONTROL);
+
 	mod_timer(&jhost->timer, jiffies + jhost->timeout_jiffies);
 	jhost->req->error = 0;
+	jhost->cmd_flags = 0;
+
 	writel(jhost->req->cmd << 16, jhost->addr + COMMAND);
+
 	dev_dbg(host->dev, "issue command %02x, %08x\n", jhost->req->cmd,
 		readl(jhost->addr + HOST_CONTROL));
 	return 0;
@@ -209,32 +229,36 @@ static void jmb38x_xd_read_id(struct jmb38x_xd_host *jhost)
 static void jmb38x_xd_complete_cmd(struct xd_card_host *host, int last)
 {
 	struct jmb38x_xd_host *jhost = xd_card_priv(host);
-	unsigned int p_cnt, host_ctl;
+	unsigned int host_ctl;
 	int rc;
 
-	del_timer(&jhost->timer);
+	if (!last)
+		del_timer(&jhost->timer);
 
 	host_ctl = readl(jhost->addr + HOST_CONTROL);
 	dev_dbg(&jhost->pdev->dev, "c control %08x\n", host_ctl);
 	dev_dbg(&jhost->pdev->dev, "c hstatus %08x\n",
 		readl(jhost->addr + ECC));
 
-	p_cnt = (host_ctl & HOST_CONTROL_PAGE_CNT_MASK)
-		 >> HOST_CONTROL_PAGE_CNT_SHIFT;
 
-	if (p_cnt)
-		p_cnt--;
-
-	p_cnt = sg_dma_len(&jhost->req->sg) - p_cnt * jhost->page_size;
-	
-	writel(~(HOST_CONTROL_LED | HOST_CONTROL_PAGE_CNT_MASK) & host_ctl,
+	writel((~(HOST_CONTROL_LED | HOST_CONTROL_PAGE_CNT_MASK)) & host_ctl,
 	       jhost->addr + HOST_CONTROL);
 
+	if (jhost->req->flags & XD_CARD_REQ_ID)
+		jmb38x_xd_read_id(jhost);
+
+	if (jhost->req->flags & XD_CARD_REQ_STATUS)
+		jhost->req->status = readl(jhost->addr + ECC)
+				     & ECC_XD_STATUS_MASK;
+
 	if (jhost->req->flags & XD_CARD_REQ_DATA) {
+		if (!jhost->req->error)
+			jhost->req->count = sg_dma_len(&jhost->req->sg);
+
 		pci_unmap_sg(jhost->pdev, &jhost->req->sg, 1,
 			     jhost->req->flags & XD_CARD_REQ_DIR
 			     ? PCI_DMA_TODEVICE : PCI_DMA_FROMDEVICE);
-		jhost->req->count = p_cnt;
+
 	}
 
 	if ((jhost->req->flags & XD_CARD_REQ_EXTRA)
@@ -251,13 +275,6 @@ static void jmb38x_xd_complete_cmd(struct xd_card_host *host, int last)
 		xd_card_set_extra(host, jhost->extra_data,
 				  jhost->extra_size);
 	}
-
-	if (jhost->req->flags & XD_CARD_REQ_ID)
-		jmb38x_xd_read_id(jhost);
-
-	if (jhost->req->flags & XD_CARD_REQ_STATUS)
-		jhost->req->status = readl(jhost->addr + ECC)
-				     & ECC_XD_STATUS_MASK;
 
 	if (!last) {
 		do {
@@ -296,8 +313,7 @@ static irqreturn_t jmb38x_xd_isr(int irq, void *dev_id)
 		if (irq_status & INT_STATUS_EOCMD) {
 			jhost->cmd_flags |= CMD_READY;
 
-			if (!(jhost->req->flags & XD_CARD_REQ_DATA)
-			    && !(jhost->req->flags & XD_CARD_REQ_EXTRA))
+			if (!(jhost->req->flags & XD_CARD_REQ_DATA))
 				jhost->cmd_flags |= DATA_READY;
 		}
 
@@ -332,7 +348,7 @@ static void jmb38x_xd_abort(unsigned long data)
 	spin_lock_irqsave(&jhost->lock, flags);
 	if (jhost->req) {
 		jhost->req->error = -ETIME;
-		jmb38x_xd_complete_cmd(host, 0);
+		jmb38x_xd_complete_cmd(host, 1);
 	}
 	spin_unlock_irqrestore(&jhost->lock, flags);
 }
@@ -360,15 +376,17 @@ static void jmb38x_xd_request(struct xd_card_host *host)
 
 static void jmb38x_xd_reset(struct jmb38x_xd_host *jhost)
 {
+	writel(HOST_CONTROL_RESET, jhost->addr + HOST_CONTROL);
+	mmiowb();
 	writel(HOST_CONTROL_RESET_REQ, jhost->addr + HOST_CONTROL);
+	mmiowb();
 
-	while (HOST_CONTROL_RESET_REQ & readl(jhost->addr + HOST_CONTROL)) {
+	while ((HOST_CONTROL_RESET_REQ | HOST_CONTROL_RESET)
+	       & readl(jhost->addr + HOST_CONTROL)) {
 		ndelay(20);
 		dev_dbg(&jhost->pdev->dev, "reset\n");
 	}
 
-	writel(HOST_CONTROL_RESET, jhost->addr + HOST_CONTROL);
-	mmiowb();
 	writel(INT_STATUS_ALL, jhost->addr + INT_STATUS_ENABLE);
 	writel(INT_STATUS_ALL, jhost->addr + INT_SIGNAL_ENABLE);
 }
@@ -384,14 +402,22 @@ static void jmb38x_xd_set_param(struct xd_card_host *host,
 	case XD_CARD_POWER:
 		if (value == XD_CARD_POWER_ON) {
 			jmb38x_xd_reset(jhost);
-			// t_val  = readl(jhost->addr + HOST_CONTROL);
+
+			writel(CLOCK_CONTROL_MMIO | CLOCK_CONTROL_40MHZ,
+			       jhost->addr + CLOCK_CONTROL);
+
 			jhost->host_ctl = HOST_CONTROL_POWER_EN
 					  | HOST_CONTROL_CLOCK_EN;
 
-			writel(PAD_PU_PD_ON_XD, jhost->addr + PAD_PU_PD);
+			writel(PAD_OUTPUT_ENABLE_XD0 << 16,
+			       jhost->addr + PAD_PU_PD);
 			writel(PAD_OUTPUT_ENABLE_XD0,
 			       jhost->addr + PAD_OUTPUT_ENABLE);
+
+			msleep(1);
+
 			writel(jhost->host_ctl, jhost->addr + HOST_CONTROL);
+			writel(PAD_PU_PD_ON_XD, jhost->addr + PAD_PU_PD);
 
 			msleep(1);
 
@@ -404,22 +430,28 @@ static void jmb38x_xd_set_param(struct xd_card_host *host,
 			jhost->host_ctl &= ~HOST_CONTROL_RW;
 			writel(jhost->host_ctl, jhost->addr + HOST_CONTROL);
 
+			dev_dbg(host->dev, "p1\n");
 			jmb38x_xd_reset(jhost);
+			dev_dbg(host->dev, "p2\n");
 			msleep(1);
 
+			dev_dbg(host->dev, "p3\n");
 			if (readl(jhost->addr + PAD_OUTPUT_ENABLE))
 				writel(PAD_OUTPUT_ENABLE_XD0,
 				       jhost->addr + PAD_OUTPUT_ENABLE);
 
 			msleep(1);
+			dev_dbg(host->dev, "p4\n");
 
 			jhost->host_ctl &= ~(HOST_CONTROL_POWER_EN
 					     | HOST_CONTROL_CLOCK_EN);
 			writel(jhost->host_ctl, jhost->addr + HOST_CONTROL);
 
 			msleep(1);
+			dev_dbg(host->dev, "p5\n");
 
 			writel(0, jhost->addr + PAD_OUTPUT_ENABLE);
+			dev_dbg(host->dev, "p6\n");
 			writel(PAD_PU_PD_OFF, jhost->addr + PAD_PU_PD);
 			dev_dbg(host->dev, "power off\n");
 			mmiowb();
@@ -531,7 +563,7 @@ static int jmb38x_xd_probe(struct pci_dev *pdev,
 	pci_read_config_dword(pdev, 0xac, &rc);
 	pci_write_config_dword(pdev, 0xac, rc | 0x00470000);
 	pci_read_config_dword(pdev, 0xb0, &rc);
-	pci_write_config_dword(pdev, 0xb0, rc & 0xffff0000);
+	pci_write_config_dword(pdev, 0xb0, rc & 0xffff00ff);
 
 	host = xd_card_alloc_host(sizeof(struct jmb38x_xd_host), &pdev->dev);
 
@@ -594,13 +626,17 @@ static void jmb38x_xd_remove(struct pci_dev *pdev)
 	writel(0, jhost->addr + INT_SIGNAL_ENABLE);
 	writel(0, jhost->addr + INT_STATUS_ENABLE);
 	mmiowb();
+	free_irq(pdev->irq, host);
 	dev_dbg(&pdev->dev, "interrupts off\n");
+	del_timer_sync(&jhost->timer);
+
 	spin_lock_irqsave(&jhost->lock, flags);
-	if (jhost->req)
+	if (jhost->req) {
+		jhost->req->error = -ETIME;
 		jmb38x_xd_complete_cmd(host, 1);
+	}
 	spin_unlock_irqrestore(&jhost->lock, flags);
 
-	free_irq(pdev->irq, host);
 	xd_card_free_host(host);
 	iounmap(addr);
 
