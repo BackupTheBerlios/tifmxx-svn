@@ -496,8 +496,11 @@ static void jmb38x_xd_set_param(struct xd_card_host *host,
 static int jmb38x_xd_suspend(struct pci_dev *pdev, pm_message_t state)
 {
 	struct xd_card_host *host = pci_get_drvdata(pdev);
+	int rc;
 
-	xd_card_suspend_host(host);
+	rc = xd_card_suspend_host(host);
+	if (rc)
+		return rc;
 
 	pci_save_state(pdev);
 	pci_enable_wake(pdev, pci_choose_state(pdev, state), 0);
@@ -523,10 +526,7 @@ static int jmb38x_xd_resume(struct pci_dev *pdev)
 	pci_read_config_dword(pdev, 0xb0, &rc);
 	pci_write_config_dword(pdev, 0xb0, rc & 0xffff0000);
 
-	xd_card_resume_host(host);
-	xd_card_detect_change(host);
-
-	return 0;
+	return xd_card_resume_host(host);
 }
 
 #else

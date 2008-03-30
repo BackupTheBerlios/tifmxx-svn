@@ -58,6 +58,14 @@ static int h_xd_card_read(struct xd_card_media *card,
 			  struct xd_card_request **req);
 static int h_xd_card_read_tmp(struct xd_card_media *card,
 			      struct xd_card_request **req);
+static int h_xd_card_read_copy(struct xd_card_media *card,
+			       struct xd_card_request **req);
+static int h_xd_card_write(struct xd_card_media *card,
+			   struct xd_card_request **req);
+static int h_xd_card_write_tmp(struct xd_card_media *card,
+			       struct xd_card_request **req);
+static int h_xd_card_erase(struct xd_card_media *card,
+			   struct xd_card_request **req);
 static int h_xd_card_req_init(struct xd_card_media *card,
 			      struct xd_card_request **req);
 
@@ -381,6 +389,7 @@ EXPORT_SYMBOL(xd_card_next_req);
 void xd_card_new_req(struct xd_card_host *host)
 {
 	if (host->card) {
+		host->card->next_request[1] = host->card->next_request[0];
 		host->card->next_request[0] = h_xd_card_req_init;
 		host->retries = cmd_retries;
 		host->request(host);
@@ -442,11 +451,11 @@ static unsigned long long xd_card_req_address(struct xd_card_media *card,
 	rv <<= card->block_addr_bits;
 	rv |= card->flash_req.phy_block;
 	rv <<= card->page_addr_bits;
-	rv |= card->flash_req.page_off * card->page_inc;
+	rv |= card->flash_req.page_off * (card->page_size / card->hw_page_size);
 	rv <<= 8;
 
 	if (byte_off)
-		rv += (byte_off / (card->page_size / card->page_inc)) << 8;
+		rv += (byte_off / card->hw_page_size) << 8;
 
 	return rv;
 }
@@ -483,9 +492,10 @@ static int h_xd_card_read_extra(struct xd_card_media *card,
 		return -EAGAIN;
 	} else {
 		unsigned int extra_pos = sizeof(struct xd_card_extra)
-					 / card->page_inc;
+					 / (card->page_size
+					    / card->hw_page_size);
 		extra_pos = card->host->extra_pos / extra_pos;
-		extra_pos *= card->page_size / card->page_inc;
+		extra_pos *= card->hw_page_size;
 		(*req)->count = 0;
 		(*req)->error = 0;
 		(*req)->addr = xd_card_req_address(card, extra_pos);
@@ -588,113 +598,6 @@ static void xd_card_copy_tmp(struct xd_card_media *card, unsigned int off,
 	}
 }
 
-static int xd_card_trans_req(struct xd_card_media *card,
-			     struct xd_card_request *req)
-{
-	unsigned int count = 0;
-	int rc = 0;
-
-process_next:
-	dev_dbg(card->host->dev,
-		"fbd req %x: (%x) %x -> %x, dst: %x + %x, src: %x:%x\n",
-		card->flash_req.cmd, card->flash_req.zone,
-		card->flash_req.log_block, card->flash_req.phy_block,
-		card->flash_req.page_off, card->flash_req.page_cnt,
-		card->flash_req.src.phy_block, card->flash_req.src.page_off);
-
-	switch (card->flash_req.cmd) {
-	case FBD_NONE:
-		return -EAGAIN;
-	case FBD_READ:
-		req->cmd = XD_CARD_CMD_READ1;
-		req->flags |= XD_CARD_REQ_DATA;
-		req->flags &= ~XD_CARD_REQ_DIR;
-		req->addr = xd_card_req_address(card, 0);
-		req->error = 0;
-		req->count = 0;
-		sg_set_page(&req->sg, sg_page(&card->req_sg[card->seg_pos]),
-			    card->req_sg[card->seg_pos].length,
-			    card->req_sg[card->seg_pos].offset
-			    + card->seg_off);
-
-		dev_dbg(card->host->dev, "trans %d, %d, %p, %x, %x\n", card->seg_pos,
-			card->seg_off, req->sg.page, req->sg.offset, req->sg.length);
-
-		count = (req->sg.length - card->seg_off) / card->page_size;
-		card->trans_cnt = 0;
-		card->trans_len = min(count, card->flash_req.page_cnt)
-				  * card->page_size;
-
-		if (card->auto_ecc)
-			req->sg.length = card->trans_len;
-		else {
-			req->flags |= XD_CARD_REQ_EXTRA;
-			req->sg.length = card->page_size / card->page_inc;
-			card->host->extra_pos = 0;
-		}
-
-		card->next_request[1] = h_xd_card_read; 
-		return 0;
-	case FBD_READ_TMP:
-		req->cmd = XD_CARD_CMD_READ1;
-		req->flags |= XD_CARD_REQ_DATA;
-		req->flags &= ~XD_CARD_REQ_DIR;
-		req->addr = xd_card_req_address(card, 0);
-		req->error = 0;
-		req->count = 0;
-		card->trans_cnt = 0;
-		card->trans_len = card->flash_req.page_cnt * card->page_size;
-
-		if (card->auto_ecc)
-			sg_set_buf(&req->sg, card->t_buf, card->trans_len);
-		else {
-			req->flags |= XD_CARD_REQ_EXTRA;
-			sg_set_buf(&req->sg, card->t_buf,
-				   card->page_size / card->page_inc);
-			card->host->extra_pos = 0;
-		}
-
-		card->next_request[1] = h_xd_card_read_tmp;
-		return 0;
-	case FBD_FLUSH_TMP:
-		xd_card_copy_tmp(card, card->flash_req.byte_off,
-				 card->flash_req.byte_cnt, FLUSH_TMP);
-		card->trans_cnt -= card->flash_req.byte_cnt;
-		count = card->flash_req.byte_cnt;
-		break;
-	case FBD_SKIP:
-		xd_card_copy_tmp(card, 0, card->flash_req.byte_cnt, ONE_FILL);
-		card->trans_cnt -= card->flash_req.byte_cnt;
-		count = card->flash_req.byte_cnt;
-		break;
-	case FBD_ERASE:
-		BUG();
-	case FBD_COPY:
-		BUG();
-	case FBD_WRITE:
-		BUG();
-	case FBD_WRITE_TMP:
-		BUG();
-	case FBD_FILL_TMP:
-		xd_card_copy_tmp(card, card->flash_req.byte_off,
-				 card->flash_req.byte_cnt, FILL_TMP);
-		card->trans_cnt -= card->flash_req.byte_cnt;
-		count = card->flash_req.byte_cnt;
-		break;
-	case FBD_MARK:
-		memset(card->t_buf, 0xff, card->page_size);
-		BUG();
-	default:
-		BUG();
-	};
-
-	rc = flash_bd_next_req(card->fbd, &card->flash_req, count, rc);
-	if (rc)
-		return rc;
-
-	goto process_next;
-}
-
 static int xd_card_check_ecc(struct xd_card_media *card)
 {
 	unsigned int ref_ecc, act_ecc;
@@ -713,9 +616,6 @@ static int xd_card_check_ecc(struct xd_card_media *card)
 	off = card->seg_off;
 	s_len = c_sg->length - off;
 
-	/* We are checking at most two pages of data, which may be spread
-	 * over 2 segments.
-	 */
 	while (do_other < 2) {
 		e_pos = 0;
 		e_state = 0;
@@ -761,13 +661,7 @@ static int xd_card_check_ecc(struct xd_card_media *card)
 			break;
 		}
 
-		if (s_len >= card->page_size)
-			off += e_pos;
-		else {
-			off = 0;
-			c_sg = &card->req_sg[card->seg_pos + 1];
-			s_len = c_sg->length;
-		}
+		off += e_pos;
 
 		do_other++;
 		ref_ecc = card->host->extra.ecc_hi[0]
@@ -775,6 +669,103 @@ static int xd_card_check_ecc(struct xd_card_media *card)
 			  | (card->host->extra.ecc_hi[2] << 16);
 	}
 	return 0;
+}
+
+static void xd_card_update_extra(struct xd_card_media *card)
+{
+	unsigned int act_ecc;
+	unsigned int e_pos = 0, off = 0, e_state, p_off, p_cnt, s_len;
+	struct scatterlist *c_sg;
+	struct page *pg;
+	unsigned char *buf;
+	int do_other = 0;
+	unsigned long flags;
+
+	c_sg = &card->req_sg[card->seg_pos];
+	off = card->seg_off;
+	s_len = c_sg->length - off;
+
+	if (s_len < card->page_size)
+		return;
+
+	xd_card_addr_to_extra(&card->host->extra, card->flash_req.log_block);
+
+	if (card->auto_ecc || (card->req.flags & XD_CARD_REQ_NO_ECC))
+		return;
+
+	while (do_other < 2) {
+		e_pos = 0;
+		e_state = 0;
+
+		while (s_len) {
+			pg = nth_page(sg_page(c_sg),
+				      (c_sg->offset + off + e_pos)
+				       >> PAGE_SHIFT);
+			p_off = offset_in_page(c_sg->offset + off + e_pos);
+			p_cnt = PAGE_SIZE - p_off;
+			p_cnt = min(p_cnt, s_len);
+
+			local_irq_save(flags);
+			buf = kmap_atomic(pg, KM_BIO_SRC_IRQ) + p_off;
+
+			if (xd_card_ecc_step(&e_state, &e_pos, buf, p_cnt)) {
+				kunmap_atomic(buf - p_off, KM_BIO_SRC_IRQ);
+				local_irq_restore(flags);
+				s_len = c_sg->length - off - e_pos;
+				break;
+			}
+			kunmap_atomic(buf - p_off, KM_BIO_SRC_IRQ);
+			local_irq_restore(flags);
+			s_len = c_sg->length - off - e_pos;
+		}
+
+		act_ecc = xd_card_ecc_value(e_state);
+
+		if (!do_other) {
+			card->host->extra.ecc_lo[0] = act_ecc & 0xff;
+			card->host->extra.ecc_lo[1] = (act_ecc >> 8) & 0xff;
+			card->host->extra.ecc_lo[2] = (act_ecc >> 16) & 0xff;
+		} else {
+			card->host->extra.ecc_hi[0] = act_ecc & 0xff;
+			card->host->extra.ecc_hi[1] = (act_ecc >> 8) & 0xff;
+			card->host->extra.ecc_hi[2] = (act_ecc >> 16) & 0xff;
+		}
+		
+		off += e_pos;
+
+		do_other++;
+	}
+}
+
+static void xd_card_update_extra_tmp(struct xd_card_media *card)
+{
+	unsigned int act_ecc;
+	unsigned int e_pos = 0, e_state = 0, len = card->page_size;
+	unsigned char *buf = card->t_buf + card->trans_cnt;
+
+	if ((card->trans_len - card->trans_cnt) < card->page_size)
+		return;
+
+	xd_card_addr_to_extra(&card->host->extra, card->flash_req.log_block);
+
+	if (card->auto_ecc || (card->req.flags & XD_CARD_REQ_NO_ECC))
+		return;
+
+	xd_card_ecc_step(&e_state, &e_pos, buf, len);
+	act_ecc = xd_card_ecc_value(e_state);
+	card->host->extra.ecc_lo[0] = act_ecc & 0xff;
+	card->host->extra.ecc_lo[1] = (act_ecc >> 8) & 0xff;
+	card->host->extra.ecc_lo[2] = (act_ecc >> 16) & 0xff;
+
+	e_state = 0;
+	buf += e_pos;
+	len -= e_pos;
+	e_pos = 0;
+	xd_card_ecc_step(&e_state, &e_pos, buf, len);
+	act_ecc = xd_card_ecc_value(e_state);
+	card->host->extra.ecc_hi[0] = act_ecc & 0xff;
+	card->host->extra.ecc_hi[1] = (act_ecc >> 8) & 0xff;
+	card->host->extra.ecc_hi[2] = (act_ecc >> 16) & 0xff;
 }
 
 static int xd_card_check_ecc_tmp(struct xd_card_media *card)
@@ -823,6 +814,239 @@ static int xd_card_check_ecc_tmp(struct xd_card_media *card)
 	return 0;
 }
 
+static int xd_card_trans_req(struct xd_card_media *card,
+			     struct xd_card_request *req)
+{
+	unsigned int count = 0;
+	int rc = 0;
+
+process_next:
+	dev_dbg(card->host->dev,
+		"fbd req %x: (%x) %x -> %x, dst: %x + %x, src: %x:%x\n",
+		card->flash_req.cmd, card->flash_req.zone,
+		card->flash_req.log_block, card->flash_req.phy_block,
+		card->flash_req.page_off, card->flash_req.page_cnt,
+		card->flash_req.src.phy_block, card->flash_req.src.page_off);
+
+	switch (card->flash_req.cmd) {
+	case FBD_NONE:
+		return -EAGAIN;
+	case FBD_READ:
+		req->cmd = XD_CARD_CMD_READ1;
+		req->flags = XD_CARD_REQ_DATA;
+		req->addr = xd_card_req_address(card, 0);
+		req->error = 0;
+		req->count = 0;
+		sg_set_page(&req->sg, sg_page(&card->req_sg[card->seg_pos]),
+			    card->req_sg[card->seg_pos].length,
+			    card->req_sg[card->seg_pos].offset
+			    + card->seg_off);
+
+		dev_dbg(card->host->dev, "trans r %d, %d, %p, %x, %x\n", card->seg_pos,
+			card->seg_off, req->sg.page, req->sg.offset, req->sg.length);
+
+		count = (req->sg.length - card->seg_off) / card->page_size;
+		card->trans_cnt = 0;
+		card->trans_len = min(count, card->flash_req.page_cnt)
+				  * card->page_size;
+
+		if (card->auto_ecc)
+			req->sg.length = card->trans_len;
+		else {
+			req->flags |= XD_CARD_REQ_EXTRA;
+			req->sg.length = card->hw_page_size;
+			card->host->extra_pos = 0;
+		}
+
+		card->next_request[0] = h_xd_card_read; 
+		return 0;
+	case FBD_READ_TMP:
+		req->cmd = XD_CARD_CMD_READ1;
+		req->flags = XD_CARD_REQ_DATA;
+		req->addr = xd_card_req_address(card, 0);
+		req->error = 0;
+		req->count = 0;
+		card->trans_cnt = 0;
+		card->trans_len = card->flash_req.page_cnt * card->page_size;
+
+		if (card->auto_ecc)
+			sg_set_buf(&req->sg, card->t_buf, card->trans_len);
+		else {
+			req->flags |= XD_CARD_REQ_EXTRA;
+			sg_set_buf(&req->sg, card->t_buf, card->hw_page_size);
+			card->host->extra_pos = 0;
+		}
+
+		card->next_request[0] = h_xd_card_read_tmp;
+		return 0;
+	case FBD_FLUSH_TMP:
+		xd_card_copy_tmp(card, card->flash_req.byte_off,
+				 card->flash_req.byte_cnt, FLUSH_TMP);
+		card->trans_cnt -= card->flash_req.byte_cnt;
+		count = card->flash_req.byte_cnt;
+		break;
+	case FBD_SKIP:
+		xd_card_copy_tmp(card, 0, card->flash_req.byte_cnt, ONE_FILL);
+		card->trans_cnt -= card->flash_req.byte_cnt;
+		count = card->flash_req.byte_cnt;
+		break;
+	case FBD_ERASE:
+		req->cmd = XD_CARD_CMD_ERASE_SET;
+		req->flags = XD_CARD_REQ_DIR;
+		req->addr = xd_card_req_address(card, 0);
+		req->error = 0;
+		req->count = 0;
+		card->trans_cnt = 0;
+		card->trans_len = 0;
+
+		card->next_request[0] = h_xd_card_erase;
+		return 0;
+	case FBD_COPY:
+		req->cmd = XD_CARD_CMD_READ1;
+		req->flags = XD_CARD_REQ_DATA;
+		req->addr = card->flash_req.zone;
+		req->addr <<= card->block_addr_bits;
+		req->addr |= card->flash_req.src.phy_block;
+		req->addr <<= card->page_addr_bits;
+		req->addr |= card->flash_req.src.page_off
+			     * (card->page_size / card->hw_page_size);
+		req->addr <<= 8;
+
+		req->error = 0;
+		req->count = 0;
+		card->trans_cnt = 0;
+		card->trans_len = card->flash_req.page_cnt * card->page_size;
+
+		if (card->auto_ecc)
+			sg_set_buf(&req->sg, card->t_buf, card->trans_len);
+		else {
+			req->flags |= XD_CARD_REQ_EXTRA;
+			sg_set_buf(&req->sg, card->t_buf, card->hw_page_size);
+			card->host->extra_pos = 0;
+		}
+
+		card->next_request[0] = h_xd_card_read_copy;
+		return 0;
+	case FBD_WRITE:
+		req->cmd = XD_CARD_CMD_INPUT;
+		req->flags = XD_CARD_REQ_DATA | XD_CARD_REQ_DIR
+			     | XD_CARD_REQ_EXTRA;
+		req->addr = xd_card_req_address(card, 0);
+		req->error = 0;
+		req->count = card->hw_page_size;
+		sg_set_page(&req->sg, sg_page(&card->req_sg[card->seg_pos]),
+			    req->count,
+			    card->req_sg[card->seg_pos].offset
+			    + card->seg_off);
+
+		dev_dbg(card->host->dev, "trans w %d, %d, %p, %x, %x\n", card->seg_pos,
+			card->seg_off, req->sg.page, req->sg.offset, req->sg.length);
+
+		card->trans_len = card->req_sg[card->seg_pos].length
+				  - card->seg_off;
+		card->trans_cnt = 0;
+
+		memset(&card->host->extra, 0xff, sizeof(struct xd_card_extra));
+		xd_card_update_extra(card);
+
+		card->next_request[0] = h_xd_card_write;
+		return 0;
+	case FBD_WRITE_TMP:
+		req->cmd = XD_CARD_CMD_INPUT;
+		req->flags = XD_CARD_REQ_DATA | XD_CARD_REQ_DIR
+			     | XD_CARD_REQ_EXTRA;
+		req->addr = xd_card_req_address(card, 0);
+		req->error = 0;
+		req->count = card->hw_page_size;
+		card->trans_cnt = 0;
+		card->trans_len = card->flash_req.page_cnt * card->page_size;
+
+		sg_set_buf(&req->sg, card->t_buf, card->hw_page_size);
+
+		memset(&card->host->extra, 0xff, sizeof(struct xd_card_extra));
+		xd_card_update_extra_tmp(card);
+
+		card->next_request[0] = h_xd_card_write_tmp; 
+		return 0;
+	case FBD_FILL_TMP:
+		xd_card_copy_tmp(card, card->flash_req.byte_off,
+				 card->flash_req.byte_cnt, FILL_TMP);
+		card->trans_cnt -= card->flash_req.byte_cnt;
+		count = card->flash_req.byte_cnt;
+		break;
+	case FBD_MARK:
+		memset(card->t_buf, 0xff,
+		       card->page_size * card->flash_req.page_cnt);
+		req->cmd = XD_CARD_CMD_INPUT;
+		req->flags = XD_CARD_REQ_DATA | XD_CARD_REQ_DIR
+			     | XD_CARD_REQ_EXTRA | XD_CARD_REQ_NO_ECC;
+		req->addr = xd_card_req_address(card, 0);
+		req->error = 0;
+		req->count = card->hw_page_size;
+		card->trans_cnt = 0;
+		card->trans_len = card->flash_req.page_cnt * card->page_size;
+
+		sg_set_buf(&req->sg, card->t_buf, card->hw_page_size);
+
+		memset(&card->host->extra, 0xff, sizeof(struct xd_card_extra));
+		xd_card_update_extra_tmp(card);
+
+		card->next_request[0] = h_xd_card_write_tmp; 
+		return 0;
+	case FBD_MARK_BAD:
+		memset(card->t_buf, 0xff,
+		       card->page_size * card->flash_req.page_cnt);
+		req->cmd = XD_CARD_CMD_INPUT;
+		req->flags = XD_CARD_REQ_DATA | XD_CARD_REQ_DIR
+			     | XD_CARD_REQ_EXTRA | XD_CARD_REQ_NO_ECC;
+		req->addr = xd_card_req_address(card, 0);
+		req->error = 0;
+		req->count = card->hw_page_size;
+		card->trans_cnt = 0;
+		card->trans_len = card->flash_req.page_cnt * card->page_size;
+
+		sg_set_buf(&req->sg, card->t_buf, card->hw_page_size);
+
+		memset(&card->host->extra, 0xff, sizeof(struct xd_card_extra));
+		xd_card_update_extra_tmp(card);
+		card->host->extra.block_status = 0xf0;
+
+		card->next_request[0] = h_xd_card_write_tmp; 
+		return 0;
+	default:
+		BUG();
+	};
+
+	rc = flash_bd_next_req(card->fbd, &card->flash_req, count, rc);
+	if (rc)
+		return rc;
+
+	goto process_next;
+}
+
+static int xd_card_try_next_req(struct xd_card_media *card,
+				struct xd_card_request **req)
+{
+	int rc = (*req)->error;
+
+	rc = flash_bd_next_req(card->fbd, &card->flash_req,
+			       card->trans_cnt, rc);
+
+	if (rc) {
+		complete(&card->req_complete);
+		return rc;
+	}
+
+	rc = xd_card_trans_req(card, *req);
+
+	if (rc) {
+		complete(&card->req_complete);
+		return rc;
+	}
+
+	return 0;
+}
+
 static int h_xd_card_read(struct xd_card_media *card,
 			  struct xd_card_request **req)
 {
@@ -837,12 +1061,13 @@ static int h_xd_card_read(struct xd_card_media *card,
 			xd_card_advance(card, (*req)->count);
 			card->trans_cnt = (*req)->count;
 		} else {
-			rc = card->page_size / card->page_inc;
+			rc = card->hw_page_size;
 
 			if ((*req)->count != rc) {
 				rc *= card->host->extra_pos
 				      / (sizeof(struct xd_card_extra)
-					 / card->page_inc);
+					 / (card->page_size
+					    / card->hw_page_size));
 				xd_card_advance(card, -rc);
 				card->trans_cnt -= rc;
 				rc = -EILSEQ;
@@ -869,33 +1094,18 @@ static int h_xd_card_read(struct xd_card_media *card,
 							      card->trans_cnt);
 				sg_set_page(&(*req)->sg,
 					sg_page(&card->req_sg[card->seg_pos]),
-					card->page_size / card->page_inc,
+					card->hw_page_size,
 					card->req_sg[card->seg_pos].offset
 					+ card->seg_off);
 				return 0;
 			}
 		}
-	} else
-		rc = (*req)->error;
-
-	rc = flash_bd_next_req(card->fbd, &card->flash_req, card->trans_cnt,
-			       rc);
-	dev_dbg(card->host->dev, "read next req %d\n", rc);
-	if (rc) {
-		complete(&card->req_complete);
-		return rc;
 	}
 
-	rc = xd_card_trans_req(card, *req);
-	dev_dbg(card->host->dev, "trans next req %d\n", rc);
-	if (rc) {
-		complete(&card->req_complete);
-		return rc;
-	}
+	if (!(*req)->error)
+		(*req)->error = rc;
 
-	card->next_request[0] = card->next_request[1];
-
-	return 0;
+	return xd_card_try_next_req(card, req);
 }
 
 static int h_xd_card_read_tmp(struct xd_card_media *card,
@@ -910,12 +1120,13 @@ static int h_xd_card_read_tmp(struct xd_card_media *card,
 		if (card->auto_ecc)
 			card->trans_cnt = (*req)->count;
 		else {
-			rc = card->page_size / card->page_inc;
+			rc = card->hw_page_size;
 
 			if ((*req)->count != rc) {
 				rc *= card->host->extra_pos
 				      / (sizeof(struct xd_card_extra)
-					 / card->page_inc);
+					 / (card->page_size
+					    / card->hw_page_size));
 				card->trans_cnt -= rc;
 				rc = -EILSEQ;
 			} else {
@@ -937,32 +1148,256 @@ static int h_xd_card_read_tmp(struct xd_card_media *card,
 							      card->trans_cnt);
 				sg_set_buf(&(*req)->sg,
 					   card->t_buf + card->trans_cnt,
-					   card->page_size / card->page_inc);
+					   card->hw_page_size);
 				return 0;
 			}
 		}
-	} else
-		rc = (*req)->error;
-
-	rc = flash_bd_next_req(card->fbd, &card->flash_req, card->trans_cnt,
-			       rc);
-
-	if (rc) {
-		complete(&card->req_complete);
-		return rc;
 	}
 
-	rc = xd_card_trans_req(card, *req);
+	if (!(*req)->error)
+		(*req)->error = rc;
 
-	if (rc) {
-		complete(&card->req_complete);
-		return rc;
-	}
-
-	card->next_request[0] = card->next_request[1];
-
-	return 0;
+	return xd_card_try_next_req(card, req);
 }
+
+static int h_xd_card_check_stat(struct xd_card_media *card,
+				struct xd_card_request **req)
+{
+	if (!(*req)->error) {
+		if ((*req)->status & XD_CARD_STTS_FAIL)
+			(*req)->error = -EFAULT;
+	}
+	return xd_card_try_next_req(card, req);
+}
+
+static int h_xd_card_write_tmp_adv(struct xd_card_media *card,
+				   struct xd_card_request **req)
+{
+	if (!(*req)->error && ((*req)->status & XD_CARD_STTS_FAIL))
+		(*req)->error = -EFAULT;
+
+	if (!(*req)->error) {
+		card->trans_cnt += card->hw_page_size;
+
+		if (card->trans_cnt < card->trans_len) {
+			if (!card->host->extra_pos)
+				xd_card_update_extra_tmp(card);
+
+			(*req)->cmd = XD_CARD_CMD_INPUT;
+			(*req)->flags = XD_CARD_REQ_DATA
+					| XD_CARD_REQ_DIR
+					| XD_CARD_REQ_EXTRA;
+			(*req)->addr = xd_card_req_address(card,
+							   card->trans_cnt);
+			(*req)->error = 0;
+			(*req)->count = card->hw_page_size;
+			sg_set_buf(&(*req)->sg, card->t_buf + card->trans_cnt,
+				   (*req)->count);
+			card->next_request[0] = h_xd_card_write_tmp;
+			return 0;
+		}
+	}
+
+	return xd_card_try_next_req(card, req);
+}
+
+static int h_xd_card_write_adv(struct xd_card_media *card,
+			       struct xd_card_request **req)
+{
+	if (!(*req)->error && ((*req)->status & XD_CARD_STTS_FAIL))
+		(*req)->error = -EFAULT;
+
+	if (!(*req)->error) {
+		xd_card_advance(card, card->hw_page_size);
+		card->trans_cnt += card->hw_page_size;
+
+		if (card->trans_cnt < card->trans_len) {
+			if (!card->host->extra_pos)
+				xd_card_update_extra(card);
+
+			(*req)->cmd = XD_CARD_CMD_INPUT;
+			(*req)->flags = XD_CARD_REQ_DATA
+					| XD_CARD_REQ_DIR
+					| XD_CARD_REQ_EXTRA;
+			(*req)->addr = xd_card_req_address(card,
+							   card->trans_cnt);
+			(*req)->error = 0;
+			(*req)->count = card->hw_page_size;
+			sg_set_page(&(*req)->sg,
+				    sg_page(&card->req_sg[card->seg_pos]),
+				    (*req)->count,
+				    card->req_sg[card->seg_pos].offset
+				    + card->seg_off);
+			card->next_request[0] = h_xd_card_write;
+			return 0;
+		}
+	}
+
+	return xd_card_try_next_req(card, req);
+}
+
+static int h_xd_card_write_stat(struct xd_card_media *card,
+				struct xd_card_request **req)
+{
+	if (!(*req)->error) {
+		(*req)->cmd = XD_CARD_CMD_STATUS1;
+		(*req)->flags = XD_CARD_REQ_STATUS;
+		(*req)->error = 0;
+		(*req)->count = 0;
+		card->trans_cnt = 0;
+		card->trans_len = 0;
+		card->next_request[0] = card->next_request[1];
+		return 0;
+	} else
+		return xd_card_try_next_req(card, req);
+}
+
+static int h_xd_card_write(struct xd_card_media *card,
+			   struct xd_card_request **req)
+{
+	if (!(*req)->error) {
+		if ((*req)->count == card->hw_page_size) {
+			(*req)->cmd = XD_CARD_CMD_PAGE_PROG;
+			(*req)->flags = XD_CARD_REQ_DIR;
+			(*req)->error = 0;
+			(*req)->count = 0;
+
+			card->next_request[0] = h_xd_card_write_stat;
+			card->next_request[1] = h_xd_card_write_adv;
+			return 0;
+		} else
+			(*req)->error = -EIO;
+	}
+
+	return xd_card_try_next_req(card, req);
+}
+
+static int h_xd_card_write_tmp(struct xd_card_media *card,
+			       struct xd_card_request **req)
+{
+	if (!(*req)->error) {
+		if ((*req)->count == card->hw_page_size) {
+			(*req)->cmd = XD_CARD_CMD_PAGE_PROG;
+			(*req)->flags = XD_CARD_REQ_DIR;
+			(*req)->error = 0;
+			(*req)->count = 0;
+
+			card->next_request[0] = h_xd_card_write_stat;
+			card->next_request[1] = h_xd_card_write_tmp_adv;
+			return 0;
+		} else
+			(*req)->error = -EIO;
+	}
+
+	return xd_card_try_next_req(card, req);
+}
+
+static int h_xd_card_read_copy(struct xd_card_media *card,
+			       struct xd_card_request **req)
+{
+	int rc = 0;
+
+	dev_dbg(card->host->dev, "read copy %d of %d\n",
+		(*req)->count, card->trans_cnt);
+
+	if ((*req)->count) {
+		if (card->auto_ecc)
+			card->trans_cnt = (*req)->count;
+		else {
+			rc = card->hw_page_size;
+
+			if ((*req)->count != rc) {
+				rc *= card->host->extra_pos
+				      / (sizeof(struct xd_card_extra)
+					 / (card->page_size
+					    / card->hw_page_size));
+				card->trans_cnt -= rc;
+				rc = -EILSEQ;
+			} else {
+				card->trans_cnt += rc;
+				rc = 0;
+			}
+
+			if (!rc && !card->host->extra_pos) {
+				rc = xd_card_check_ecc_tmp(card);
+				if (rc)
+					card->trans_cnt -= card->page_size;
+			}
+
+			if (!rc && (card->trans_cnt < card->trans_len)) {
+				(*req)->count = 0;
+				(*req)->error = 0;
+				(*req)->addr
+					= xd_card_req_address(card,
+							      card->trans_cnt);
+				sg_set_buf(&(*req)->sg,
+					   card->t_buf + card->trans_cnt,
+					   card->hw_page_size);
+				return 0;
+			}
+		}
+	}
+
+	if (!(*req)->error) {
+		if (rc)
+			(*req)->error = rc;
+		else if (card->trans_cnt != card->trans_len)
+			(*req)->error = -EIO;
+	}
+
+	if (!(*req)->error) {
+		(*req)->cmd = XD_CARD_CMD_INPUT;
+		(*req)->flags = XD_CARD_REQ_DATA | XD_CARD_REQ_DIR
+				| XD_CARD_REQ_EXTRA;
+		(*req)->addr = xd_card_req_address(card, 0);
+		(*req)->error = 0;
+		(*req)->count = card->hw_page_size;
+		card->trans_cnt = 0;
+		card->trans_len = card->flash_req.page_cnt * card->page_size;
+
+		sg_set_buf(&(*req)->sg, card->t_buf, card->hw_page_size);
+
+		memset(&card->host->extra, 0xff, sizeof(struct xd_card_extra));
+		xd_card_update_extra_tmp(card);
+		card->next_request[0] = h_xd_card_write_tmp;
+		return 0;
+	} else
+		return xd_card_try_next_req(card, req);
+}
+
+static int h_xd_card_erase_stat(struct xd_card_media *card,
+				struct xd_card_request **req)
+{
+	if (!(*req)->error) {
+		(*req)->cmd = XD_CARD_CMD_STATUS1;
+		(*req)->flags = XD_CARD_REQ_STATUS;
+		(*req)->error = 0;
+		(*req)->count = 0;
+		card->trans_cnt = 0;
+		card->trans_len = 0;
+		card->next_request[0] = h_xd_card_check_stat;
+		return 0;
+	} else
+		return xd_card_try_next_req(card, req);
+}
+
+static int h_xd_card_erase(struct xd_card_media *card,
+				struct xd_card_request **req)
+{
+	if (!(*req)->error) {
+		(*req)->cmd = XD_CARD_CMD_ERASE_START;
+		(*req)->flags = XD_CARD_REQ_DIR;
+		(*req)->addr = xd_card_req_address(card, 0);
+		(*req)->error = 0;
+		(*req)->count = 0;
+		card->trans_cnt = 0;
+		card->trans_len = 0;
+		card->next_request[0] = h_xd_card_erase_stat;
+		return 0;
+	} else
+		return xd_card_try_next_req(card, req);
+}
+
 
 static int xd_card_get_status(struct xd_card_host *host,
 			      unsigned char cmd, unsigned char *status)
@@ -1067,7 +1502,7 @@ static int xd_card_find_cis(struct xd_card_host *host)
 
 			card->req.flags |= XD_CARD_REQ_NO_ECC
 					   | XD_CARD_REQ_EXTRA;
-			
+
 			xd_card_new_req(host);
 			wait_for_completion(&card->req_complete);
 			rc = card->req.error;
@@ -1283,16 +1718,10 @@ static void xd_card_request(struct request_queue *q)
 
 /*** Initialization ***/
 
-static int xd_card_compare_media(struct xd_card_media *card1,
-				 struct xd_card_media *card2)
-{
-	return memcmp(&card1->idi, &card2->idi, sizeof(card1->idi));
-}
-
 static int xd_card_set_disk_size(struct xd_card_media *card)
 {
 	card->page_size = 512;
-	card->page_inc = 1;
+	card->hw_page_size = 512;
 	card->zone_cnt = 1;
 	card->phy_block_cnt = 1024;
 	card->log_block_cnt = 1000;
@@ -1305,7 +1734,7 @@ static int xd_card_set_disk_size(struct xd_card_media *card)
 	case 0x6e:
 	case 0xe8:
 	case 0xec:
-		card->page_inc = 2;
+		card->hw_page_size = 256;
 		card->capacity = 2000;
 		card->cylinders = 125;
 		card->heads = 4;
@@ -1318,7 +1747,7 @@ static int xd_card_set_disk_size(struct xd_card_media *card)
 	case 0xea:
 	case 0x64:
 		if (card->id1.device_code != 0x5d) {
-			card->page_inc = 2;
+			card->hw_page_size = 256;
 			card->phy_block_cnt = 512;
 			card->log_block_cnt = 500;
 			card->page_cnt = 8;
@@ -1522,10 +1951,10 @@ static void xd_card_set_media_param(struct xd_card_host *host)
 {
 	struct xd_card_media *card = host->card;
 
-	host->set_param(host, XD_CARD_PAGE_SIZE,
-			card->page_size / card->page_inc);
+	host->set_param(host, XD_CARD_PAGE_SIZE, card->hw_page_size);
 	host->set_param(host, XD_CARD_EXTRA_SIZE,
-			sizeof(struct xd_card_extra) / card->page_inc);
+			sizeof(struct xd_card_extra)
+			/ (card->page_size / card->hw_page_size));
 	if (card->capacity < 32768)
 		host->set_param(host, XD_CARD_ADDR_SIZE, 3);
 	else if (card->capacity < 8388608)
@@ -1637,8 +2066,9 @@ struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 	if (rc)
 		goto out;
 
-	card->page_addr_bits = fls(card->page_cnt * card->page_inc - 1);
-	if ((1 << card->page_addr_bits) < (card->page_cnt * card->page_inc))
+	rc = card->page_cnt * (card->page_size / card->hw_page_size);
+	card->page_addr_bits = fls(rc - 1);
+	if ((1 << card->page_addr_bits) < rc)
 		card->page_addr_bits++;
 
 	card->block_addr_bits = fls(card->phy_block_cnt - 1);
@@ -1652,7 +2082,7 @@ struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 		card->auto_ecc = 1;
 
 	if (host->caps & XD_CARD_CAP_FIXED_EXTRA) {
-		if (card->page_inc > 1)
+		if (card->page_size != card->hw_page_size)
 			card->auto_ecc = 0;
 	}
 
@@ -1714,8 +2144,8 @@ static void xd_card_remove_media(struct xd_card_media *card)
 	struct gendisk *disk = card->disk;
 	unsigned long flags;
 
-/*
-	del_gendisk(card->disk);
+
+//	del_gendisk(card->disk);
 	dev_dbg(host->dev, "xd card remove\n");
 	spin_lock_irqsave(&card->q_lock, flags);
 	q_thread = card->q_thread;
@@ -1730,9 +2160,9 @@ static void xd_card_remove_media(struct xd_card_media *card)
 
 	dev_dbg(host->dev, "queue thread stopped\n");
 
-	blk_cleanup_queue(card->queue);
+//	blk_cleanup_queue(card->queue);
 	card->queue = NULL;
-*/
+
 	xd_card_sysfs_unregister(host);
 /*
 	xd_card_disk_release(disk);
@@ -1768,22 +2198,17 @@ static void xd_card_check(struct work_struct *work)
 		dev_dbg(host->dev, "new card %02x, %02x, %02x, %02x\n",
 			card->id1.maker_code, card->id1.device_code,
 			card->id1.option_code1, card->id1.option_code2);
+
 		if (host->card) {
-			if (host->card->bad_media
-			    || xd_card_compare_media(card, host->card)) {
-				xd_card_remove_media(host->card);
-				host->card = NULL;
-			}
+			xd_card_remove_media(host->card);
+			host->card = NULL;
 		}
 
-		if (!host->card) {
-			host->card = card;
-			if (xd_card_init_media(host)) {
-				xd_card_free_media(host->card);
-				host->card = NULL;
-			}
-		} else
-			xd_card_free_media(card);
+		host->card = card;
+		if (xd_card_init_media(host)) {
+			xd_card_free_media(host->card);
+			host->card = NULL;
+		}
 	}
 	dev_dbg(host->dev, "x3\n");
 	if (!host->card)
@@ -1807,11 +2232,28 @@ EXPORT_SYMBOL(xd_card_detect_change);
  * xd_card_suspend_host - notify bus driver of host suspension
  * @host - host to use
  */
-void xd_card_suspend_host(struct xd_card_host *host)
+int xd_card_suspend_host(struct xd_card_host *host)
 {
+	struct task_struct *q_thread = NULL;
+	unsigned long flags;
+
 	mutex_lock(&host->lock);
+	if (host->card) {
+		spin_lock_irqsave(&host->card->q_lock, flags);
+		q_thread = host->card->q_thread;
+		host->card->q_thread = NULL;
+		blk_stop_queue(host->card->queue);
+		spin_unlock_irqrestore(&host->card->q_lock, flags);
+
+		if (q_thread) {
+			mutex_unlock(&host->lock);
+			kthread_stop(q_thread);
+			mutex_lock(&host->lock);
+		}
+	}
 	host->set_param(host, XD_CARD_POWER, XD_CARD_POWER_OFF);
 	mutex_unlock(&host->lock);
+	return 0;
 }
 EXPORT_SYMBOL(xd_card_suspend_host);
 
@@ -1819,13 +2261,39 @@ EXPORT_SYMBOL(xd_card_suspend_host);
  * xd_card_resume_host - notify bus driver of host resumption
  * @host - host to use
  */
-void xd_card_resume_host(struct xd_card_host *host)
+int xd_card_resume_host(struct xd_card_host *host)
 {
+	struct xd_card_media *card;
+	unsigned int flags;
+
 	mutex_lock(&host->lock);
-	if (host->card)
+	if (host->card) {
 		host->set_param(host, XD_CARD_POWER, XD_CARD_POWER_ON);
+#if defined(CONFIG_XD_CARD_UNSAFE_RESUME)
+		card = xd_card_alloc_media(host);
+		if (!IS_ERR(card)
+		    && !memcmp(&card->idi, &host->card->idi,
+			       sizeof(struct xd_card_idi))) {
+			xd_card_free_media(card);
+			host->card->q_thread = kthread_run(xd_card_queue_thread,
+							   host->card,
+							   DRIVER_NAME"d");
+			if (IS_ERR(host->card->q_thread)) {
+				host->card->q_thread = NULL;
+				xd_card_detect_change(host);
+			}
+		} else
+			xd_card_detect_change(host);
+#else
+		xd_card_detect_change(host);
+#endif /* CONFIG_XD_CARD_UNSAFE_RESUME */
+		spin_lock_irqsave(&host->card->q_lock, flags);
+		blk_start_queue(host->card->queue);
+		spin_unlock_irqrestore(&host->card->q_lock, flags);
+	} else
+		xd_card_detect_change(host);
 	mutex_unlock(&host->lock);
-	xd_card_detect_change(host);
+	return 0;
 }
 EXPORT_SYMBOL(xd_card_resume_host);
 

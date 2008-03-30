@@ -139,7 +139,6 @@ struct xd_card_media {
 				sm_media:1,
 				read_only:1,
 				has_request:1,
-				bad_media:1,
 				auto_ecc:1;
 
 	unsigned int            capacity;
@@ -148,7 +147,7 @@ struct xd_card_media {
 	unsigned int            sectors_per_head;
 
 	unsigned int            page_size;
-	unsigned int            page_inc;
+	unsigned int            hw_page_size;
 
 	unsigned int            zone_cnt;
 	unsigned int            phy_block_cnt;
@@ -213,8 +212,8 @@ struct xd_card_host {
 #define XD_CARD_PART_SHIFT 3
 
 void xd_card_detect_change(struct xd_card_host *host);
-void xd_card_suspend_host(struct xd_card_host *host);
-void xd_card_resume_host(struct xd_card_host *host);
+int xd_card_suspend_host(struct xd_card_host *host);
+int xd_card_resume_host(struct xd_card_host *host);
 struct xd_card_host *xd_card_alloc_host(unsigned int extra, struct device *dev);
 void xd_card_free_host(struct xd_card_host *host);
 int xd_card_next_req(struct xd_card_host *host, struct xd_card_request **req);

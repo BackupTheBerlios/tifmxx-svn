@@ -36,7 +36,8 @@ enum flash_bd_cmd {
 	FBD_WRITE,          /* write to media                                */
 	FBD_WRITE_TMP,      /* write to media from temporary storage         */
 	FBD_FILL_TMP,       /* copy data from permanent to temporary storage */
-	FBD_MARK            /* write only extradata to some pages            */
+	FBD_MARK,           /* write only extradata to some pages            */
+	FBD_MARK_BAD        /* as above, mark pages as bad                   */
 };
 
 struct flash_bd_request {
