@@ -76,6 +76,8 @@ int flash_bd_next_req(struct flash_bd *fbd, struct flash_bd_request *req,
 unsigned int flash_bd_end(struct flash_bd *fbd);
 int flash_bd_start_reading(struct flash_bd *fbd, unsigned long long offset,
 			   unsigned int count);
+int flash_bd_start_writing(struct flash_bd *fbd, unsigned long long offset,
+			   unsigned int count);
 size_t flash_bd_map_size(struct flash_bd *fbd);
 ssize_t flash_bd_read_map(struct flash_bd *fbd, char *buf, loff_t offset,
 			  size_t count);

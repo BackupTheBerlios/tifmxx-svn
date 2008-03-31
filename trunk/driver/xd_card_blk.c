@@ -328,9 +328,80 @@ out:
 	return rc;
 }
 
+static ssize_t xd_card_format_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct xd_card_host *host = dev_get_drvdata(dev);
+	ssize_t rc = 0;
+
+	mutex_lock(&host->lock);
+	if (!host->card)
+		goto out;
+
+	if (host->card->format)
+		rc = sprintf(buf, "Block %x of %x, progress %d%%\n",
+			     host->card->trans_cnt, host->card->trans_len,
+			     (host->card->trans_cnt * 100)
+			     / host->card->trans_len);
+	else
+		rc = sprintf(buf, "Not running\n");
+
+out:
+	mutex_unlock(&host->lock);
+	return rc;
+}
+
+static int xd_card_format_thread(void *data);
+
+static ssize_t xd_card_format_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct xd_card_host *host = dev_get_drvdata(dev);
+	struct task_struct *f_thread, *q_thread;
+	unsigned long flags;
+	ssize_t rc = 0;
+
+	mutex_lock(&host->lock);
+	if (!host->card)
+		goto out;
+
+	if (host->card->format)
+		goto out;
+
+	if (count < 6 || strncmp(buf, "format", 6))
+		goto out;
+
+	f_thread = kthread_create(xd_card_format_thread, host->card,
+				  DRIVER_NAME"_fmtd");
+	if (IS_ERR(f_thread))
+		goto out;
+
+	spin_lock_irqsave(&host->card->q_lock, flags);
+	q_thread = host->card->q_thread;
+	host->card->q_thread = f_thread;
+	blk_stop_queue(host->card->queue);
+	spin_unlock_irqrestore(&host->card->q_lock, flags);
+
+	if (q_thread) {
+		mutex_unlock(&host->lock);
+		kthread_stop(q_thread);
+		mutex_lock(&host->lock);
+	}
+
+	wake_up_process(f_thread);
+	rc = 6;
+
+out:
+	mutex_unlock(&host->lock);
+	return rc;
+}
+
 static DEVICE_ATTR(xd_card_id, S_IRUGO, xd_card_id_show, NULL);
 static DEVICE_ATTR(xd_card_cis, S_IRUGO, xd_card_cis_show, NULL);
 static DEVICE_ATTR(xd_card_idi, S_IRUGO, xd_card_idi_show, NULL);
+static DEVICE_ATTR(xd_card_format, S_IRUGO | S_IWUSR, xd_card_format_show,
+		   xd_card_format_store);
 
 static ssize_t xd_card_block_map_read(struct kobject *kobj,
 				      struct bin_attribute *attr,
@@ -1365,6 +1436,39 @@ static int h_xd_card_read_copy(struct xd_card_media *card,
 		return xd_card_try_next_req(card, req);
 }
 
+static int h_xd_card_erase_stat_fmt(struct xd_card_media *card,
+				    struct xd_card_request **req)
+{
+	if (!(*req)->error) {
+		(*req)->cmd = XD_CARD_CMD_STATUS1;
+		(*req)->flags = XD_CARD_REQ_STATUS;
+		(*req)->error = 0;
+		(*req)->count = 0;
+		card->next_request[0] = h_xd_card_default;
+		return 0;
+	} else {
+		complete(&card->req_complete);
+		return (*req)->error;
+	}
+}
+
+static int h_xd_card_erase_fmt(struct xd_card_media *card,
+			       struct xd_card_request **req)
+{
+	if (!(*req)->error) {
+		(*req)->cmd = XD_CARD_CMD_ERASE_START;
+		(*req)->flags = XD_CARD_REQ_DIR;
+		(*req)->addr = card->trans_cnt << (card->page_addr_bits + 8);
+		(*req)->error = 0;
+		(*req)->count = 0;
+		card->next_request[0] = h_xd_card_erase_stat_fmt;
+		return 0;
+	} else {
+		complete(&card->req_complete);
+		return (*req)->error;
+	}
+}
+
 static int h_xd_card_erase_stat(struct xd_card_media *card,
 				struct xd_card_request **req)
 {
@@ -1382,7 +1486,7 @@ static int h_xd_card_erase_stat(struct xd_card_media *card,
 }
 
 static int h_xd_card_erase(struct xd_card_media *card,
-				struct xd_card_request **req)
+			   struct xd_card_request **req)
 {
 	if (!(*req)->error) {
 		(*req)->cmd = XD_CARD_CMD_ERASE_START;
@@ -1397,7 +1501,6 @@ static int h_xd_card_erase(struct xd_card_media *card,
 	} else
 		return xd_card_try_next_req(card, req);
 }
-
 
 static int xd_card_get_status(struct xd_card_host *host,
 			      unsigned char cmd, unsigned char *status)
@@ -1653,6 +1756,65 @@ static int xd_card_fill_lut(struct xd_card_host *host)
 static void xd_card_process_request(struct xd_card_media *card,
 				    struct request *req)
 {
+	int rc, chunk;
+	unsigned int t_len = 0;
+	unsigned long flags;
+
+	do {
+		card->seg_pos = 0;
+		card->seg_off = 0;
+		card->seg_count = blk_rq_map_sg(req->q, req, card->req_sg);
+
+		if (!card->seg_count) {
+			rc = -ENOMEM;
+			goto req_failed;
+		}
+
+		if (rq_data_dir(req) == READ)
+			rc = flash_bd_start_reading(card->fbd, req->sector << 9,
+						    req->current_nr_sectors
+						    << 9);
+		else
+			rc = flash_bd_start_writing(card->fbd, req->sector << 9,
+						    req->current_nr_sectors
+						    << 9);
+
+		if (rc)
+			goto req_failed;
+
+		rc = flash_bd_next_req(card->fbd, &card->flash_req, 0, 0);
+
+		if (rc) {
+			flash_bd_end(card->fbd);
+			goto req_failed;
+		}
+
+		rc = xd_card_trans_req(card, &card->req);
+		if (rc) {
+			flash_bd_end(card->fbd);
+			goto req_failed;
+		}
+
+		xd_card_new_req(card->host);
+		wait_for_completion(&card->req_complete);
+		rc = card->req.error;
+
+		t_len = flash_bd_end(card->fbd);
+req_failed:
+		spin_lock_irqsave(&card->q_lock, flags);
+		if (t_len > 0)
+			chunk = end_that_request_chunk(req, 1, t_len);
+		else
+			chunk = end_that_request_first(req, rc,
+						       req->current_nr_sectors);
+
+		if (!chunk) {
+			add_disk_randomness(req->rq_disk);
+			blkdev_dequeue_request(req);
+			end_that_request_last(req, rc < 0 ? rc : 1);
+		}
+		spin_unlock_irqrestore(&card->q_lock, flags);
+	} while (chunk);
 }
 
 static int xd_card_has_request(struct xd_card_media *card)
@@ -1700,6 +1862,104 @@ static int xd_card_queue_thread(void *data)
 	dev_dbg(host->dev, "thread finished\n");
 	return 0;
 }
+
+static int xd_card_format_thread(void *data)
+{
+	struct xd_card_media *card = data;
+	struct xd_card_host *host = card->host;
+	int rc = 0;
+	unsigned long flags;
+
+	mutex_lock(&host->lock);
+	card->trans_len = card->zone_cnt << card->block_addr_bits;
+	flash_bd_destroy(card->fbd);
+	card->fbd = flash_bd_init(card->zone_cnt, card->phy_block_cnt,
+				  card->log_block_cnt, card->page_cnt,
+				  card->page_size);
+	if (!card->fbd) {
+		rc = -ENOMEM;
+		goto out;
+	}
+
+	for(card->trans_cnt = 0; card->trans_cnt < card->trans_len;
+	    ++card->trans_cnt) {
+		card->req.cmd = XD_CARD_CMD_ERASE_SET;
+		card->req.flags = XD_CARD_REQ_DIR;
+		card->req.addr = card->trans_cnt << (card->page_addr_bits + 8);
+		card->req.error = 0;
+		card->req.count = 0;
+		card->next_request[0] = h_xd_card_erase_fmt;
+
+		xd_card_new_req(host);
+		wait_for_completion(&card->req_complete);
+		rc = card->req.error;
+
+		if (!rc) {
+			if (!(card->req.status & XD_CARD_STTS_FAIL))
+				flash_bd_set_empty(card->fbd,
+						   card->trans_cnt
+						   >> card->block_addr_bits,
+						   card->trans_cnt
+						   & ((1
+						       << card->block_addr_bits)
+						      - 1), 1);
+			else
+				flash_bd_set_full(card->fbd,
+						   card->trans_cnt
+						   >> card->block_addr_bits,
+						   card->trans_cnt
+						   & ((1
+						       << card->block_addr_bits)
+						      - 1), FLASH_BD_INVALID);
+		}
+
+		mutex_unlock(&host->lock);
+		yield();
+		mutex_lock(&host->lock);
+		if (kthread_should_stop()) {
+			dev_info(host->dev, "format aborted at block "
+				 "%x of %x\n", card->trans_cnt,
+				 card->trans_len);
+			card->format = 0;
+			mutex_unlock(&host->lock);
+			return 0;
+		}
+
+		if (rc)
+			break;
+	}
+out:
+	if (!rc)
+		dev_info(host->dev, "format complete\n");
+	else
+		dev_err(host->dev, "format failed (%d)\n", rc);
+
+	host->card->format = 0;
+	if (!host->card->q_thread) {
+		mutex_unlock(&host->lock);
+		return 0;
+	}
+
+	host->card->q_thread = kthread_run(xd_card_queue_thread,
+					   host->card,
+					   DRIVER_NAME"d");
+	if (IS_ERR(host->card->q_thread)) {
+		host->card->q_thread = NULL;
+		xd_card_detect_change(host);
+	} else {
+		spin_lock_irqsave(&host->card->q_lock, flags);
+		blk_start_queue(host->card->queue);
+		spin_unlock_irqrestore(&host->card->q_lock, flags);
+	}
+
+	mutex_unlock(&host->lock);
+	/* kthread_stop, presumably, can not be called on this thread at
+	 * this point
+	 */
+	do_exit(0);
+	return 0;
+}
+
 
 static void xd_card_request(struct request_queue *q)
 {
@@ -1991,9 +2251,15 @@ static int xd_card_sysfs_register(struct xd_card_host *host)
 	host->card->dev_attr_block_map.read = xd_card_block_map_read;
 
 	rc = device_create_bin_file(host->dev, &host->card->dev_attr_block_map);
+	if (rc)
+		goto out_remove_idi;
+
+	rc = device_create_file(host->dev, &dev_attr_xd_card_format);
 	if (!rc)
 		return 0;
 
+	device_remove_bin_file(host->dev, &host->card->dev_attr_block_map);
+out_remove_idi:
 	device_remove_file(host->dev, &dev_attr_xd_card_idi);
 out_remove_cis:
 	device_remove_file(host->dev, &dev_attr_xd_card_cis);
@@ -2004,6 +2270,7 @@ out_remove_id:
 
 static void xd_card_sysfs_unregister(struct xd_card_host *host)
 {
+	device_remove_file(host->dev, &dev_attr_xd_card_format);
 	device_remove_bin_file(host->dev, &host->card->dev_attr_block_map);
 	device_remove_file(host->dev, &dev_attr_xd_card_idi);
 	device_remove_file(host->dev, &dev_attr_xd_card_cis);

@@ -139,7 +139,8 @@ struct xd_card_media {
 				sm_media:1,
 				read_only:1,
 				has_request:1,
-				auto_ecc:1;
+				auto_ecc:1,
+				format:1;
 
 	unsigned int            capacity;
 	unsigned int            cylinders;
