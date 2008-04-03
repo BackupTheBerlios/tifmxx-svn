@@ -93,9 +93,8 @@ static void xd_card_addr_to_extra(struct xd_card_extra *extra,
 				  unsigned int addr)
 {
 	addr &= 0x3ff;
-	extra->addr1 = hweight16(addr) & 1;
-	extra->addr1 <<= 8;
 	extra->addr1 |= 0x10 | (addr >> 7) | ((addr << 9) & 0xfe00);
+	extra->addr1 |= (hweight16(extra->addr1) & 1) << 8;
 	extra->addr2 = extra->addr1;
 }
 
@@ -106,11 +105,11 @@ static unsigned int xd_card_extra_to_addr(struct xd_card_extra *extra)
 	addr1 = ((extra->addr1 & 7) << 7) | ((extra->addr1 & 0xfe00) >> 9);
 	addr2 = ((extra->addr2 & 7) << 7) | ((extra->addr2 & 0xfe00) >> 9);
 
-	if ((((extra->addr1 >> 8) ^ hweight16(addr1)) & 1)
+	if ((((~hweight16(addr1)) ^ (extra->addr1 >> 8)) & 1)
 	    || !(extra->addr1 & 0x10))
 		addr1 = FLASH_BD_INVALID;
 
-	if ((((extra->addr2 >> 8) ^ hweight16(addr2)) & 1)
+	if ((((~hweight16(addr2)) ^ (extra->addr2 >> 8)) & 1)
 	    || !(extra->addr2 & 0x10))
 		addr2 = FLASH_BD_INVALID;
 
@@ -1525,7 +1524,8 @@ static int xd_card_get_id(struct xd_card_host *host, unsigned char cmd,
 	struct xd_card_media *card = host->card;
 
 	card->req.cmd = cmd;
-	card->req.flags = XD_CARD_REQ_ID;
+	card->req.flags = XD_CARD_REQ_ID | XD_CARD_REQ_DIR;
+	card->req.addr = 0;
 	card->req.count = count;
 	card->req.id = data;
 	card->req.error = 0;
@@ -1589,7 +1589,7 @@ static int xd_card_find_cis(struct xd_card_host *host)
 	int rc = 0;
 
 	card->cis_block = FLASH_BD_INVALID;
-	buf = kmalloc(4 * r_size, GFP_KERNEL);
+	buf = kmalloc(2 * r_size, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 
@@ -1637,8 +1637,6 @@ static int xd_card_find_cis(struct xd_card_host *host)
 
 			flash_bd_end(card->fbd);
 
-			dev_dbg(host->dev, "data: %08x %08x\n", *(unsigned int *)buf,
-				*(unsigned int *)(buf + 4));
 			dev_dbg(host->dev, "extra: %08x, %02x, %02x, %04x "
 				"(%02x, %02x, %02x), %04x, (%02x, %02x, %02x)\n",
 				host->extra.reserved, host->extra.data_status,
@@ -1652,14 +1650,24 @@ static int xd_card_find_cis(struct xd_card_host *host)
 				if (xd_card_bad_block(host))
 					break;
 				else if (!xd_card_bad_data(host)) {
-					dev_dbg(host->dev, "memcpy\n");
-					memcpy(&card->cis, buf + 256,
+					memcpy(&card->cis, buf,
 					       sizeof(card->cis));
 					rc = sizeof(card->cis);
-					memcpy(&card->idi, buf + 256 + rc,
+					memcpy(&card->idi, buf + rc,
 					       sizeof(card->idi));
 					rc += sizeof(card->idi);
-					// check copies
+					if (memcmp(&card->cis, buf + rc,
+						   sizeof(card->cis))) {
+						rc = -EMEDIUMTYPE;
+						goto out;
+					}
+					rc += sizeof(card->cis);
+					if (memcmp(&card->idi, buf + rc,
+						   sizeof(card->idi))) {
+						rc = -EMEDIUMTYPE;
+						goto out;
+					}
+
 					card->cis_block = b_cnt;
 					rc = 0;
 					goto out;
@@ -1673,11 +1681,11 @@ out:
 	for (b_cnt = 0; b_cnt < last_block; ++b_cnt)
 		flash_bd_set_empty(card->fbd, 0, b_cnt, 0);
 
-//	if (card->cis_block != FLASH_BD_INVALID) {
-//		for (b_cnt = 0; b_cnt <= card->cis_block; ++b_cnt)
-//			flash_bd_set_full(card->fbd, 0, b_cnt,
-//					  FLASH_BD_INVALID);
-//	}
+	if (card->cis_block != FLASH_BD_INVALID) {
+		for (b_cnt = 0; b_cnt <= card->cis_block; ++b_cnt)
+			flash_bd_set_full(card->fbd, 0, b_cnt,
+					  FLASH_BD_INVALID);
+	}
 	kfree(buf);
 	return rc;
 }
@@ -1765,19 +1773,19 @@ static int xd_card_fill_lut(struct xd_card_host *host)
 	return 0;
 }
 
+/* Mask ROM devices are required to have the same format as Flash ones */
 static int xd_card_fill_lut_rom(struct xd_card_host *host)
 {
 	struct xd_card_media *card = host->card;
-	unsigned int z_cnt = 0, b_cnt, log_block = 0;
+	unsigned int z_cnt = 0, b_cnt;
 	unsigned int s_block = card->cis_block + 1;
 
 	for (z_cnt = 0; z_cnt < card->zone_cnt; ++z_cnt) {
-		for (b_cnt = s_block; b_cnt < card->phy_block_cnt; ++b_cnt) {
-			flash_bd_set_full(card->fbd, z_cnt, b_cnt, log_block);
-			log_block++;
+		for (b_cnt = 0; b_cnt < card->log_block_cnt; ++b_cnt) {
+			flash_bd_set_full(card->fbd, z_cnt, s_block, b_cnt);
+			s_block++;
 		}
 		s_block = 0;
-		log_block = 0;
 	}
 	return 0;
 }
@@ -2164,13 +2172,6 @@ static int xd_card_init_disk(struct xd_card_media *card)
 	if (host->dev->dma_mask && *(host->dev->dma_mask))
 		limit = *(host->dev->dma_mask);
 
-	rc = xd_card_set_disk_size(card);
-	if (rc)
-		return rc;
-
-	if (card->mask_rom)
-		card->read_only = 1;
-
 	if (!idr_pre_get(&xd_card_disk_idr, GFP_KERNEL))
 		return -ENOMEM;
 
@@ -2200,7 +2201,8 @@ static int xd_card_init_disk(struct xd_card_media *card)
 
 	card->queue->queuedata = card;
 
-	max_sectors = card->log_block_cnt * card->page_size * card->page_cnt;
+	max_sectors = card->zone_cnt * card->log_block_cnt * card->page_size
+		      * card->page_cnt;
 	max_sectors >>= 9;
 
 	blk_queue_bounce_limit(card->queue, limit);
@@ -2219,7 +2221,7 @@ static int xd_card_init_disk(struct xd_card_media *card)
 
 	sprintf(card->disk->disk_name, "xd_card%d", disk_id);
 
-	blk_queue_hardsect_size(card->queue, 512);
+	blk_queue_hardsect_size(card->queue, card->page_size);
 
 	set_capacity(card->disk, card->capacity);
 	dev_dbg(host->dev, "capacity set %d\n", card->capacity);
@@ -2310,14 +2312,48 @@ static void xd_card_sysfs_unregister(struct xd_card_host *host)
 
 static int xd_card_init_media(struct xd_card_host *host)
 {
+	struct task_struct *q_thread;
 	int rc;
 
 	xd_card_set_media_param(host);
-	rc = xd_card_sysfs_register(host);
+
+	if (!host->card->mask_rom)
+		rc = xd_card_fill_lut(host);
+	else
+		rc = xd_card_fill_lut_rom(host);
+
 	if (rc)
 		return rc;
 
+	host->card->q_thread = kthread_run(xd_card_queue_thread,
+					   host->card, DRIVER_NAME"d");
+
+	if (IS_ERR(host->card->q_thread)) {
+		rc = PTR_ERR(host->card->q_thread);
+		host->card->q_thread = NULL;
+		return rc;
+	}
+
+	rc = xd_card_sysfs_register(host);
+	if (rc)
+		goto out_stop_thread;
+
+	rc = xd_card_init_disk(host->card);
+	if (rc)
+		goto out_sysfs_unregister;
+
+	wake_up_process(host->card->q_thread);
 	return 0;
+
+out_sysfs_unregister:
+	xd_card_sysfs_unregister(host);
+out_stop_thread:
+	q_thread = host->card->q_thread;
+	host->card->q_thread = NULL;
+	mutex_unlock(&host->lock);
+	kthread_stop(q_thread);
+	mutex_lock(&host->lock);
+	return rc;
 }
 
 static void xd_card_free_media(struct xd_card_media *card)
@@ -2363,6 +2399,9 @@ struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 	rc = xd_card_set_disk_size(card);
 	if (rc)
 		goto out;
+
+	if (card->mask_rom)
+		card->read_only = 1;
 
 	rc = card->page_cnt * (card->page_size / card->hw_page_size);
 	card->page_addr_bits = fls(rc - 1);
@@ -2416,23 +2455,16 @@ struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 		goto out;
 	}
 
-	dev_dbg(host->dev, "go find cis 1\n");
 	rc = xd_card_find_cis(host);
 	if (rc)
 		goto out;
 
-	dev_dbg(host->dev, "go find cis 2\n");
-	rc = xd_card_find_cis(host);
-	if (rc)
-		goto out;
-
-	dev_dbg(host->dev, "go find cis 3\n");
-	rc = xd_card_find_cis(host);
-	if (rc)
-		goto out;
-
-//	if (memcmp(xd_card_cis_header, card->cis, sizeof(xd_card_cis_header)))
-//		rc = -EMEDIUMTYPE;
+	/* It is possible to parse CIS header, but recent version of the spec
+	 * suggests that it is frozen and information it contains (mostly
+	 * ancient Compact Flash stuff) irrelevant.
+	 */
+	if (memcmp(xd_card_cis_header, card->cis, sizeof(xd_card_cis_header)))
+		rc = -EMEDIUMTYPE;
 
 out:
 	host->card = old_card;
@@ -2452,9 +2484,10 @@ static void xd_card_remove_media(struct xd_card_media *card)
 	struct gendisk *disk = card->disk;
 	unsigned long flags;
 
-
-//	del_gendisk(card->disk);
+	del_gendisk(card->disk);
 	dev_dbg(host->dev, "xd card remove\n");
+	xd_card_sysfs_unregister(host);
+
 	spin_lock_irqsave(&card->q_lock, flags);
 	q_thread = card->q_thread;
 	card->q_thread = NULL;
@@ -2468,13 +2501,10 @@ static void xd_card_remove_media(struct xd_card_media *card)
 
 	dev_dbg(host->dev, "queue thread stopped\n");
 
-//	blk_cleanup_queue(card->queue);
+	blk_cleanup_queue(card->queue);
 	card->queue = NULL;
 
-	xd_card_sysfs_unregister(host);
-/*
 	xd_card_disk_release(disk);
-*/
 	xd_card_free_media(card);
 }
 

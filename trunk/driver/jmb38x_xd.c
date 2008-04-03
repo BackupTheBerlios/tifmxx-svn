@@ -164,20 +164,18 @@ static int jmb38x_xd_issue_cmd(struct xd_card_host *host)
 			sg_dma_len(&jhost->req->sg), p_cnt);
 	}
 
-	if (jhost->req->flags & XD_CARD_REQ_EXTRA) {
-		if (jhost->req->flags & XD_CARD_REQ_DIR) {
-			xd_card_get_extra(host, jhost->extra_data,
-					  jhost->extra_size);
-			writel(*(unsigned int *)(jhost->extra_data),
-			       jhost->addr + RDATA0);
-			writel(*(unsigned int *)(jhost->extra_data + 4),
-			       jhost->addr + RDATA1);
-			writel(*(unsigned int *)(jhost->extra_data + 8),
-			       jhost->addr + RDATA2);
-			writel(*(unsigned int *)(jhost->extra_data + 12),
-			       jhost->addr + RDATA3);
-		}
-		p_cnt = 1 << HOST_CONTROL_PAGE_CNT_SHIFT;
+	if ((jhost->req->flags & XD_CARD_REQ_EXTRA)
+	    && (jhost->req->flags & XD_CARD_REQ_DIR)) {
+		xd_card_get_extra(host, jhost->extra_data,
+				  jhost->extra_size);
+		writel(*(unsigned int *)(jhost->extra_data),
+		       jhost->addr + RDATA0);
+		writel(*(unsigned int *)(jhost->extra_data + 4),
+		       jhost->addr + RDATA1);
+		writel(*(unsigned int *)(jhost->extra_data + 8),
+		       jhost->addr + RDATA2);
+		writel(*(unsigned int *)(jhost->extra_data + 12),
+		       jhost->addr + RDATA3);
 	}
 
 	if (!(jhost->req->flags & XD_CARD_REQ_NO_ECC)) {
@@ -218,25 +216,22 @@ static int jmb38x_xd_issue_cmd(struct xd_card_host *host)
 
 static void jmb38x_xd_read_id(struct jmb38x_xd_host *jhost)
 {
-	unsigned int pos = 0, id_val;
+	unsigned int id_val = readl(jhost->addr + ID_CODE);
 
-	while ((jhost->req->count - pos) >= 4) {
-		id_val = readl(jhost->addr + ID_CODE);
-		*(unsigned int *)(jhost->req->id + pos) = id_val;
-		pos += 4;
-	}
+	memset(jhost->req->id, 0, jhost->req->count);
 
-	if (jhost->req->count - pos) {
-		id_val = readl(jhost->addr + ID_CODE);
-		switch (jhost->req->count - pos) {
+	if (jhost->req->count >= 4) {
+		*(unsigned int *)(jhost->req->id) = id_val;
+	} else {
+		switch (jhost->req->count) {
 		case 3:
-			((unsigned char *)jhost->req->id)[pos + 2]
+			((unsigned char *)jhost->req->id)[2]
 				= (id_val >> 16) & 0xff;
 		case 2:
-			((unsigned char *)jhost->req->id)[pos + 1]
+			((unsigned char *)jhost->req->id)[1]
 				= (id_val >> 8) & 0xff;
 		case 1:
-			((unsigned char *)jhost->req->id)[pos]
+			((unsigned char *)jhost->req->id)[0]
 				= id_val & 0xff;
 		}
 	}
@@ -268,8 +263,11 @@ static void jmb38x_xd_complete_cmd(struct xd_card_host *host, int last)
 				     & ECC_XD_STATUS_MASK;
 
 	if (jhost->req->flags & XD_CARD_REQ_DATA) {
-		if (!jhost->req->error)
-			jhost->req->count = sg_dma_len(&jhost->req->sg);
+		host_ctl &= HOST_CONTROL_PAGE_CNT_MASK;
+		host_ctl >>= HOST_CONTROL_PAGE_CNT_SHIFT;
+
+		jhost->req->count = sg_dma_len(&jhost->req->sg)
+				    - host_ctl * jhost->page_size;
 
 		writel(0, jhost->addr + DMA_ADDRESS);
 		pci_unmap_sg(jhost->pdev, &jhost->req->sg, 1,
@@ -422,7 +420,7 @@ static void jmb38x_xd_set_param(struct xd_card_host *host,
 	switch(param) {
 	case XD_CARD_POWER:
 		if (value == XD_CARD_POWER_ON) {
-//			jmb38x_xd_reset(jhost);
+			/* jmb38x_xd_reset(jhost); */
 			writel(CLOCK_CONTROL_MMIO | CLOCK_CONTROL_40MHZ,
 			       jhost->addr + CLOCK_CONTROL);
 
