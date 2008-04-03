@@ -293,7 +293,7 @@ static ssize_t xd_card_idi_show(struct device *dev,
 
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "vendor code 1: ");
 	for (cnt = 0; cnt < sizeof(card->idi.vendor_code1); ++cnt) {
-		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%02x ",
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%02x",
 				card->idi.vendor_code1[cnt]);
 	}
 	if (PAGE_SIZE - rc)
@@ -301,7 +301,7 @@ static ssize_t xd_card_idi_show(struct device *dev,
 
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "serial number: ");
 	for (cnt = 0; cnt < sizeof(card->idi.serial_number); ++cnt) {
-		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%02x ",
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%02x",
 				card->idi.serial_number[cnt]);
 	}
 	if (PAGE_SIZE - rc)
@@ -309,7 +309,7 @@ static ssize_t xd_card_idi_show(struct device *dev,
 
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "model number: ");
 	for (cnt = 0; cnt < sizeof(card->idi.model_number); ++cnt) {
-		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%02x ",
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%02x",
 				card->idi.model_number[cnt]);
 	}
 	if (PAGE_SIZE - rc)
@@ -317,7 +317,7 @@ static ssize_t xd_card_idi_show(struct device *dev,
 
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "vendor code 2: ");
 	for (cnt = 0; cnt < sizeof(card->idi.vendor_code2); ++cnt) {
-		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%02x ",
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%02x",
 				card->idi.vendor_code1[cnt]);
 	}
 	if (PAGE_SIZE - rc)
@@ -1593,7 +1593,6 @@ static int xd_card_find_cis(struct xd_card_host *host)
 	if (!buf)
 		return -ENOMEM;
 
-	buf[512] = '5'; buf[513] = '6'; buf[514] = '7'; buf[515] = '8';
 	sg_set_buf(&card->req_sg[0], buf, 2 * r_size);
 	card->seg_count = 1;
 
@@ -1640,7 +1639,6 @@ static int xd_card_find_cis(struct xd_card_host *host)
 
 			dev_dbg(host->dev, "data: %08x %08x\n", *(unsigned int *)buf,
 				*(unsigned int *)(buf + 4));
-			dev_dbg(host->dev, "data: %08x\n", *(unsigned int *)(buf + 512));	
 			dev_dbg(host->dev, "extra: %08x, %02x, %02x, %04x "
 				"(%02x, %02x, %02x), %04x, (%02x, %02x, %02x)\n",
 				host->extra.reserved, host->extra.data_status,
@@ -2582,8 +2580,10 @@ int xd_card_resume_host(struct xd_card_host *host)
 #if defined(CONFIG_XD_CARD_UNSAFE_RESUME)
 		card = xd_card_alloc_media(host);
 		if (!IS_ERR(card)
+		    && !memcmp(&card->cis, &host->card->cis,
+			       sizeof(card->cis))
 		    && !memcmp(&card->idi, &host->card->idi,
-			       sizeof(struct xd_card_idi))) {
+			       sizeof(card->idi))) {
 			xd_card_free_media(card);
 			host->card->q_thread = kthread_run(xd_card_queue_thread,
 							   host->card,
