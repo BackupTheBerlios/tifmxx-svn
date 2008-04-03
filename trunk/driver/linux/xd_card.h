@@ -154,6 +154,7 @@ struct xd_card_media {
 	unsigned int            phy_block_cnt;
 	unsigned int            log_block_cnt;
 	unsigned int            page_cnt;
+	unsigned int            cis_block;
 
 	unsigned char           page_addr_bits;
 	unsigned char           block_addr_bits;

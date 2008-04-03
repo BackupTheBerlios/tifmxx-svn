@@ -76,8 +76,9 @@ enum {
 	DATA_READY   = 0x02
 };
 
-#define PAD_OUTPUT_ENABLE_XD0 0x4fcf
-#define PAD_OUTPUT_ENABLE_XD1 0x5fff
+#define PAD_OUTPUT_ENABLE_XD0 0x00004fcf
+#define PAD_OUTPUT_ENABLE_XD1 0x00005fff
+#define PAD_OUTPUT_DISABLE_XD 0x000000c0
 
 #define PAD_PU_PD_OFF         0x7FFF0000
 #define PAD_PU_PD_ON_XD       0x4f8f1030
@@ -157,28 +158,43 @@ static int jmb38x_xd_issue_cmd(struct xd_card_host *host)
 		       jhost->addr + DMA_ADDRESS);
 		p_cnt = sg_dma_len(&jhost->req->sg) / jhost->page_size;
 		p_cnt <<= HOST_CONTROL_PAGE_CNT_SHIFT;
-		dev_dbg(host->dev, "trans count %d, %08x\n",
+		dev_dbg(host->dev, "trans %llx, %llx, %d, %08x\n",
+			jhost->req->addr,
+			sg_dma_address(&jhost->req->sg),
 			sg_dma_len(&jhost->req->sg), p_cnt);
 	}
 
-	if ((jhost->req->flags & XD_CARD_REQ_EXTRA)
-	    && (jhost->req->flags & XD_CARD_REQ_DIR)) {
-		xd_card_get_extra(host, jhost->extra_data,
-				  jhost->extra_size);
-		writel(*(unsigned int *)(jhost->extra_data),
-		       jhost->addr + RDATA0);
-		writel(*(unsigned int *)(jhost->extra_data + 4),
-		       jhost->addr + RDATA1);
-		writel(*(unsigned int *)(jhost->extra_data + 8),
-		       jhost->addr + RDATA2);
-		writel(*(unsigned int *)(jhost->extra_data + 12),
-		       jhost->addr + RDATA3);
+	if (jhost->req->flags & XD_CARD_REQ_EXTRA) {
+		if (jhost->req->flags & XD_CARD_REQ_DIR) {
+			xd_card_get_extra(host, jhost->extra_data,
+					  jhost->extra_size);
+			writel(*(unsigned int *)(jhost->extra_data),
+			       jhost->addr + RDATA0);
+			writel(*(unsigned int *)(jhost->extra_data + 4),
+			       jhost->addr + RDATA1);
+			writel(*(unsigned int *)(jhost->extra_data + 8),
+			       jhost->addr + RDATA2);
+			writel(*(unsigned int *)(jhost->extra_data + 12),
+			       jhost->addr + RDATA3);
+		}
+		p_cnt = 1 << HOST_CONTROL_PAGE_CNT_SHIFT;
 	}
 
-	if (!(jhost->req->flags & XD_CARD_REQ_NO_ECC))
-		jhost->host_ctl |= HOST_CONTROL_ECC_EN;
-	else
-		jhost->host_ctl &= ~HOST_CONTROL_ECC_EN;
+	if (!(jhost->req->flags & XD_CARD_REQ_NO_ECC)) {
+		writel(INT_STATUS_ECC_ERROR
+		       | readl(jhost->addr + INT_SIGNAL_ENABLE),
+		       jhost->addr + INT_SIGNAL_ENABLE);
+		writel(INT_STATUS_ECC_ERROR
+		       | readl(jhost->addr + INT_STATUS_ENABLE),
+		       jhost->addr + INT_STATUS_ENABLE);
+	} else {
+		writel((~INT_STATUS_ECC_ERROR)
+		       & readl(jhost->addr + INT_SIGNAL_ENABLE),
+		       jhost->addr + INT_SIGNAL_ENABLE);
+		writel((~INT_STATUS_ECC_ERROR)
+		       & readl(jhost->addr + INT_STATUS_ENABLE),
+		       jhost->addr + INT_STATUS_ENABLE);
+	}
 
 	if (jhost->req->flags & XD_CARD_REQ_DIR)
 		jhost->host_ctl &= ~HOST_CONTROL_DATA_DIR;
@@ -255,6 +271,7 @@ static void jmb38x_xd_complete_cmd(struct xd_card_host *host, int last)
 		if (!jhost->req->error)
 			jhost->req->count = sg_dma_len(&jhost->req->sg);
 
+		writel(0, jhost->addr + DMA_ADDRESS);
 		pci_unmap_sg(jhost->pdev, &jhost->req->sg, 1,
 			     jhost->req->flags & XD_CARD_REQ_DIR
 			     ? PCI_DMA_TODEVICE : PCI_DMA_FROMDEVICE);
@@ -376,19 +393,23 @@ static void jmb38x_xd_request(struct xd_card_host *host)
 
 static void jmb38x_xd_reset(struct jmb38x_xd_host *jhost)
 {
-	writel(HOST_CONTROL_RESET, jhost->addr + HOST_CONTROL);
-	mmiowb();
-	writel(HOST_CONTROL_RESET_REQ, jhost->addr + HOST_CONTROL);
+	writel(HOST_CONTROL_RESET_REQ | readl(jhost->addr + HOST_CONTROL),
+	       jhost->addr + HOST_CONTROL);
 	mmiowb();
 
-	while ((HOST_CONTROL_RESET_REQ | HOST_CONTROL_RESET)
-	       & readl(jhost->addr + HOST_CONTROL)) {
+	while (HOST_CONTROL_RESET_REQ & readl(jhost->addr + HOST_CONTROL)) {
 		ndelay(20);
-		dev_dbg(&jhost->pdev->dev, "reset\n");
+		dev_dbg(&jhost->pdev->dev, "reset 1\n");
 	}
 
-	writel(INT_STATUS_ALL, jhost->addr + INT_STATUS_ENABLE);
-	writel(INT_STATUS_ALL, jhost->addr + INT_SIGNAL_ENABLE);
+	writel(HOST_CONTROL_RESET | readl(jhost->addr + HOST_CONTROL),
+	       jhost->addr + HOST_CONTROL);
+	mmiowb();
+
+	while (HOST_CONTROL_RESET & readl(jhost->addr + HOST_CONTROL)) {
+		ndelay(20);
+		dev_dbg(&jhost->pdev->dev, "reset 2\n");
+	}
 }
 
 static void jmb38x_xd_set_param(struct xd_card_host *host,
@@ -401,37 +422,39 @@ static void jmb38x_xd_set_param(struct xd_card_host *host,
 	switch(param) {
 	case XD_CARD_POWER:
 		if (value == XD_CARD_POWER_ON) {
-			jmb38x_xd_reset(jhost);
-
+//			jmb38x_xd_reset(jhost);
 			writel(CLOCK_CONTROL_MMIO | CLOCK_CONTROL_40MHZ,
 			       jhost->addr + CLOCK_CONTROL);
-
-			jhost->host_ctl = HOST_CONTROL_POWER_EN
-					  | HOST_CONTROL_CLOCK_EN;
 
 			writel(PAD_OUTPUT_ENABLE_XD0 << 16,
 			       jhost->addr + PAD_PU_PD);
 			writel(PAD_OUTPUT_ENABLE_XD0,
 			       jhost->addr + PAD_OUTPUT_ENABLE);
 
-			msleep(1);
+			msleep(60);
 
+			jhost->host_ctl = HOST_CONTROL_POWER_EN
+					  | HOST_CONTROL_CLOCK_EN
+					  | HOST_CONTROL_ECC_EN
+					  | HOST_CONTROL_AC_EN;
 			writel(jhost->host_ctl, jhost->addr + HOST_CONTROL);
-			writel(PAD_PU_PD_ON_XD, jhost->addr + PAD_PU_PD);
 
 			msleep(1);
 
+			writel(PAD_PU_PD_ON_XD, jhost->addr + PAD_PU_PD);
 			writel(PAD_OUTPUT_ENABLE_XD1,
 			       jhost->addr + PAD_OUTPUT_ENABLE);
 			dev_dbg(host->dev, "power on\n");
+			writel(INT_STATUS_ALL, jhost->addr + INT_SIGNAL_ENABLE);
+			writel(INT_STATUS_ALL, jhost->addr + INT_STATUS_ENABLE);
 			mmiowb();
-			jhost->host_ctl |= HOST_CONTROL_AC_EN;
 		} else if (value == XD_CARD_POWER_OFF) {
 			jhost->host_ctl &= ~HOST_CONTROL_RW;
 			writel(jhost->host_ctl, jhost->addr + HOST_CONTROL);
 
 			dev_dbg(host->dev, "p1\n");
 			jmb38x_xd_reset(jhost);
+
 			dev_dbg(host->dev, "p2\n");
 			msleep(1);
 
@@ -448,12 +471,18 @@ static void jmb38x_xd_set_param(struct xd_card_host *host,
 			writel(jhost->host_ctl, jhost->addr + HOST_CONTROL);
 
 			msleep(1);
-			dev_dbg(host->dev, "p5\n");
 
-			writel(0, jhost->addr + PAD_OUTPUT_ENABLE);
-			dev_dbg(host->dev, "p6\n");
+			dev_dbg(host->dev, "p5\n");
 			writel(PAD_PU_PD_OFF, jhost->addr + PAD_PU_PD);
+
+			dev_dbg(host->dev, "p6\n");
+			writel(PAD_OUTPUT_DISABLE_XD,
+			       jhost->addr + PAD_OUTPUT_ENABLE);
+			msleep(60);
+			writel(0, jhost->addr + PAD_OUTPUT_ENABLE);
 			dev_dbg(host->dev, "power off\n");
+			writel(INT_STATUS_ALL, jhost->addr + INT_SIGNAL_ENABLE);
+			writel(INT_STATUS_ALL, jhost->addr + INT_STATUS_ENABLE);
 			mmiowb();
 		}
 		break;

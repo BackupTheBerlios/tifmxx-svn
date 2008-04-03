@@ -1511,7 +1511,7 @@ static int xd_card_get_status(struct xd_card_host *host,
 	card->req.flags = XD_CARD_REQ_STATUS;
 	card->req.error = 0;
 
-	card->next_request[1] = h_xd_card_default;
+	card->next_request[0] = h_xd_card_default;
 	xd_card_new_req(host);
 	wait_for_completion(&card->req_complete);
 	*status = card->req.status;
@@ -1529,7 +1529,7 @@ static int xd_card_get_id(struct xd_card_host *host, unsigned char cmd,
 	card->req.count = count;
 	card->req.id = data;
 	card->req.error = 0;
-	card->next_request[1] = h_xd_card_default;
+	card->next_request[0] = h_xd_card_default;
 	xd_card_new_req(host);
 	wait_for_completion(&card->req_complete);
 	card->req.flags = 0;
@@ -1557,6 +1557,28 @@ static int xd_card_bad_block(struct xd_card_host *host)
 	return 0;
 }
 
+static int xd_card_read_extra(struct xd_card_host *host, unsigned int zone,
+			      unsigned int phy_block, unsigned int page)
+{
+	struct xd_card_media *card = host->card;
+
+	card->flash_req.zone = zone;
+	card->flash_req.phy_block = phy_block;
+	card->flash_req.page_off = page;
+	card->req.cmd = XD_CARD_CMD_READ3;
+	card->req.flags = XD_CARD_REQ_EXTRA;
+	card->req.addr = xd_card_req_address(card, 0);
+	card->req.error = 0;
+	card->req.count = 0;
+
+	host->extra_pos = 0;
+
+	card->next_request[0] = h_xd_card_read_extra;
+	xd_card_new_req(host);
+	wait_for_completion(&card->req_complete);
+	return card->req.error;
+}
+
 static int xd_card_find_cis(struct xd_card_host *host)
 {
 	struct xd_card_media *card = host->card;
@@ -1566,13 +1588,17 @@ static int xd_card_find_cis(struct xd_card_host *host)
 	unsigned int last_block = card->phy_block_cnt - card->log_block_cnt - 1;
 	int rc = 0;
 
-	buf = kmalloc(20 * r_size, GFP_KERNEL);
+	card->cis_block = FLASH_BD_INVALID;
+	buf = kmalloc(4 * r_size, GFP_KERNEL);
 	if (!buf)
 		return -ENOMEM;
 
+	buf[512] = '5'; buf[513] = '6'; buf[514] = '7'; buf[515] = '8';
 	sg_set_buf(&card->req_sg[0], buf, 2 * r_size);
 	card->seg_count = 1;
 
+	dev_dbg(host->dev, "buf %p, %p, %x, %x\n", buf, card->req_sg[0].page,
+		card->req_sg[0].offset, card->req_sg[0].length);
 	dev_dbg(host->dev, "looking for cis in %d blocks\n", last_block);
 
 	/* Map the desired blocks for one to one log/phy mapping */
@@ -1614,6 +1640,7 @@ static int xd_card_find_cis(struct xd_card_host *host)
 
 			dev_dbg(host->dev, "data: %08x %08x\n", *(unsigned int *)buf,
 				*(unsigned int *)(buf + 4));
+			dev_dbg(host->dev, "data: %08x\n", *(unsigned int *)(buf + 512));	
 			dev_dbg(host->dev, "extra: %08x, %02x, %02x, %04x "
 				"(%02x, %02x, %02x), %04x, (%02x, %02x, %02x)\n",
 				host->extra.reserved, host->extra.data_status,
@@ -1628,13 +1655,14 @@ static int xd_card_find_cis(struct xd_card_host *host)
 					break;
 				else if (!xd_card_bad_data(host)) {
 					dev_dbg(host->dev, "memcpy\n");
-					memcpy(&card->cis, buf,
+					memcpy(&card->cis, buf + 256,
 					       sizeof(card->cis));
 					rc = sizeof(card->cis);
-					memcpy(&card->idi, buf + rc,
+					memcpy(&card->idi, buf + 256 + rc,
 					       sizeof(card->idi));
 					rc += sizeof(card->idi);
 					// check copies
+					card->cis_block = b_cnt;
 					rc = 0;
 					goto out;
 				}
@@ -1646,27 +1674,14 @@ static int xd_card_find_cis(struct xd_card_host *host)
 out:
 	for (b_cnt = 0; b_cnt < last_block; ++b_cnt)
 		flash_bd_set_empty(card->fbd, 0, b_cnt, 0);
+
+//	if (card->cis_block != FLASH_BD_INVALID) {
+//		for (b_cnt = 0; b_cnt <= card->cis_block; ++b_cnt)
+//			flash_bd_set_full(card->fbd, 0, b_cnt,
+//					  FLASH_BD_INVALID);
+//	}
 	kfree(buf);
 	return rc;
-}
-
-static int xd_card_read_extra(struct xd_card_host *host, unsigned int zone,
-			      unsigned int phy_block, unsigned int page)
-{
-	struct xd_card_media *card = host->card;
-
-	card->flash_req.zone = zone;
-	card->flash_req.phy_block = phy_block;
-	card->flash_req.page_off = page;
-	card->req.cmd = XD_CARD_CMD_READ3;
-	card->req.flags = XD_CARD_REQ_EXTRA;
-	card->req.error = 0;
-	host->extra_pos = 0;
-
-	card->next_request[1] = h_xd_card_read_extra;
-	xd_card_new_req(host);
-	wait_for_completion(&card->req_complete);
-	return card->req.error;
 }
 
 static int xd_card_resolve_conflict(struct xd_card_host *host,
@@ -1717,11 +1732,11 @@ static int xd_card_resolve_conflict(struct xd_card_host *host,
 static int xd_card_fill_lut(struct xd_card_host *host)
 {
 	struct xd_card_media *card = host->card;
-	unsigned int z_cnt, b_cnt, log_block;
+	unsigned int z_cnt = 0, b_cnt, log_block, s_block = card->cis_block + 1;
 	int rc;
 
 	for (z_cnt = 0; z_cnt < card->zone_cnt; ++z_cnt) {
-		for (b_cnt = 0; b_cnt < card->phy_block_cnt; ++b_cnt) {
+		for (b_cnt = s_block; b_cnt < card->phy_block_cnt; ++b_cnt) {
 			rc = xd_card_read_extra(host, z_cnt, b_cnt, 0);
 			if (rc)
 				return rc;
@@ -1747,6 +1762,24 @@ static int xd_card_fill_lut(struct xd_card_host *host)
 			if (rc)
 				return rc;
 		}
+		s_block = 0;
+	}
+	return 0;
+}
+
+static int xd_card_fill_lut_rom(struct xd_card_host *host)
+{
+	struct xd_card_media *card = host->card;
+	unsigned int z_cnt = 0, b_cnt, log_block = 0;
+	unsigned int s_block = card->cis_block + 1;
+
+	for (z_cnt = 0; z_cnt < card->zone_cnt; ++z_cnt) {
+		for (b_cnt = s_block; b_cnt < card->phy_block_cnt; ++b_cnt) {
+			flash_bd_set_full(card->fbd, z_cnt, b_cnt, log_block);
+			log_block++;
+		}
+		s_block = 0;
+		log_block = 0;
 	}
 	return 0;
 }
@@ -2385,7 +2418,17 @@ struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 		goto out;
 	}
 
-	dev_dbg(host->dev, "go find cis\n");
+	dev_dbg(host->dev, "go find cis 1\n");
+	rc = xd_card_find_cis(host);
+	if (rc)
+		goto out;
+
+	dev_dbg(host->dev, "go find cis 2\n");
+	rc = xd_card_find_cis(host);
+	if (rc)
+		goto out;
+
+	dev_dbg(host->dev, "go find cis 3\n");
 	rc = xd_card_find_cis(host);
 	if (rc)
 		goto out;

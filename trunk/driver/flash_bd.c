@@ -571,6 +571,9 @@ EXPORT_SYMBOL(flash_bd_start_reading);
 int flash_bd_next_req(struct flash_bd *fbd, struct flash_bd_request *req,
 		      unsigned int count, int error)
 {
+	if (!fbd->cmd_handler)
+		return fbd->last_error;
+
 	fbd->last_count = count;
 	fbd->last_error = error;
 
@@ -923,15 +926,21 @@ static int h_flash_bd_write_pages(struct flash_bd *fbd,
 			fbd->last_error = -EIO;
 	}
 
-	if (fbd->last_error) {
-		flash_bd_mark_used(fbd, fbd->w_dst_block);
-		flash_bd_retire_useful(fbd, fbd->w_dst_block);
-		return fbd->last_error;
-	}
-
 	req->zone = fbd->w_log_block >> fbd->block_addr_bits;
 	req->log_block = fbd->w_log_block & ((1 << fbd->block_addr_bits) - 1);
 	req->phy_block = fbd->w_dst_block & ((1 << fbd->block_addr_bits) - 1);
+
+	if (fbd->last_error) {
+		flash_bd_mark_used(fbd, fbd->w_dst_block);
+		flash_bd_retire_useful(fbd, fbd->w_dst_block);
+		req->cmd = FBD_MARK_BAD;
+		req->page_off = 0;
+		req->page_cnt = 1;
+		fbd->cmd_handler = NULL;
+
+		return 0;
+	}
+
 	req->src.phy_block = fbd->w_src_block
 			     & ((1 << fbd->block_addr_bits) - 1);
 
@@ -1006,6 +1015,30 @@ static int h_flash_bd_write_pages(struct flash_bd *fbd,
 }
 
 static int h_flash_bd_erase_dst(struct flash_bd *fbd,
+				struct flash_bd_request *req);
+
+static int h_flash_bd_mark_dst_bad(struct flash_bd *fbd,
+				   struct flash_bd_request *req)
+{
+	unsigned int zone = fbd->w_dst_block >>  fbd->block_addr_bits;
+
+	fbd->w_dst_block = flash_bd_get_free(fbd, zone);
+	if (fbd->w_dst_block == FLASH_BD_INVALID)
+		return -EFAULT;
+
+	req->phy_block = fbd->w_dst_block
+			 & ((1 << fbd->block_addr_bits) - 1);
+
+	if (!test_bit(fbd->w_dst_block, fbd->erase_map)) {
+		req->cmd = FBD_ERASE;
+		fbd->req_count = 0;
+		fbd->cmd_handler = h_flash_bd_erase_dst;
+		return 0;
+	} else
+		return h_flash_bd_erase_dst(fbd, req);
+}
+
+static int h_flash_bd_erase_dst(struct flash_bd *fbd,
 				struct flash_bd_request *req)
 {
 	unsigned int zone = fbd->w_dst_block >>  fbd->block_addr_bits;
@@ -1039,30 +1072,54 @@ static int h_flash_bd_erase_dst(struct flash_bd *fbd,
 		fbd->cmd_handler = h_flash_bd_write_pages;
 	} else if (fbd->last_error == -EFAULT) {
 		flash_bd_mark_used(fbd, fbd->w_dst_block);
-		fbd->w_dst_block = flash_bd_get_free(fbd, zone);
-		if (fbd->w_dst_block == FLASH_BD_INVALID)
-			return fbd->last_error;
 
-		req->cmd = FBD_ERASE;
+		req->cmd = FBD_MARK_BAD;
+		req->page_off = 0;
+		req->page_cnt = 1;
 		fbd->req_count = 0;
-		fbd->cmd_handler = h_flash_bd_erase_dst;
+		fbd->cmd_handler = h_flash_bd_mark_dst_bad;
+		return 0;
 	} else
 		return fbd->last_error;
 
 	return 0;
 }
 
+
+static int h_flash_bd_mark_src_bad(struct flash_bd *fbd,
+				   struct flash_bd_request *req)
+{
+	if (!fbd->rem_count) {
+		req->cmd = FBD_NONE;
+		return 0;
+	} else
+		return h_flash_bd_write(fbd, req);
+}
+
 static int h_flash_bd_erase_src(struct flash_bd *fbd,
 				struct flash_bd_request *req)
 {
+	unsigned int zone = fbd->w_dst_block >>  fbd->block_addr_bits;
+
+	req->zone = zone;
+	req->log_block = fbd->w_log_block
+			 & ((1 << fbd->block_addr_bits) - 1);
+	req->phy_block = fbd->w_src_block
+			 & ((1 << fbd->block_addr_bits) - 1);
+
 	if (!fbd->last_error) {
 		clear_bit(fbd->w_src_block, fbd->data_map);
 		set_bit(fbd->w_src_block, fbd->erase_map);
 		fbd->free_cnt[fbd->w_src_block >> fbd->block_addr_bits]++;
 	} else {
-		if (fbd->last_error == -EFAULT)
-			fbd->last_error = 0;
-		else
+		if (fbd->last_error == -EFAULT) {
+			req->cmd = FBD_MARK_BAD;
+			req->page_off = 0;
+			req->page_cnt = 1;
+			fbd->req_count = 0;
+			fbd->cmd_handler = h_flash_bd_mark_src_bad;
+			return 0;
+		} else
 			return fbd->last_error;
 	}
 
@@ -1071,7 +1128,6 @@ static int h_flash_bd_erase_src(struct flash_bd *fbd,
 		return 0;
 	} else
 		return h_flash_bd_write(fbd, req);
-
 }
 
 static int h_flash_bd_write_inc(struct flash_bd *fbd,
