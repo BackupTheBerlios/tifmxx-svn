@@ -194,7 +194,10 @@ static int jmb38x_xd_issue_cmd(struct xd_card_host *host)
 		       jhost->addr + INT_STATUS_ENABLE);
 	}
 
-	if (jhost->req->flags & XD_CARD_REQ_DIR)
+	/* The controller has a bug, requiring IDs to be "written", not "read".
+	 */
+	if ((jhost->req->flags & XD_CARD_REQ_DIR)
+	    || (jhost->req->flags & XD_CARD_REQ_ID))
 		jhost->host_ctl &= ~HOST_CONTROL_DATA_DIR;
 	else
 		jhost->host_ctl |= HOST_CONTROL_DATA_DIR;

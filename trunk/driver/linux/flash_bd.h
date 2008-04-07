@@ -31,6 +31,7 @@ enum flash_bd_cmd {
 	FBD_READ_TMP,       /* read from media into temporary storage        */
 	FBD_FLUSH_TMP,      /* copy data from temporary to permanent storage */
 	FBD_SKIP,           /* pretend like reading from media               */
+	FBD_ERASE_TMP,      /* fill tmp area with default values             */
 	FBD_ERASE,          /* erase media block                             */
 	FBD_COPY,           /* media side page copy                          */
 	FBD_WRITE,          /* write to media                                */
@@ -40,6 +41,40 @@ enum flash_bd_cmd {
 	FBD_MARK_BAD        /* as above, mark pages as bad                   */
 };
 
+static inline const char *flash_bd_cmd_name(enum flash_bd_cmd cmd)
+{
+	switch (cmd) {
+	case FBD_NONE:
+		return "FBD_NONE";
+	case FBD_READ:
+		return "FBD_READ";
+	case FBD_READ_TMP:
+		return "FBD_READ_TMP";
+	case FBD_FLUSH_TMP:
+		return "FBD_FLUSH_TMP";
+	case FBD_SKIP:
+		return "FBD_SKIP";
+	case FBD_ERASE_TMP:
+		return "FBD_ERASE_TMP";
+	case FBD_ERASE:
+		return "FBD_ERASE";
+	case FBD_COPY:
+		return "FBD_COPY";
+	case FBD_WRITE:
+		return "FBD_WRITE";
+	case FBD_WRITE_TMP:
+		return "FBD_WRITE_TMP";
+	case FBD_FILL_TMP:
+		return "FBD_FILL_TMP";
+	case FBD_MARK:
+		return "FBD_MARK";
+	case FBD_MARK_BAD:
+		return "FBD_MARK_BAD";
+	default:
+		return "INVALID";
+	}
+}
+
 struct flash_bd_request {
 	enum flash_bd_cmd cmd;
 	unsigned int      zone;
@@ -47,11 +82,11 @@ struct flash_bd_request {
 	unsigned int      phy_block;
 	union {
 		unsigned int page_off;
-		unsigned int byte_off; /* for FBD_FILL/FLUSH_TMP */
+		unsigned int byte_off;
 	};
 	union {
 		unsigned int page_cnt;
-		unsigned int byte_cnt; /* for FBD_FILL/FLUSH_TMP, FBD_SKIP */
+		unsigned int byte_cnt;
 	};
 	struct { /* used by FBD_COPY */
 		unsigned int phy_block;

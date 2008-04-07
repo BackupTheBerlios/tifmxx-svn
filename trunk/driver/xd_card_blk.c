@@ -960,6 +960,11 @@ process_next:
 		card->trans_cnt -= card->flash_req.byte_cnt;
 		count = card->flash_req.byte_cnt;
 		break;
+	case FBD_ERASE_TMP:
+		memset(card->t_buf + card->flash_req.byte_off, 0xff,
+		       card->flash_req.byte_cnt);
+		count = card->flash_req.byte_cnt;
+		break;
 	case FBD_ERASE:
 		req->cmd = XD_CARD_CMD_ERASE_SET;
 		req->flags = XD_CARD_REQ_DIR;
@@ -1524,7 +1529,7 @@ static int xd_card_get_id(struct xd_card_host *host, unsigned char cmd,
 	struct xd_card_media *card = host->card;
 
 	card->req.cmd = cmd;
-	card->req.flags = XD_CARD_REQ_ID | XD_CARD_REQ_DIR;
+	card->req.flags = XD_CARD_REQ_ID;
 	card->req.addr = 0;
 	card->req.count = count;
 	card->req.id = data;
