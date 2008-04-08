@@ -892,8 +892,8 @@ static int xd_card_trans_req(struct xd_card_media *card,
 
 process_next:
 	dev_dbg(card->host->dev,
-		"fbd req %x: (%x) %x -> %x, dst: %x + %x, src: %x:%x\n",
-		card->flash_req.cmd, card->flash_req.zone,
+		"fbd req %s: (%x) %x -> %x, dst: %x + %x, src: %x:%x\n",
+		flash_bd_cmd_name(card->flash_req.cmd), card->flash_req.zone,
 		card->flash_req.log_block, card->flash_req.phy_block,
 		card->flash_req.page_off, card->flash_req.page_cnt,
 		card->flash_req.src.phy_block, card->flash_req.src.page_off);
@@ -912,8 +912,9 @@ process_next:
 			    card->req_sg[card->seg_pos].offset
 			    + card->seg_off);
 
-		dev_dbg(card->host->dev, "trans r %d, %d, %p, %x, %x\n", card->seg_pos,
-			card->seg_off, req->sg.page, req->sg.offset, req->sg.length);
+		dev_dbg(card->host->dev, "trans r %d, %d, %p, %x, %x\n",
+			card->seg_pos, card->seg_off, req->sg.page,
+			req->sg.offset, req->sg.length);
 
 		count = (req->sg.length - card->seg_off) / card->page_size;
 		card->trans_cnt = 0;

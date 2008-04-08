@@ -90,8 +90,8 @@ int bitmap_region_empty(unsigned long *bitmap, int pos, int count)
 	w_b = pos / BITS_PER_LONG;
 	w_e = (pos + count) / BITS_PER_LONG;
 
-	m_b = ~((1 << (pos % BITS_PER_LONG)) - 1);
-	m_e = (1 << ((pos + count) % BITS_PER_LONG)) - 1;
+	m_b = ~((1UL << (pos % BITS_PER_LONG)) - 1);
+	m_e = (1UL << ((pos + count) % BITS_PER_LONG)) - 1;
 
 	if (w_b == w_e) {
 		if (bitmap[w_b] & m_b & m_e)
@@ -137,8 +137,8 @@ void bitmap_region_set(unsigned long *bitmap, int pos, int count)
 	w_b = pos / BITS_PER_LONG;
 	w_e = (pos + count) / BITS_PER_LONG;
 
-	m_b = ~((1 << (pos % BITS_PER_LONG)) - 1);
-	m_e = (1 << ((pos + count) % BITS_PER_LONG)) - 1;
+	m_b = ~((1UL << (pos % BITS_PER_LONG)) - 1);
+	m_e = (1UL << ((pos + count) % BITS_PER_LONG)) - 1;
 
 	if (w_b == w_e) {
 		bitmap[w_b] |= m_b & m_e;
@@ -1174,7 +1174,10 @@ static int h_flash_bd_write_inc(struct flash_bd *fbd,
 	req->page_cnt = 0;
 	fbd->req_count = 0;
 
-	if (fbd->c_block && (fbd->c_block->address == fbd->w_dst_block)) {
+	if (!fbd->c_block || (fbd->c_block->address != fbd->w_dst_block))
+		fbd->c_block = flash_bd_find_useful(fbd, fbd->w_dst_block);
+
+	if (fbd->c_block) {
 		bitmap_region_set(fbd->c_block->page_map, fbd->buf_page_off,
 				  fbd->buf_page_cnt);
 		if (bitmap_full(fbd->c_block->page_map, fbd->page_cnt)) {

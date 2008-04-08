@@ -41,7 +41,7 @@ enum flash_bd_cmd {
 	FBD_MARK_BAD        /* as above, mark pages as bad                   */
 };
 
-static inline const char *flash_bd_cmd_name(enum flash_bd_cmd cmd)
+static const char *flash_bd_cmd_name(enum flash_bd_cmd cmd)
 {
 	switch (cmd) {
 	case FBD_NONE:
@@ -116,5 +116,4 @@ int flash_bd_start_writing(struct flash_bd *fbd, unsigned long long offset,
 size_t flash_bd_map_size(struct flash_bd *fbd);
 ssize_t flash_bd_read_map(struct flash_bd *fbd, char *buf, loff_t offset,
 			  size_t count);
-
 #endif
