@@ -41,7 +41,7 @@ enum flash_bd_cmd {
 	FBD_MARK_BAD        /* as above, mark pages as bad                   */
 };
 
-static const char *flash_bd_cmd_name(enum flash_bd_cmd cmd)
+static inline const char *flash_bd_cmd_name(enum flash_bd_cmd cmd)
 {
 	switch (cmd) {
 	case FBD_NONE:

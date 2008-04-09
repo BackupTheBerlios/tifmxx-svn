@@ -11,7 +11,7 @@ KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 #KERNELDIR ?= ~/linux-2.6
 PWD       := $(shell pwd)
 MODULE_INSTALLDIR = /lib/modules/$(shell uname -r)
-EXTRA_CFLAGS = -DDEBUG -DCONFIG_MEMSTICK_UNSAFE_RESUME -DCONFIG_XD_CARD_UNSAFE_RESUME
+EXTRA_CFLAGS = -fno-inline -DDEBUG -DCONFIG_MEMSTICK_UNSAFE_RESUME -DCONFIG_XD_CARD_UNSAFE_RESUME
 
 all:
 	echo $(PWD)

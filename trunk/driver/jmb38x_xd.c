@@ -312,7 +312,7 @@ static irqreturn_t jmb38x_xd_isr(int irq, void *dev_id)
 {
 	struct xd_card_host *host = dev_id;
 	struct jmb38x_xd_host *jhost = xd_card_priv(host);
-	unsigned int irq_status;
+	unsigned int irq_status, p_cnt;
 
 	spin_lock(&jhost->lock);
 	irq_status = readl(jhost->addr + INT_STATUS);
@@ -337,6 +337,19 @@ static irqreturn_t jmb38x_xd_isr(int irq, void *dev_id)
 
 		if (irq_status & INT_STATUS_EOTRAN)
 			jhost->cmd_flags |= DATA_READY;
+
+		if ((jhost->req->flags & XD_CARD_REQ_DATA)
+		    && (irq_status & INT_STATUS_DMA_BOUNDARY)) {
+			p_cnt = readl(jhost->addr + HOST_CONTROL);
+			p_cnt &= HOST_CONTROL_PAGE_CNT_MASK;
+			p_cnt >>= HOST_CONTROL_PAGE_CNT_SHIFT;
+			p_cnt = sg_dma_len(&jhost->req->sg)
+				- p_cnt * jhost->page_size;
+			dev_dbg(host->dev, "dma boundary %d, %d\n",
+				sg_dma_len(&jhost->req->sg), p_cnt);
+			writel(sg_dma_address(&jhost->req->sg) + p_cnt,
+			       jhost->addr + DMA_ADDRESS);
+		}
 	}
 
 	if (irq_status & (INT_STATUS_MEDIA_IN | INT_STATUS_MEDIA_OUT)) {

@@ -763,8 +763,13 @@ EXPORT_SYMBOL(flash_bd_read_map);
 
 static unsigned int flash_bd_get_free(struct flash_bd *fbd, unsigned int zone)
 {
-	unsigned long r_pos = random32() % fbd->free_cnt[zone];
+	unsigned long r_pos;
 	unsigned long pos = zone << fbd->block_addr_bits; 
+
+	if (!fbd->free_cnt[zone])
+		return FLASH_BD_INVALID;
+
+	r_pos = random32() % fbd->free_cnt[zone];
 
 	while (1) {
 		pos = find_next_zero_bit(fbd->data_map,
@@ -781,8 +786,7 @@ static unsigned int flash_bd_get_free(struct flash_bd *fbd, unsigned int zone)
 	};
 
 	set_bit(pos, fbd->data_map);
-	if (fbd->free_cnt[zone])
-		fbd->free_cnt[zone]--;
+	fbd->free_cnt[zone]--;
 
 	return pos;
 }
