@@ -977,6 +977,8 @@ process_next:
 		card->trans_cnt = 0;
 		card->trans_len = 0;
 
+		card->host->set_param(card->host, XD_CARD_ADDR_SIZE,
+				      card->addr_bytes - 1);
 		card->next_request[0] = h_xd_card_erase;
 		return 0;
 	case FBD_COPY:
@@ -1011,9 +1013,9 @@ process_next:
 			     | XD_CARD_REQ_EXTRA;
 		req->addr = xd_card_req_address(card, 0);
 		req->error = 0;
-		req->count = card->hw_page_size;
+		req->count = 0;
 		sg_set_page(&req->sg, sg_page(&card->req_sg[card->seg_pos]),
-			    req->count,
+			    card->hw_page_size,
 			    card->req_sg[card->seg_pos].offset
 			    + card->seg_off);
 
@@ -1035,7 +1037,7 @@ process_next:
 			     | XD_CARD_REQ_EXTRA;
 		req->addr = xd_card_req_address(card, 0);
 		req->error = 0;
-		req->count = card->hw_page_size;
+		req->count = 0;
 		card->trans_cnt = 0;
 		card->trans_len = card->flash_req.page_cnt * card->page_size;
 
@@ -1060,7 +1062,7 @@ process_next:
 			     | XD_CARD_REQ_EXTRA | XD_CARD_REQ_NO_ECC;
 		req->addr = xd_card_req_address(card, 0);
 		req->error = 0;
-		req->count = card->hw_page_size;
+		req->count = 0;
 		card->trans_cnt = 0;
 		card->trans_len = card->flash_req.page_cnt * card->page_size;
 
@@ -1079,7 +1081,7 @@ process_next:
 			     | XD_CARD_REQ_EXTRA | XD_CARD_REQ_NO_ECC;
 		req->addr = xd_card_req_address(card, 0);
 		req->error = 0;
-		req->count = card->hw_page_size;
+		req->count = 0;
 		card->trans_cnt = 0;
 		card->trans_len = card->flash_req.page_cnt * card->page_size;
 
@@ -1462,10 +1464,10 @@ static int h_xd_card_erase_stat_fmt(struct xd_card_media *card,
 static int h_xd_card_erase_fmt(struct xd_card_media *card,
 			       struct xd_card_request **req)
 {
+	card->host->set_param(card->host, XD_CARD_ADDR_SIZE, card->addr_bytes);
 	if (!(*req)->error) {
 		(*req)->cmd = XD_CARD_CMD_ERASE_START;
 		(*req)->flags = XD_CARD_REQ_DIR;
-		(*req)->addr = card->trans_cnt << card->page_addr_bits;
 		(*req)->error = 0;
 		(*req)->count = 0;
 		card->next_request[0] = h_xd_card_erase_stat_fmt;
@@ -1495,13 +1497,10 @@ static int h_xd_card_erase_stat(struct xd_card_media *card,
 static int h_xd_card_erase(struct xd_card_media *card,
 			   struct xd_card_request **req)
 {
+	card->host->set_param(card->host, XD_CARD_ADDR_SIZE, card->addr_bytes);
 	if (!(*req)->error) {
 		(*req)->cmd = XD_CARD_CMD_ERASE_START;
 		(*req)->flags = XD_CARD_REQ_DIR;
-		(*req)->addr = card->flash_req.zone;
-		(*req)->addr <<= card->block_addr_bits;
-		(*req)->addr |= card->flash_req.src.phy_block;
-		(*req)->addr <<= card->page_addr_bits;
 		(*req)->error = 0;
 		(*req)->count = 0;
 		card->trans_cnt = 0;
@@ -1854,14 +1853,11 @@ static void xd_card_process_request(struct xd_card_media *card,
 		}
 
 		rc = xd_card_trans_req(card, &card->req);
-		if (rc) {
-			flash_bd_end(card->fbd);
-			goto req_failed;
+		if (!rc) {
+			xd_card_new_req(card->host);
+			wait_for_completion(&card->req_complete);
+			rc = card->req.error;
 		}
-
-		xd_card_new_req(card->host);
-		wait_for_completion(&card->req_complete);
-		rc = card->req.error;
 
 		t_len = flash_bd_end(card->fbd);
 		dev_dbg(card->host->dev, "transferred %x\n", t_len);
@@ -1953,6 +1949,7 @@ static int xd_card_format_thread(void *data)
 	for(card->trans_cnt = card->cis_block + 1;
 	    card->trans_cnt < card->trans_len;
 	    ++card->trans_cnt) {
+		host->set_param(host, XD_CARD_ADDR_SIZE, card->addr_bytes - 1);
 		card->req.cmd = XD_CARD_CMD_ERASE_SET;
 		card->req.flags = XD_CARD_REQ_DIR;
 		card->req.addr = card->trans_cnt << card->page_addr_bits;
@@ -2274,10 +2271,7 @@ static void xd_card_set_media_param(struct xd_card_host *host)
 	host->set_param(host, XD_CARD_EXTRA_SIZE,
 			sizeof(struct xd_card_extra)
 			/ (card->page_size / card->hw_page_size));
-	if (card->capacity < 32768)
-		host->set_param(host, XD_CARD_ADDR_SIZE, 3);
-	else if (card->capacity < 8388608)
-		host->set_param(host, XD_CARD_ADDR_SIZE, 4);
+	host->set_param(host, XD_CARD_ADDR_SIZE, card->addr_bytes);
 
 	if (!card->sm_media)
 		host->set_param(host, XD_CARD_CLOCK, XD_CARD_NORMAL);
@@ -2439,8 +2433,17 @@ struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 	if ((1 << card->block_addr_bits) < card->phy_block_cnt)
 		card->block_addr_bits++;
 
-	dev_dbg(host->dev, "address bits: page %d, block %d\n",
-		card->page_addr_bits, card->block_addr_bits);
+	if (card->capacity < 62236)
+		card->addr_bytes = 3;
+	else if (card->capacity < 8388608)
+		card->addr_bytes = 4;
+	else {
+		rc = -EINVAL;
+		goto out;
+	}
+
+	dev_dbg(host->dev, "address bits: page %d, block %d, addr %d\n",
+		card->page_addr_bits, card->block_addr_bits, card->addr_bytes);
 
 	if (host->caps & XD_CARD_CAP_AUTO_ECC)
 		card->auto_ecc = 1;

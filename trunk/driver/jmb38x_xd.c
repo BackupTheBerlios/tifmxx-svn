@@ -447,7 +447,8 @@ static void jmb38x_xd_set_param(struct xd_card_host *host,
 
 			msleep(60);
 
-			jhost->host_ctl = HOST_CONTROL_POWER_EN
+			jhost->host_ctl = HOST_CONTROL_RW
+					  | HOST_CONTROL_POWER_EN
 					  | HOST_CONTROL_CLOCK_EN
 					  | HOST_CONTROL_ECC_EN
 					  | HOST_CONTROL_AC_EN;
@@ -681,6 +682,16 @@ static void jmb38x_xd_remove(struct pci_dev *pdev)
 	spin_unlock_irqrestore(&jhost->lock, flags);
 
 	xd_card_free_host(host);
+	dev_dbg(host->dev, "s5\n");
+	writel(PAD_PU_PD_OFF, jhost->addr + PAD_PU_PD);
+
+	dev_dbg(host->dev, "s6\n");
+	writel(PAD_OUTPUT_DISABLE_XD,
+	       jhost->addr + PAD_OUTPUT_ENABLE);
+	msleep(60);
+	writel(0, jhost->addr + PAD_OUTPUT_ENABLE);
+	mmiowb();
+
 	iounmap(addr);
 
 	pci_set_drvdata(pdev, NULL);

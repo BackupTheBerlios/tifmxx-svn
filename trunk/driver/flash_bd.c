@@ -13,6 +13,7 @@
 #include <linux/module.h>
 #include <linux/random.h>
 #include <linux/rbtree.h>
+#include <linux/bitrev.h>
 #include <asm/div64.h>
 
 #define READ  0
@@ -694,9 +695,10 @@ static void flash_bd_print_line(struct flash_bd *fbd, unsigned int log_block)
 			b_fmt = b_cnt / (8 * sizeof(unsigned long));
 			b_fmt = b->page_map[b_fmt]
 				>> (b_cnt % (8 * sizeof(unsigned long)));
+			b_fmt = bitrev8(b_fmt) >> 4;
 			line_pos += scnprintf(fbd->p_line + line_pos,
 					      fbd->p_line_size - line_pos,
-					      "%x", b_fmt & 0xf);
+					      "%x", b_fmt);
 		}
 	}
 

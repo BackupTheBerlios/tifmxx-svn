@@ -142,6 +142,10 @@ struct xd_card_media {
 				auto_ecc:1,
 				format:1;
 
+	unsigned char           page_addr_bits;
+	unsigned char           block_addr_bits;
+	unsigned char           addr_bytes;
+
 	unsigned int            capacity;
 	unsigned int            cylinders;
 	unsigned int            heads;
@@ -155,9 +159,6 @@ struct xd_card_media {
 	unsigned int            log_block_cnt;
 	unsigned int            page_cnt;
 	unsigned int            cis_block;
-
-	unsigned char           page_addr_bits;
-	unsigned char           block_addr_bits;
 
 	struct xd_card_id1      id1;
 	struct xd_card_id2      id2;
