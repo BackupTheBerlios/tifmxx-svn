@@ -90,7 +90,7 @@ enum {
 #define HOST_CONTROL_4P_MODE        0x00004000
 #define HOST_CONTROL_COPY_BACK      0x00002000
 #define HOST_CONTROL_CLK_DIV2       0x00001000
-#define HOST_CONTROL_RW             0x00000800
+#define HOST_CONTROL_WP             0x00000800
 #define HOST_CONTROL_LED            0x00000400
 #define HOST_CONTROL_POWER_EN       0x00000200
 #define HOST_CONTROL_CLOCK_EN       0x00000100
@@ -158,8 +158,7 @@ static int jmb38x_xd_issue_cmd(struct xd_card_host *host)
 		       jhost->addr + DMA_ADDRESS);
 		p_cnt = sg_dma_len(&jhost->req->sg) / jhost->page_size;
 		p_cnt <<= HOST_CONTROL_PAGE_CNT_SHIFT;
-		dev_dbg(host->dev, "trans %llx, %llx, %d, %08x\n",
-			jhost->req->addr,
+		dev_dbg(host->dev, "trans %llx, %d, %08x\n",
 			sg_dma_address(&jhost->req->sg),
 			sg_dma_len(&jhost->req->sg), p_cnt);
 	}
@@ -168,14 +167,14 @@ static int jmb38x_xd_issue_cmd(struct xd_card_host *host)
 	    && (jhost->req->flags & XD_CARD_REQ_DIR)) {
 		xd_card_get_extra(host, jhost->extra_data,
 				  jhost->extra_size);
-		writel(*(unsigned int *)(jhost->extra_data),
-		       jhost->addr + RDATA0);
-		writel(*(unsigned int *)(jhost->extra_data + 4),
-		       jhost->addr + RDATA1);
-		writel(*(unsigned int *)(jhost->extra_data + 8),
-		       jhost->addr + RDATA2);
-		writel(*(unsigned int *)(jhost->extra_data + 12),
-		       jhost->addr + RDATA3);
+		__raw_writel(*(unsigned int *)(jhost->extra_data),
+			     jhost->addr + RDATA0);
+		__raw_writel(*(unsigned int *)(jhost->extra_data + 4),
+			     jhost->addr + RDATA1);
+		__raw_writel(*(unsigned int *)(jhost->extra_data + 8),
+			     jhost->addr + RDATA2);
+		__raw_writel(*(unsigned int *)(jhost->extra_data + 12),
+			     jhost->addr + RDATA3);
 	}
 
 	if (!(jhost->req->flags & XD_CARD_REQ_NO_ECC)) {
@@ -194,13 +193,18 @@ static int jmb38x_xd_issue_cmd(struct xd_card_host *host)
 		       jhost->addr + INT_STATUS_ENABLE);
 	}
 
+	if (jhost->req->flags & XD_CARD_REQ_DIR) {
+		jhost->host_ctl |= HOST_CONTROL_WP;
+		jhost->host_ctl &= ~HOST_CONTROL_DATA_DIR;
+	} else {
+		jhost->host_ctl &= ~HOST_CONTROL_WP;
+		jhost->host_ctl |= HOST_CONTROL_DATA_DIR;
+	}
+
 	/* The controller has a bug, requiring IDs to be "written", not "read".
 	 */
-	if ((jhost->req->flags & XD_CARD_REQ_DIR)
-	    || (jhost->req->flags & XD_CARD_REQ_ID))
+	if (jhost->req->flags & XD_CARD_REQ_ID)
 		jhost->host_ctl &= ~HOST_CONTROL_DATA_DIR;
-	else
-		jhost->host_ctl |= HOST_CONTROL_DATA_DIR;
 
 	writel(jhost->host_ctl | HOST_CONTROL_LED
 	       | (p_cnt & HOST_CONTROL_PAGE_CNT_MASK),
@@ -212,14 +216,14 @@ static int jmb38x_xd_issue_cmd(struct xd_card_host *host)
 
 	writel(jhost->req->cmd << 16, jhost->addr + COMMAND);
 
-	dev_dbg(host->dev, "issue command %02x, %08x\n", jhost->req->cmd,
-		readl(jhost->addr + HOST_CONTROL));
+	dev_dbg(host->dev, "issue command %02x, %08x, %llx\n", jhost->req->cmd,
+		readl(jhost->addr + HOST_CONTROL), jhost->req->addr);
 	return 0;
 }
 
 static void jmb38x_xd_read_id(struct jmb38x_xd_host *jhost)
 {
-	unsigned int id_val = readl(jhost->addr + ID_CODE);
+	unsigned int id_val = __raw_readl(jhost->addr + ID_CODE);
 
 	memset(jhost->req->id, 0, jhost->req->count);
 
@@ -255,7 +259,8 @@ static void jmb38x_xd_complete_cmd(struct xd_card_host *host, int last)
 		readl(jhost->addr + ECC));
 
 
-	writel((~(HOST_CONTROL_LED | HOST_CONTROL_PAGE_CNT_MASK)) & host_ctl,
+	writel((~(HOST_CONTROL_LED | HOST_CONTROL_PAGE_CNT_MASK
+		  | HOST_CONTROL_WP)) & host_ctl,
 	       jhost->addr + HOST_CONTROL);
 
 	if (jhost->req->flags & XD_CARD_REQ_ID)
@@ -282,13 +287,13 @@ static void jmb38x_xd_complete_cmd(struct xd_card_host *host, int last)
 	if ((jhost->req->flags & XD_CARD_REQ_EXTRA)
 	    && !(jhost->req->flags & XD_CARD_REQ_DIR)) {
 		*(unsigned int *)(jhost->extra_data)
-			= readl(jhost->addr + RDATA0);
+			= __raw_readl(jhost->addr + RDATA0);
 		*(unsigned int *)(jhost->extra_data + 4)
-			= readl(jhost->addr + RDATA1);
+			= __raw_readl(jhost->addr + RDATA1);
 		*(unsigned int *)(jhost->extra_data + 8)
-			= readl(jhost->addr + RDATA2);
+			= __raw_readl(jhost->addr + RDATA2);
 		*(unsigned int *)(jhost->extra_data + 12)
-			= readl(jhost->addr + RDATA3);
+			= __raw_readl(jhost->addr + RDATA3);
 
 		xd_card_set_extra(host, jhost->extra_data,
 				  jhost->extra_size);
@@ -318,7 +323,7 @@ static irqreturn_t jmb38x_xd_isr(int irq, void *dev_id)
 	irq_status = readl(jhost->addr + INT_STATUS);
 	dev_dbg(host->dev, "irq_status = %08x\n", irq_status);
 	if (irq_status == 0 || irq_status == (~0)) {
-		spin_unlock(&host->lock);
+		spin_unlock(&jhost->lock);
 		return IRQ_NONE;
 	}
 
@@ -345,7 +350,8 @@ static irqreturn_t jmb38x_xd_isr(int irq, void *dev_id)
 			p_cnt >>= HOST_CONTROL_PAGE_CNT_SHIFT;
 			p_cnt = sg_dma_len(&jhost->req->sg)
 				- p_cnt * jhost->page_size;
-			dev_dbg(host->dev, "dma boundary %d, %d\n",
+			dev_dbg(host->dev, "dma boundary %llx, %d, %d\n",
+				sg_dma_address(&jhost->req->sg) + p_cnt,
 				sg_dma_len(&jhost->req->sg), p_cnt);
 			writel(sg_dma_address(&jhost->req->sg) + p_cnt,
 			       jhost->addr + DMA_ADDRESS);
@@ -447,8 +453,7 @@ static void jmb38x_xd_set_param(struct xd_card_host *host,
 
 			msleep(60);
 
-			jhost->host_ctl = HOST_CONTROL_RW
-					  | HOST_CONTROL_POWER_EN
+			jhost->host_ctl = HOST_CONTROL_POWER_EN
 					  | HOST_CONTROL_CLOCK_EN
 					  | HOST_CONTROL_ECC_EN
 					  | HOST_CONTROL_AC_EN;
@@ -464,7 +469,7 @@ static void jmb38x_xd_set_param(struct xd_card_host *host,
 			writel(INT_STATUS_ALL, jhost->addr + INT_STATUS_ENABLE);
 			mmiowb();
 		} else if (value == XD_CARD_POWER_OFF) {
-			jhost->host_ctl &= ~HOST_CONTROL_RW;
+			jhost->host_ctl &= ~HOST_CONTROL_WP;
 			writel(jhost->host_ctl, jhost->addr + HOST_CONTROL);
 
 			dev_dbg(host->dev, "p1\n");
@@ -631,8 +636,9 @@ static int jmb38x_xd_probe(struct pci_dev *pdev,
 
 	host->request = jmb38x_xd_request;
 	host->set_param = jmb38x_xd_set_param;
-	host->caps = XD_CARD_CAP_AUTO_ECC | XD_CARD_CAP_FIXED_EXTRA;
-	
+	host->caps = XD_CARD_CAP_AUTO_ECC | XD_CARD_CAP_FIXED_EXTRA
+		     | XD_CARD_CAP_CMD_SHORTCUT;
+
 	pci_set_drvdata(pdev, host);
 
 	snprintf(jhost->id, DEVICE_ID_SIZE, DRIVER_NAME);

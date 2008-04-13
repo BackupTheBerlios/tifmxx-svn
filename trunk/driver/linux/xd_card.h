@@ -201,8 +201,9 @@ struct xd_card_host {
 
 	unsigned int            retries;
 	unsigned int            caps;
-#define XD_CARD_CAP_AUTO_ECC    1
-#define XD_CARD_CAP_FIXED_EXTRA 2
+#define XD_CARD_CAP_AUTO_ECC     1
+#define XD_CARD_CAP_FIXED_EXTRA  2
+#define XD_CARD_CAP_CMD_SHORTCUT 4
 
 	/* Notify the host that some flash memory requests are pending. */
 	void (*request)(struct xd_card_host *host);

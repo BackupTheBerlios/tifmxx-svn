@@ -82,8 +82,6 @@ static struct workqueue_struct *workqueue;
 static DEFINE_IDR(xd_card_disk_idr);
 static DEFINE_MUTEX(xd_card_disk_lock);
 
-#define XD_CARD_MAX_SEGS  32
-
 static const unsigned char xd_card_cis_header[] = {
 	0x01, 0x03, 0xD9, 0x01, 0xFF, 0x18, 0x02, 0xDF, 0x01, 0x20
 };
@@ -907,7 +905,8 @@ process_next:
 		req->error = 0;
 		req->count = 0;
 		sg_set_page(&req->sg, sg_page(&card->req_sg[card->seg_pos]),
-			    card->req_sg[card->seg_pos].length,
+			    card->req_sg[card->seg_pos].length
+			    - card->seg_off,
 			    card->req_sg[card->seg_pos].offset
 			    + card->seg_off);
 
@@ -915,14 +914,12 @@ process_next:
 			card->seg_pos, card->seg_off, req->sg.page,
 			req->sg.offset, req->sg.length);
 
-		count = (req->sg.length - card->seg_off) / card->page_size;
 		card->trans_cnt = 0;
-		card->trans_len = min(count, card->flash_req.page_cnt)
-				  * card->page_size;
+		card->trans_len = card->flash_req.page_cnt * card->page_size;
 
-		if (card->auto_ecc)
-			req->sg.length = card->trans_len;
-		else {
+		if (card->auto_ecc) {
+			req->sg.length = min(card->trans_len, req->sg.length);
+		} else {
 			req->flags |= XD_CARD_REQ_EXTRA;
 			req->sg.length = card->hw_page_size;
 			card->host->extra_pos = 0;
@@ -967,10 +964,10 @@ process_next:
 		break;
 	case FBD_ERASE:
 		req->cmd = XD_CARD_CMD_ERASE_SET;
-		req->flags = XD_CARD_REQ_DIR;
+		req->flags = XD_CARD_REQ_DIR | XD_CARD_REQ_STATUS;
 		req->addr = card->flash_req.zone;
 		req->addr <<= card->block_addr_bits;
-		req->addr |= card->flash_req.src.phy_block;
+		req->addr |= card->flash_req.phy_block;
 		req->addr <<= card->page_addr_bits;
 		req->error = 0;
 		req->count = 0;
@@ -1010,7 +1007,7 @@ process_next:
 	case FBD_WRITE:
 		req->cmd = XD_CARD_CMD_INPUT;
 		req->flags = XD_CARD_REQ_DATA | XD_CARD_REQ_DIR
-			     | XD_CARD_REQ_EXTRA;
+			     | XD_CARD_REQ_EXTRA | XD_CARD_REQ_STATUS;
 		req->addr = xd_card_req_address(card, 0);
 		req->error = 0;
 		req->count = 0;
@@ -1034,7 +1031,7 @@ process_next:
 	case FBD_WRITE_TMP:
 		req->cmd = XD_CARD_CMD_INPUT;
 		req->flags = XD_CARD_REQ_DATA | XD_CARD_REQ_DIR
-			     | XD_CARD_REQ_EXTRA;
+			     | XD_CARD_REQ_EXTRA | XD_CARD_REQ_STATUS;
 		req->addr = xd_card_req_address(card, 0);
 		req->error = 0;
 		req->count = 0;
@@ -1059,7 +1056,8 @@ process_next:
 		       card->page_size * card->flash_req.page_cnt);
 		req->cmd = XD_CARD_CMD_INPUT;
 		req->flags = XD_CARD_REQ_DATA | XD_CARD_REQ_DIR
-			     | XD_CARD_REQ_EXTRA | XD_CARD_REQ_NO_ECC;
+			     | XD_CARD_REQ_EXTRA | XD_CARD_REQ_NO_ECC
+			     | XD_CARD_REQ_STATUS;
 		req->addr = xd_card_req_address(card, 0);
 		req->error = 0;
 		req->count = 0;
@@ -1078,7 +1076,8 @@ process_next:
 		       card->page_size * card->flash_req.page_cnt);
 		req->cmd = XD_CARD_CMD_INPUT;
 		req->flags = XD_CARD_REQ_DATA | XD_CARD_REQ_DIR
-			     | XD_CARD_REQ_EXTRA | XD_CARD_REQ_NO_ECC;
+			     | XD_CARD_REQ_EXTRA | XD_CARD_REQ_NO_ECC
+			     | XD_CARD_REQ_STATUS;
 		req->addr = xd_card_req_address(card, 0);
 		req->error = 0;
 		req->count = 0;
@@ -1130,6 +1129,7 @@ static int xd_card_try_next_req(struct xd_card_media *card,
 static int h_xd_card_read(struct xd_card_media *card,
 			  struct xd_card_request **req)
 {
+	unsigned int count;
 	int rc = 0;
 
 	dev_dbg(card->host->dev, "read %d (%d) of %d at %d:%d\n",
@@ -1139,7 +1139,25 @@ static int h_xd_card_read(struct xd_card_media *card,
 	if ((*req)->count) {
 		if (card->auto_ecc) {
 			xd_card_advance(card, (*req)->count);
-			card->trans_cnt = (*req)->count;
+			card->trans_cnt += (*req)->count;
+			count = min(card->trans_len - card->trans_cnt,
+				    (*req)->sg.length - card->seg_off);
+
+			if (!count)
+				goto out;
+
+			(*req)->cmd = XD_CARD_CMD_READ1;
+			(*req)->flags = XD_CARD_REQ_DATA;
+			(*req)->addr = xd_card_req_address(card,
+							   card->trans_cnt);
+			(*req)->error = 0;
+			(*req)->count = 0;
+			sg_set_page(&(*req)->sg,
+				    sg_page(&card->req_sg[card->seg_pos]),
+				    count,
+				    card->req_sg[card->seg_pos].offset
+				    + card->seg_off);
+			return 0;
 		} else {
 			rc = card->hw_page_size;
 
@@ -1166,22 +1184,23 @@ static int h_xd_card_read(struct xd_card_media *card,
 					card->trans_cnt -= card->page_size;
 			}
 
-			if (!rc && (card->trans_cnt < card->trans_len)) {
-				(*req)->count = 0;
-				(*req)->error = 0;
-				(*req)->addr
-					= xd_card_req_address(card,
-							      card->trans_cnt);
-				sg_set_page(&(*req)->sg,
-					sg_page(&card->req_sg[card->seg_pos]),
-					card->hw_page_size,
-					card->req_sg[card->seg_pos].offset
-					+ card->seg_off);
-				return 0;
-			}
+			if (rc || (card->trans_cnt >= card->trans_len))
+				goto out;
+
+			(*req)->count = 0;
+			(*req)->error = 0;
+			(*req)->addr = xd_card_req_address(card,
+							   card->trans_cnt);
+			sg_set_page(&(*req)->sg,
+				    sg_page(&card->req_sg[card->seg_pos]),
+				    card->hw_page_size,
+				    card->req_sg[card->seg_pos].offset
+				    + card->seg_off);
+			return 0;
 		}
 	}
 
+out:
 	if (!(*req)->error)
 		(*req)->error = rc;
 
@@ -1266,7 +1285,8 @@ static int h_xd_card_write_tmp_adv(struct xd_card_media *card,
 			(*req)->cmd = XD_CARD_CMD_INPUT;
 			(*req)->flags = XD_CARD_REQ_DATA
 					| XD_CARD_REQ_DIR
-					| XD_CARD_REQ_EXTRA;
+					| XD_CARD_REQ_EXTRA
+					| XD_CARD_REQ_STATUS;
 			(*req)->addr = xd_card_req_address(card,
 							   card->trans_cnt);
 			(*req)->error = 0;
@@ -1298,7 +1318,8 @@ static int h_xd_card_write_adv(struct xd_card_media *card,
 			(*req)->cmd = XD_CARD_CMD_INPUT;
 			(*req)->flags = XD_CARD_REQ_DATA
 					| XD_CARD_REQ_DIR
-					| XD_CARD_REQ_EXTRA;
+					| XD_CARD_REQ_EXTRA
+					| XD_CARD_REQ_STATUS;
 			(*req)->addr = xd_card_req_address(card,
 							   card->trans_cnt);
 			(*req)->error = 0;
@@ -1336,40 +1357,50 @@ static int h_xd_card_write(struct xd_card_media *card,
 			   struct xd_card_request **req)
 {
 	if (!(*req)->error) {
-		if ((*req)->count == card->hw_page_size) {
-			(*req)->cmd = XD_CARD_CMD_PAGE_PROG;
-			(*req)->flags = XD_CARD_REQ_DIR;
-			(*req)->error = 0;
-			(*req)->count = 0;
-
-			card->next_request[0] = h_xd_card_write_stat;
-			card->next_request[1] = h_xd_card_write_adv;
-			return 0;
-		} else
+		if ((*req)->count != card->hw_page_size)
 			(*req)->error = -EIO;
 	}
 
-	return xd_card_try_next_req(card, req);
+	if ((*req)->error)
+		return xd_card_try_next_req(card, req);
+
+	if (card->host->caps & XD_CARD_CAP_CMD_SHORTCUT) {
+		return h_xd_card_write_adv(card, req);
+	} else {
+		(*req)->cmd = XD_CARD_CMD_PAGE_PROG;
+		(*req)->flags = XD_CARD_REQ_DIR;
+		(*req)->error = 0;
+		(*req)->count = 0;
+
+		card->next_request[0] = h_xd_card_write_stat;
+		card->next_request[1] = h_xd_card_write_adv;
+		return 0;
+	}
 }
 
 static int h_xd_card_write_tmp(struct xd_card_media *card,
 			       struct xd_card_request **req)
 {
 	if (!(*req)->error) {
-		if ((*req)->count == card->hw_page_size) {
-			(*req)->cmd = XD_CARD_CMD_PAGE_PROG;
-			(*req)->flags = XD_CARD_REQ_DIR;
-			(*req)->error = 0;
-			(*req)->count = 0;
-
-			card->next_request[0] = h_xd_card_write_stat;
-			card->next_request[1] = h_xd_card_write_tmp_adv;
-			return 0;
-		} else
+		if ((*req)->count != card->hw_page_size)
 			(*req)->error = -EIO;
 	}
 
-	return xd_card_try_next_req(card, req);
+	if ((*req)->error)
+		return xd_card_try_next_req(card, req);
+
+	if (card->host->caps & XD_CARD_CAP_CMD_SHORTCUT) {
+		return h_xd_card_write_tmp_adv(card, req);
+	} else {
+		(*req)->cmd = XD_CARD_CMD_PAGE_PROG;
+		(*req)->flags = XD_CARD_REQ_DIR;
+		(*req)->error = 0;
+		(*req)->count = 0;
+
+		card->next_request[0] = h_xd_card_write_stat;
+		card->next_request[1] = h_xd_card_write_tmp_adv;
+		return 0;
+	}
 }
 
 static int h_xd_card_read_copy(struct xd_card_media *card,
@@ -1428,7 +1459,7 @@ static int h_xd_card_read_copy(struct xd_card_media *card,
 	if (!(*req)->error) {
 		(*req)->cmd = XD_CARD_CMD_INPUT;
 		(*req)->flags = XD_CARD_REQ_DATA | XD_CARD_REQ_DIR
-				| XD_CARD_REQ_EXTRA;
+				| XD_CARD_REQ_EXTRA | XD_CARD_REQ_STATUS;
 		(*req)->addr = xd_card_req_address(card, 0);
 		(*req)->error = 0;
 		(*req)->count = card->hw_page_size;
@@ -1465,16 +1496,16 @@ static int h_xd_card_erase_fmt(struct xd_card_media *card,
 			       struct xd_card_request **req)
 {
 	card->host->set_param(card->host, XD_CARD_ADDR_SIZE, card->addr_bytes);
-	if (!(*req)->error) {
+	if ((*req)->error || (card->host->caps & XD_CARD_CAP_CMD_SHORTCUT)) {
+		complete(&card->req_complete);
+		return (*req)->error;
+	} else {
 		(*req)->cmd = XD_CARD_CMD_ERASE_START;
 		(*req)->flags = XD_CARD_REQ_DIR;
 		(*req)->error = 0;
 		(*req)->count = 0;
 		card->next_request[0] = h_xd_card_erase_stat_fmt;
 		return 0;
-	} else {
-		complete(&card->req_complete);
-		return (*req)->error;
 	}
 }
 
@@ -1499,6 +1530,13 @@ static int h_xd_card_erase(struct xd_card_media *card,
 {
 	card->host->set_param(card->host, XD_CARD_ADDR_SIZE, card->addr_bytes);
 	if (!(*req)->error) {
+		if (card->host->caps & XD_CARD_CAP_CMD_SHORTCUT) {
+			if ((*req)->status & XD_CARD_STTS_FAIL)
+				(*req)->error = -EFAULT;
+
+			return xd_card_try_next_req(card, req);
+		}
+
 		(*req)->cmd = XD_CARD_CMD_ERASE_START;
 		(*req)->flags = XD_CARD_REQ_DIR;
 		(*req)->error = 0;
@@ -1828,18 +1866,18 @@ static void xd_card_process_request(struct xd_card_media *card,
 
 		if (rq_data_dir(req) == READ) {
 			dev_dbg(card->host->dev, "Read segs: %d, offset: %lx, "
-				"size: %x\n", card->seg_count, req->sector << 9,
-				req->current_nr_sectors << 9);
+				"size: %lx\n", card->seg_count,
+				req->sector << 9,
+				req->nr_sectors << 9);
 			rc = flash_bd_start_reading(card->fbd, req->sector << 9,
-						    req->current_nr_sectors
-						    << 9);
+						    req->nr_sectors << 9);
 		} else {
 			dev_dbg(card->host->dev, "Write segs: %d, offset: %lx, "
-				"size: %x\n", card->seg_count, req->sector << 9,
-				req->current_nr_sectors << 9);		
+				"size: %lx\n", card->seg_count,
+				req->sector << 9,
+				req->nr_sectors << 9);		
 			rc = flash_bd_start_writing(card->fbd, req->sector << 9,
-						    req->current_nr_sectors
-						    << 9);
+						    req->nr_sectors << 9);
 		}
 
 		if (rc)
@@ -1867,7 +1905,7 @@ req_failed:
 			chunk = end_that_request_chunk(req, 1, t_len);
 		else
 			chunk = end_that_request_first(req, rc,
-						       req->current_nr_sectors);
+						       req->nr_sectors);
 
 		if (!chunk) {
 			add_disk_randomness(req->rq_disk);
@@ -1951,7 +1989,7 @@ static int xd_card_format_thread(void *data)
 	    ++card->trans_cnt) {
 		host->set_param(host, XD_CARD_ADDR_SIZE, card->addr_bytes - 1);
 		card->req.cmd = XD_CARD_CMD_ERASE_SET;
-		card->req.flags = XD_CARD_REQ_DIR;
+		card->req.flags = XD_CARD_REQ_DIR | XD_CARD_REQ_STATUS;
 		card->req.addr = card->trans_cnt << card->page_addr_bits;
 		card->req.error = 0;
 		card->req.count = 0;
@@ -2344,6 +2382,25 @@ static int xd_card_init_media(struct xd_card_host *host)
 
 	if (rc)
 		return rc;
+
+	/* We just read a single page to reset flash column pointer. */
+	host->card->flash_req.zone = 0;
+	host->card->flash_req.phy_block = host->card->cis_block;
+	host->card->flash_req.page_off = 0;
+	host->card->flash_req.page_cnt = 1;
+	host->card->req.cmd = XD_CARD_CMD_READ1;
+	host->card->req.flags = XD_CARD_REQ_DATA;
+	host->card->req.addr = xd_card_req_address(host->card, 0);
+	host->card->req.error = 0;
+	host->card->req.count = 0;
+	host->card->trans_cnt = 0;
+	host->card->trans_len = host->card->hw_page_size;
+
+	sg_set_buf(&host->card->req.sg, host->card->t_buf,
+		   host->card->trans_len);
+	host->card->next_request[0] = h_xd_card_default;
+	xd_card_new_req(host);
+	wait_for_completion(&host->card->req_complete);
 
 	host->card->q_thread = kthread_run(xd_card_queue_thread,
 					   host->card, DRIVER_NAME"d");
