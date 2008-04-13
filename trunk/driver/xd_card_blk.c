@@ -1019,8 +1019,7 @@ process_next:
 		dev_dbg(card->host->dev, "trans w %d, %d, %p, %x, %x\n", card->seg_pos,
 			card->seg_off, req->sg.page, req->sg.offset, req->sg.length);
 
-		card->trans_len = card->req_sg[card->seg_pos].length
-				  - card->seg_off;
+		card->trans_len = card->flash_req.page_cnt * card->page_size;
 		card->trans_cnt = 0;
 
 		memset(&card->host->extra, 0xff, sizeof(struct xd_card_extra));
