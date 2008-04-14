@@ -712,9 +712,12 @@ EXPORT_SYMBOL(flash_bd_map_size);
 ssize_t flash_bd_read_map(struct flash_bd *fbd, char *buf, loff_t offset,
 			  size_t count)
 {
-	unsigned int l_begin = offset / fbd->p_line_size;
-	unsigned int l_end = (offset + count - 1) / fbd->p_line_size;
+	loff_t l_begin = offset;
+	unsigned int l_begin_rem = do_div(l_begin, fbd->p_line_size);
+	loff_t l_end = offset + count - 1;
 	ssize_t rc = 0;
+
+	do_div(l_end, fbd->p_line_size);
 
 	if (!count)
 		return 0;
@@ -722,12 +725,10 @@ ssize_t flash_bd_read_map(struct flash_bd *fbd, char *buf, loff_t offset,
 	flash_bd_print_line(fbd, l_begin);
 
 	if (l_begin != l_end) {
-		rc = offset % fbd->p_line_size;
-		memcpy(buf, fbd->p_line + rc,
-		       fbd->p_line_size - rc);
-		rc = fbd->p_line_size - rc;
+		rc = fbd->p_line_size - l_begin_rem;
+		memcpy(buf, fbd->p_line + l_begin_rem, rc);
 	} else {
-		memcpy(buf, fbd->p_line + (offset % fbd->p_line_size), count);
+		memcpy(buf, fbd->p_line + l_begin_rem, count);
 		return count;
 	}
 
