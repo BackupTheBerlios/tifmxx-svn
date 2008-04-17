@@ -629,7 +629,7 @@ static int h_flash_bd_copy_last(struct flash_bd *fbd,
 			flash_bd_mark_used(fbd, fbd->w_dst_block);
 			req->cmd = FBD_MARK_BAD;
 			req->page_off = 0;
-			req->page_cnt = 1;
+			req->page_cnt = fbd->page_cnt;
 			fbd->req_count = 0;
 			fbd->cmd_handler = h_flash_bd_mark_dst_bad;
 			return 0;
@@ -659,7 +659,7 @@ static int h_flash_bd_copy_first(struct flash_bd *fbd,
 
 		req->cmd = FBD_MARK_BAD;
 		req->page_off = 0;
-		req->page_cnt = 1;
+		req->page_cnt = fbd->page_cnt;
 		fbd->req_count = 0;
 		fbd->cmd_handler = NULL;
 		return 0;
@@ -695,7 +695,7 @@ static int h_flash_bd_erase_dst(struct flash_bd *fbd,
 	if (fbd->last_error) {
 		if (fbd->last_error == -EFAULT) {
 			req->cmd = FBD_MARK_BAD;
-			req->page_cnt = 1;
+			req->page_cnt = fbd->page_cnt;
 			fbd->req_count = 0;
 			fbd->cmd_handler = h_flash_bd_mark_dst_bad;
 			return 0;
@@ -761,7 +761,7 @@ static int h_flash_bd_erase_src(struct flash_bd *fbd,
 			flash_bd_mark_used(fbd, fbd->w_src_block);
 			req->cmd = FBD_MARK_BAD;
 			req->page_off = 0;
-			req->page_cnt = 1;
+			req->page_cnt = fbd->page_cnt;
 			fbd->req_count = 0;
 			fbd->cmd_handler = h_flash_bd_mark_src_bad;
 			return 0;
@@ -791,7 +791,7 @@ static int h_flash_bd_write_inc(struct flash_bd *fbd,
 				 & ((1 <<  fbd->block_addr_bits) - 1);
 		req->cmd = FBD_MARK_BAD;
 		req->page_off = 0;
-		req->page_cnt = 1;
+		req->page_cnt = fbd->page_cnt;
 		fbd->req_count = 0;
 		fbd->cmd_handler = NULL;
 		return 0;
