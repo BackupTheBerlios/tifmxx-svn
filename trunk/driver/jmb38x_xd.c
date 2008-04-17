@@ -673,8 +673,8 @@ static void jmb38x_xd_remove(struct pci_dev *pdev)
 	void __iomem *addr = jhost->addr;
 	unsigned long flags;
 
-	writel(0, jhost->addr + INT_SIGNAL_ENABLE);
-	writel(0, jhost->addr + INT_STATUS_ENABLE);
+	writel(0, addr + INT_SIGNAL_ENABLE);
+	writel(0, addr + INT_STATUS_ENABLE);
 	mmiowb();
 	free_irq(pdev->irq, host);
 	dev_dbg(&pdev->dev, "interrupts off\n");
@@ -689,13 +689,12 @@ static void jmb38x_xd_remove(struct pci_dev *pdev)
 
 	xd_card_free_host(host);
 	dev_dbg(host->dev, "s5\n");
-	writel(PAD_PU_PD_OFF, jhost->addr + PAD_PU_PD);
+	writel(PAD_PU_PD_OFF, addr + PAD_PU_PD);
 
 	dev_dbg(host->dev, "s6\n");
-	writel(PAD_OUTPUT_DISABLE_XD,
-	       jhost->addr + PAD_OUTPUT_ENABLE);
+	writel(PAD_OUTPUT_DISABLE_XD, addr + PAD_OUTPUT_ENABLE);
 	msleep(60);
-	writel(0, jhost->addr + PAD_OUTPUT_ENABLE);
+	writel(0, addr + PAD_OUTPUT_ENABLE);
 	mmiowb();
 
 	iounmap(addr);
