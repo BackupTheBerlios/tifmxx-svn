@@ -11,6 +11,7 @@
 
 #include "linux/xd_card.h"
 #include <linux/idr.h>
+#include <linux/delay.h>
 /*
 #undef dev_dbg
 
@@ -340,8 +341,14 @@ static ssize_t xd_card_format_show(struct device *dev,
 			     host->card->trans_cnt, host->card->trans_len,
 			     (host->card->trans_cnt * 100)
 			     / host->card->trans_len);
-	else
-		rc = sprintf(buf, "Not running\n");
+	else {
+		rc = scnprintf(buf, PAGE_SIZE, "Not running.\n\n");
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc,
+				"Do \"echo format > xd_card_format\" "
+				"to start formatting.\n");
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "But first, think "
+				"about it, really good.\n");
+	}
 
 out:
 	mutex_unlock(&host->lock);
@@ -813,8 +820,6 @@ static void xd_card_update_extra_tmp(struct xd_card_media *card)
 	if ((card->trans_len - card->trans_cnt) < card->page_size)
 		return;
 
-	xd_card_addr_to_extra(&card->host->extra, card->flash_req.log_block);
-
 	if (card->auto_ecc || (card->req.flags & XD_CARD_REQ_NO_ECC))
 		return;
 
@@ -1021,6 +1026,8 @@ process_next:
 			card->trans_len);
 
 		memset(&card->host->extra, 0xff, sizeof(struct xd_card_extra));
+		xd_card_addr_to_extra(&card->host->extra,
+				      card->flash_req.log_block);
 		xd_card_update_extra(card);
 		dev_dbg(card->host->dev, "log addr %08x, %04x\n",
 			card->flash_req.log_block, card->host->extra.addr1);
@@ -1040,6 +1047,8 @@ process_next:
 		sg_set_buf(&req->sg, card->t_buf, card->hw_page_size);
 
 		memset(&card->host->extra, 0xff, sizeof(struct xd_card_extra));
+		xd_card_addr_to_extra(&card->host->extra,
+				      card->flash_req.log_block);
 		xd_card_update_extra_tmp(card);
 
 		card->next_request[0] = h_xd_card_write_tmp; 
@@ -1066,6 +1075,8 @@ process_next:
 		sg_set_buf(&req->sg, card->t_buf, card->hw_page_size);
 
 		memset(&card->host->extra, 0xff, sizeof(struct xd_card_extra));
+		xd_card_addr_to_extra(&card->host->extra,
+				      card->flash_req.log_block);
 		xd_card_update_extra_tmp(card);
 
 		card->next_request[0] = h_xd_card_write_tmp; 
@@ -1086,7 +1097,6 @@ process_next:
 		sg_set_buf(&req->sg, card->t_buf, card->hw_page_size);
 
 		memset(&card->host->extra, 0xff, sizeof(struct xd_card_extra));
-		xd_card_update_extra_tmp(card);
 		card->host->extra.block_status = 0xf0;
 
 		card->next_request[0] = h_xd_card_write_tmp; 
@@ -1474,6 +1484,8 @@ static int h_xd_card_read_copy(struct xd_card_media *card,
 		sg_set_buf(&(*req)->sg, card->t_buf, card->hw_page_size);
 
 		memset(&card->host->extra, 0xff, sizeof(struct xd_card_extra));
+		xd_card_addr_to_extra(&card->host->extra,
+				      card->flash_req.log_block);
 		xd_card_update_extra_tmp(card);
 		card->next_request[0] = h_xd_card_write_tmp;
 		return 0;
@@ -1767,8 +1779,8 @@ static int xd_card_resolve_conflict(struct xd_card_host *host,
 	l_addr_o = xd_card_extra_to_addr(&host->extra);
 
 
-	dev_dbg(host->dev, "block map conflict (%x) %x -> %x, %x (%x, %x)\n",
-		zone, log_block, phy_block, o_phy_block, l_addr, l_addr_o);
+	dev_warn(host->dev, "block map conflict (%x) %x -> %x, %x (%x, %x)\n",
+		 zone, log_block, phy_block, o_phy_block, l_addr, l_addr_o);
 
 	if (l_addr != log_block)
 		l_addr = FLASH_BD_INVALID;
@@ -1822,7 +1834,7 @@ static int xd_card_fill_lut(struct xd_card_host *host)
 			if (rc == -EEXIST)
 				rc = xd_card_resolve_conflict(host, z_cnt,
 							      b_cnt, log_block);
-			dev_dbg(host->dev, "fill lut (%d) %d -> %d, %d\n",
+			dev_dbg(host->dev, "fill lut (%x) %x -> %x, %x\n",
 				z_cnt, log_block, b_cnt, rc);
 
 			if (rc)
@@ -2372,7 +2384,7 @@ static void xd_card_sysfs_unregister(struct xd_card_host *host)
 	device_remove_file(host->dev, &dev_attr_xd_card_cis);
 	device_remove_file(host->dev, &dev_attr_xd_card_id);
 }
-#include <linux/delay.h>
+
 static void xd_card_test_wr(struct xd_card_host *host)
 {
 	struct xd_card_media *card = host->card;
