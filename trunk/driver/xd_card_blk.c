@@ -1816,6 +1816,9 @@ static int xd_card_fill_lut(struct xd_card_host *host)
 			rc = xd_card_read_extra(host, z_cnt, b_cnt, 0);
 			if (rc)
 				return rc;
+			dev_dbg(host->dev, "extra (%x) %x : %02x, %04x, %04x\n",
+				z_cnt, b_cnt, host->extra.block_status,
+				host->extra.addr1, host->extra.addr2);
 
 			if (xd_card_bad_block(host)) {
 				flash_bd_set_full(card->fbd, z_cnt, b_cnt,
@@ -2384,7 +2387,7 @@ static void xd_card_sysfs_unregister(struct xd_card_host *host)
 	device_remove_file(host->dev, &dev_attr_xd_card_cis);
 	device_remove_file(host->dev, &dev_attr_xd_card_id);
 }
-
+#if 0
 static void xd_card_test_wr(struct xd_card_host *host)
 {
 	struct xd_card_media *card = host->card;
@@ -2439,7 +2442,7 @@ static void xd_card_test_wr(struct xd_card_host *host)
 		wait_for_completion(&card->req_complete);
 	}
 }
-
+#endif
 static int xd_card_init_media(struct xd_card_host *host)
 {
 	struct task_struct *q_thread;
@@ -2524,6 +2527,7 @@ struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 	struct xd_card_media *card = kzalloc(sizeof(struct xd_card_media),
 					     GFP_KERNEL);
 	struct xd_card_media *old_card = host->card;
+	unsigned int t_val;
 	int rc = -ENOMEM;
 	unsigned char status;
 
@@ -2541,13 +2545,23 @@ struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 	if (rc)
 		goto out;
 
-	rc = xd_card_get_status(host, XD_CARD_CMD_STATUS1, &status);
+	/* xd card must get ready in about 40ms */
+	for (t_val = 1; t_val <= 32; t_val *= 2) {
+		rc = xd_card_get_status(host, XD_CARD_CMD_STATUS1, &status);
+		if (rc)
+			goto out;
+		if (status & XD_CARD_STTS_READY) {
+			rc = 0;
+			break;
+		} else
+			rc = -ETIME;
+
+		msleep(t_val);
+	}
+	
 	if (rc)
 		goto out;
-/*
-	if (!(status & XD_CARD_STTS_RW))
-		card->read_only = 1;
-*/
+
 	rc = xd_card_get_id(host, XD_CARD_CMD_ID1, &card->id1,
 			    sizeof(card->id1));
 	if (rc)

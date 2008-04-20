@@ -688,10 +688,7 @@ static void jmb38x_xd_remove(struct pci_dev *pdev)
 	spin_unlock_irqrestore(&jhost->lock, flags);
 
 	xd_card_free_host(host);
-	dev_dbg(host->dev, "s5\n");
 	writel(PAD_PU_PD_OFF, addr + PAD_PU_PD);
-
-	dev_dbg(host->dev, "s6\n");
 	writel(PAD_OUTPUT_DISABLE_XD, addr + PAD_OUTPUT_ENABLE);
 	msleep(60);
 	writel(0, addr + PAD_OUTPUT_ENABLE);
