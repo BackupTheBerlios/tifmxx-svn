@@ -145,11 +145,6 @@ enum {
 	DMA_DATA     = 0x08
 };
 
-static inline struct page *sg_page(struct scatterlist *sg)
-{
-        return sg->page;
-}
-
 static unsigned int jmb38x_ms_read_data(struct jmb38x_ms_host *host,
 					unsigned char *buf, unsigned int length)
 {

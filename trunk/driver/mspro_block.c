@@ -20,7 +20,6 @@
 #include "linux/memstick.h"
 
 #define DRIVER_NAME "mspro_block"
-#define DRIVER_VERSION "0.2"
 
 static int major;
 module_param(major, int, 0644);
@@ -30,43 +29,6 @@ module_param(major, int, 0644);
 
 #define MSPRO_BLOCK_SIGNATURE        0xa5c3
 #define MSPRO_BLOCK_MAX_ATTRIBUTES   41
-
-static inline void sg_set_page(struct scatterlist *sg, struct page *page,
-                               unsigned int len, unsigned int offset)
-{
-	sg->page = page;
-	sg->offset = offset;
-	sg->length = len;
-}
-
-static inline struct page *sg_page(struct scatterlist *sg)
-{
-	return sg->page;
-}
-
-static unsigned int rq_byte_size(struct request *rq)
-{
-	if (blk_fs_request(rq))
-		return rq->hard_nr_sectors << 9;
-
-	return rq->data_len;
-}
-
-static inline void __end_request(struct request *rq, int uptodate,
-                                 unsigned int nr_bytes, int dequeue)
-{
-	if (!end_that_request_chunk(rq, uptodate, nr_bytes)) {
-		if (dequeue)
-			blkdev_dequeue_request(rq);
-		add_disk_randomness(rq->rq_disk);
-		end_that_request_last(rq, uptodate);
-        }
-}
-
-void end_queued_request(struct request *rq, int uptodate)
-{
-	__end_request(rq, uptodate, rq_byte_size(rq), 1);
-}
 
 enum {
 	MSPRO_BLOCK_ID_SYSINFO         = 0x10,
@@ -371,13 +333,15 @@ static ssize_t mspro_block_attr_show_sysinfo(struct device *dev,
 	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "assembly date: "
 			"GMT%+d:%d %04u-%02u-%02u %02u:%02u:%02u\n",
 			date_tz, date_tz_f,
-			be16_to_cpu(*(unsigned short *)&x_sys->assembly_date[1]),
+			be16_to_cpu(*(unsigned short *)
+				    &x_sys->assembly_date[1]),
 			x_sys->assembly_date[3], x_sys->assembly_date[4],
 			x_sys->assembly_date[5], x_sys->assembly_date[6],
 			x_sys->assembly_date[7]);
 	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "serial number: %x\n",
 			be32_to_cpu(x_sys->serial_number));
-	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "assembly maker code: %x\n",
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc,
+			"assembly maker code: %x\n",
 			x_sys->assembly_maker_code);
 	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "assembly model code: "
 			"%02x%02x%02x\n", x_sys->assembly_model_code[0],
@@ -393,7 +357,8 @@ static ssize_t mspro_block_attr_show_sysinfo(struct device *dev,
 			x_sys->vpp);
 	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "controller number: %x\n",
 			be16_to_cpu(x_sys->controller_number));
-	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "controller function: %x\n",
+	rc += scnprintf(buffer + rc, PAGE_SIZE - rc,
+			"controller function: %x\n",
 			be16_to_cpu(x_sys->controller_function));
 	rc += scnprintf(buffer + rc, PAGE_SIZE - rc, "start sector: %x\n",
 			be16_to_cpu(x_sys->start_sector));
@@ -766,20 +731,13 @@ static void mspro_block_process_request(struct memstick_dev *card,
 
 		spin_lock_irqsave(&msb->q_lock, flags);
 		if (rc >= 0)
-			chunk = end_that_request_chunk(req, 1, rc);
+			chunk = __blk_end_request(req, 0, rc);
 		else
-			chunk = end_that_request_first(req, rc,
-						       req->current_nr_sectors);
+			chunk = __blk_end_request(req, rc, 0);
 
 		dev_dbg(&card->dev, "end chunk %d, %d\n", rc, chunk);
-		if (!chunk) {
-			add_disk_randomness(req->rq_disk);
-			blkdev_dequeue_request(req);
-			end_that_request_last(req, rc > 0 ? 1 : rc);
-		}
 		spin_unlock_irqrestore(&msb->q_lock, flags);
 	} while (chunk);
-
 }
 
 static int mspro_block_has_request(struct mspro_block_data *msb)
@@ -1029,10 +987,10 @@ static int mspro_block_read_attributes(struct memstick_dev *card)
 			"size %x\n", cnt, attr->entries[cnt].id, addr, rc);
 		s_attr->id = attr->entries[cnt].id;
 		if (mspro_block_attr_name(s_attr->id))
-			scnprintf(s_attr->name, sizeof(s_attr->name), "%s",
+			snprintf(s_attr->name, sizeof(s_attr->name), "%s",
 				 mspro_block_attr_name(attr->entries[cnt].id));
 		else
-			scnprintf(s_attr->name, sizeof(s_attr->name),
+			snprintf(s_attr->name, sizeof(s_attr->name),
 				 "attr_x%02x", attr->entries[cnt].id);
 
 		s_attr->dev_attr.attr.name = s_attr->name;
@@ -1501,4 +1459,3 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Alex Dubov");
 MODULE_DESCRIPTION("Sony MemoryStickPro block device driver");
 MODULE_DEVICE_TABLE(memstick, mspro_block_id_tbl);
-MODULE_VERSION(DRIVER_VERSION);

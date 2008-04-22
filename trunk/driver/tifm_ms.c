@@ -23,11 +23,6 @@
 static int no_dma;
 module_param(no_dma, bool, 0644);
 
-static inline struct page *sg_page(struct scatterlist *sg)
-{
-	return sg->page;
-}
-
 /*
  * Some control bits of TIFM appear to conform to Sony's reference design,
  * so I'm just assuming they all are.

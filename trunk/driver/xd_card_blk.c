@@ -18,42 +18,6 @@
 #define dev_dbg(dev, format, arg...)   \
 	dev_printk(KERN_EMERG , dev , format , ## arg)
 */
-static inline void sg_set_page(struct scatterlist *sg, struct page *page,
-                               unsigned int len, unsigned int offset)
-{
-	sg->page = page;
-	sg->offset = offset;
-	sg->length = len;
-}
-
-static inline struct page *sg_page(struct scatterlist *sg)
-{
-	return sg->page;
-}
-
-static unsigned int rq_byte_size(struct request *rq)
-{
-	if (blk_fs_request(rq))
-		return rq->hard_nr_sectors << 9;
-
-	return rq->data_len;
-}
-
-static inline void __end_request(struct request *rq, int uptodate,
-                                 unsigned int nr_bytes, int dequeue)
-{
-	if (!end_that_request_chunk(rq, uptodate, nr_bytes)) {
-		if (dequeue)
-			blkdev_dequeue_request(rq);
-		add_disk_randomness(rq->rq_disk);
-		end_that_request_last(rq, uptodate);
-        }
-}
-
-void end_queued_request(struct request *rq, int uptodate)
-{
-	__end_request(rq, uptodate, rq_byte_size(rq), 1);
-}
 
 static int h_xd_card_read(struct xd_card_media *card,
 			  struct xd_card_request **req);
@@ -583,8 +547,6 @@ static void xd_card_advance(struct xd_card_media *card, int count)
 
 	if (count >= 0) {
 		while (count) {
-			if (card->seg_pos == card->seg_count)
-				break;
 			s_len = card->req_sg[card->seg_pos].length
 				- card->seg_off;
 			s_len = min(count, (int)s_len);
@@ -592,8 +554,11 @@ static void xd_card_advance(struct xd_card_media *card, int count)
 			count -= s_len;
 			if (card->seg_off
 			    == card->req_sg[card->seg_pos].length) {
-				card->seg_off = 0;
-				card->seg_pos++;
+				if ((card->seg_count - card->seg_pos) > 1) {
+					card->seg_off = 0;
+					card->seg_pos++;
+				} else
+					break;
 			}
 		}
 	} else {
@@ -605,13 +570,15 @@ static void xd_card_advance(struct xd_card_media *card, int count)
 				card->seg_pos--;
 			else {
 				card->seg_off = 0;
-				break;
+				return;
 			}
 			card->seg_off = card->req_sg[card->seg_pos].length;
 		}
 
 		card->seg_off -= count;
-		if (card->seg_off == card->req_sg[card->seg_pos].length) {
+
+		if ((card->seg_off == card->req_sg[card->seg_pos].length)
+		    && ((card->seg_count - card->seg_pos) > 1)) {
 			card->seg_off = 0;
 			card->seg_pos++;
 		}
@@ -916,9 +883,9 @@ process_next:
 			    card->req_sg[card->seg_pos].offset
 			    + card->seg_off);
 
-		dev_dbg(card->host->dev, "trans r %d, %d, %p, %x, %x\n",
-			card->seg_pos, card->seg_off, req->sg.page,
-			req->sg.offset, req->sg.length);
+		dev_dbg(card->host->dev, "trans r %x, %x, %x, %x\n",
+			card->seg_pos, card->seg_off, req->sg.offset,
+			req->sg.length);
 
 		card->trans_cnt = 0;
 		card->trans_len = card->flash_req.page_cnt * card->page_size;
@@ -1117,10 +1084,12 @@ static int xd_card_try_next_req(struct xd_card_media *card,
 {
 	int rc = (*req)->error;
 
+	dev_dbg(card->host->dev, "start error %d\n", rc);
 	rc = flash_bd_next_req(card->fbd, &card->flash_req,
 			       card->trans_cnt, rc);
 
 	if (rc) {
+		dev_dbg(card->host->dev, "next req error %d\n", rc);
 		complete(&card->req_complete);
 		return rc;
 	}
@@ -1128,6 +1097,7 @@ static int xd_card_try_next_req(struct xd_card_media *card,
 	rc = xd_card_trans_req(card, *req);
 
 	if (rc) {
+		dev_dbg(card->host->dev, "trans req error %d\n", rc);
 		complete(&card->req_complete);
 		return rc;
 	}
@@ -1149,8 +1119,10 @@ static int h_xd_card_read(struct xd_card_media *card,
 		if (card->auto_ecc) {
 			xd_card_advance(card, (*req)->count);
 			card->trans_cnt += (*req)->count;
-			count = min(card->trans_len - card->trans_cnt,
-				    (*req)->sg.length - card->seg_off);
+
+			count = min(card->req_sg[card->seg_pos].length
+				    - card->seg_off,
+				    card->trans_len - card->trans_cnt);
 
 			if (!count)
 				goto out;
@@ -1161,6 +1133,7 @@ static int h_xd_card_read(struct xd_card_media *card,
 							   card->trans_cnt);
 			(*req)->error = 0;
 			(*req)->count = 0;
+
 			sg_set_page(&(*req)->sg,
 				    sg_page(&card->req_sg[card->seg_pos]),
 				    count,
@@ -1193,7 +1166,8 @@ static int h_xd_card_read(struct xd_card_media *card,
 					card->trans_cnt -= card->page_size;
 			}
 
-			if (rc || (card->trans_cnt >= card->trans_len))
+			if (rc || ((card->trans_len - card->trans_cnt)
+				   < card->hw_page_size))
 				goto out;
 
 			(*req)->count = 0;
@@ -1248,7 +1222,8 @@ static int h_xd_card_read_tmp(struct xd_card_media *card,
 					card->trans_cnt -= card->page_size;
 			}
 
-			if (!rc && (card->trans_cnt < card->trans_len)) {
+			if (!rc && ((card->trans_len - card->trans_cnt)
+				    >= card->hw_page_size)) {
 				(*req)->count = 0;
 				(*req)->error = 0;
 				(*req)->addr
@@ -1324,7 +1299,7 @@ static int h_xd_card_write_adv(struct xd_card_media *card,
 		dev_dbg(card->host->dev, "write adv %x, %x\n", card->trans_cnt,
 			card->trans_len);
 
-		if (card->trans_cnt < card->trans_len) {
+		if ((card->trans_len - card->trans_cnt) >= card->hw_page_size) {
 			if (!card->host->extra_pos)
 				xd_card_update_extra(card);
 
@@ -1450,7 +1425,8 @@ static int h_xd_card_read_copy(struct xd_card_media *card,
 					card->trans_cnt -= card->page_size;
 			}
 
-			if (!rc && (card->trans_cnt < card->trans_len)) {
+			if (!rc && ((card->trans_len - card->trans_cnt)
+				    >= card->hw_page_size)) {
 				(*req)->count = 0;
 				(*req)->error = 0;
 				(*req)->addr
@@ -1661,8 +1637,6 @@ static int xd_card_find_cis(struct xd_card_host *host)
 	sg_set_buf(&card->req_sg[0], buf, 2 * r_size);
 	card->seg_count = 1;
 
-	dev_dbg(host->dev, "buf %p, %p, %x, %x\n", buf, card->req_sg[0].page,
-		card->req_sg[0].offset, card->req_sg[0].length);
 	dev_dbg(host->dev, "looking for cis in %d blocks\n", last_block);
 
 	/* Map the desired blocks for one to one log/phy mapping */
@@ -1918,20 +1892,17 @@ static void xd_card_process_request(struct xd_card_media *card,
 		}
 
 		t_len = flash_bd_end(card->fbd);
-		dev_dbg(card->host->dev, "transferred %x\n", t_len);
+		dev_dbg(card->host->dev, "transferred %x (%d)\n", t_len, rc);
+		/* Nothing to do - not really an error */
+		if (rc == -EAGAIN)
+			rc = 0;
 req_failed:
 		spin_lock_irqsave(&card->q_lock, flags);
 		if (t_len > 0)
-			chunk = end_that_request_chunk(req, 1, t_len);
+			chunk = __blk_end_request(req, 0, t_len);
 		else
-			chunk = end_that_request_first(req, rc,
-						       req->nr_sectors);
+			chunk = __blk_end_request(req, rc, 0);
 
-		if (!chunk) {
-			add_disk_randomness(req->rq_disk);
-			blkdev_dequeue_request(req);
-			end_that_request_last(req, rc < 0 ? rc : 1);
-		}
 		spin_unlock_irqrestore(&card->q_lock, flags);
 	} while (chunk);
 }

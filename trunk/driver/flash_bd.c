@@ -534,6 +534,12 @@ static int h_flash_bd_read(struct flash_bd *fbd, struct flash_bd_request *req)
 	unsigned long long zone_off;
 	unsigned int log_block;
 
+	if (fbd->last_error)
+		return fbd->last_error;
+
+	if (fbd->req_count != fbd->last_count)
+		return -EIO;
+
 	fbd->t_count += fbd->last_count;
 	fbd->rem_count -= fbd->last_count;
 
@@ -541,9 +547,6 @@ static int h_flash_bd_read(struct flash_bd *fbd, struct flash_bd_request *req)
 		req->cmd = FBD_NONE;
 		return 0;
 	}
-
-	if (fbd->last_error)
-		return fbd->last_error;
 
 	zone_off = fbd->byte_offset + fbd->t_count;
 	fbd->buf_offset = do_div(zone_off, fbd->block_size);

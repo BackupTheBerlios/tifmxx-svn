@@ -59,27 +59,6 @@ static int memstick_bus_match(struct device *dev, struct device_driver *drv)
 	return 0;
 }
 
-static int memstick_uevent(struct device *dev, char **envp, int num_envp,
-                           char *buffer, int buffer_size)
-{
-	struct memstick_dev *card = container_of(dev, struct memstick_dev,
-						 dev);
-	int i = 0;
-	int length = 0;
-
-	if (add_uevent_var(envp, num_envp, &i, buffer, buffer_size, &length,
-			   "MEMSTICK_TYPE=%02X", card->id.type))
-		return -ENOMEM;
-	if (add_uevent_var(envp, num_envp, &i, buffer, buffer_size, &length,
-			   "MEMSTICK_CATEGORY=%02X", card->id.category))
-		return -ENOMEM;
-	if (add_uevent_var(envp, num_envp, &i, buffer, buffer_size, &length,
-			   "MEMSTICK_CLASS=%02X", card->id.class))
-		return -ENOMEM;
-
-	return 0;
-}
-/*
 static int memstick_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
 	struct memstick_dev *card = container_of(dev, struct memstick_dev,
@@ -96,7 +75,7 @@ static int memstick_uevent(struct device *dev, struct kobj_uevent_env *env)
 
 	return 0;
 }
-*/
+
 static int memstick_device_probe(struct device *dev)
 {
 	struct memstick_dev *card = container_of(dev, struct memstick_dev,
