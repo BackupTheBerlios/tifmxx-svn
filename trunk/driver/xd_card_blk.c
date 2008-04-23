@@ -12,12 +12,73 @@
 #include "linux/xd_card.h"
 #include <linux/idr.h>
 #include <linux/delay.h>
+#include <linux/version.h>
 /*
 #undef dev_dbg
 
 #define dev_dbg(dev, format, arg...)   \
 	dev_printk(KERN_EMERG , dev , format , ## arg)
 */
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
+static inline int __blk_end_request(struct request *rq, int error,
+				    unsigned int nr_bytes)
+{
+	int chunk;
+
+	if (nr_bytes > 0)
+		chunk = end_that_request_chunk(rq, 1, nr_bytes);
+	else
+		chunk = end_that_request_first(rq, error, rq->nr_sectors);
+
+	if (!chunk) {
+		add_disk_randomness(rq->rq_disk);
+		blkdev_dequeue_request(rq);
+		end_that_request_last(rq, error < 0 ? error : 1);
+	}
+
+	return chunk;
+}
+#endif
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
+static inline void sg_set_page(struct scatterlist *sg, struct page *page,
+			       unsigned int len, unsigned int offset)
+{
+	sg->page = page;
+	sg->offset = offset;
+	sg->length = len;
+}
+
+static inline struct page *sg_page(struct scatterlist *sg)
+{
+	return sg->page;
+}
+
+static unsigned int rq_byte_size(struct request *rq)
+{
+	if (blk_fs_request(rq))
+		return rq->hard_nr_sectors << 9;
+
+	return rq->data_len;
+}
+
+static inline void __end_request(struct request *rq, int uptodate,
+				 unsigned int nr_bytes, int dequeue)
+{
+	if (!end_that_request_chunk(rq, uptodate, nr_bytes)) {
+		if (dequeue)
+			blkdev_dequeue_request(rq);
+		add_disk_randomness(rq->rq_disk);
+		end_that_request_last(rq, uptodate);
+	}
+}
+
+void end_queued_request(struct request *rq, int uptodate)
+{
+	__end_request(rq, uptodate, rq_byte_size(rq), 1);
+}
+#endif
 
 static int h_xd_card_read(struct xd_card_media *card,
 			  struct xd_card_request **req);

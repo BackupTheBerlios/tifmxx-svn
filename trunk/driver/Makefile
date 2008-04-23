@@ -9,6 +9,7 @@ xd_card-objs := xd_card_blk.o xd_card_ecc.o
 
 KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 #KERNELDIR ?= ~/linux-2.6
+#KERNELDIR ?= /usr/src/linux-2.6.24.1
 PWD       := $(shell pwd)
 MODULE_INSTALLDIR = /lib/modules/$(shell uname -r)
 EXTRA_CFLAGS = -fno-inline -DDEBUG -DCONFIG_MEMSTICK_UNSAFE_RESUME -DCONFIG_XD_CARD_UNSAFE_RESUME

@@ -580,8 +580,8 @@ static int jmb38x_xd_resume(struct pci_dev *pdev)
 
 #else
 
-#define jmb38x_ms_suspend NULL
-#define jmb38x_ms_resume NULL
+#define jmb38x_xd_suspend NULL
+#define jmb38x_xd_resume NULL
 
 #endif /* CONFIG_PM */
 
