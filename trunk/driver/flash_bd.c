@@ -309,6 +309,7 @@ int flash_bd_start_reading(struct flash_bd *fbd, unsigned long long offset,
 	fbd->buf_count = 0;
 	fbd->last_count = 0;
 	fbd->last_error = 0;
+	fbd->req_count = 0;
 
 	return 0;
 }

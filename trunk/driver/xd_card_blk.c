@@ -120,8 +120,11 @@ static int xd_card_disk_release(struct gendisk *disk)
 	mutex_lock(&xd_card_disk_lock);
  	card = disk->private_data;
 
-	if (card && card->usage_count) {
-		card->usage_count--;
+	if (card) {
+		if (card->usage_count)
+			card->usage_count--;
+
+		printk(KERN_EMERG "release usage %d\n", card->usage_count);
 		if (!card->usage_count) {
 			xd_card_free_media(card);
 			disk->private_data = NULL;
@@ -1845,10 +1848,11 @@ static void xd_card_process_request(struct xd_card_media *card,
 				    struct request *req)
 {
 	int rc, chunk;
-	unsigned int t_len = 0;
+	unsigned int t_len;
 	unsigned long flags;
 
 	do {
+		t_len = 0;
 		card->seg_pos = 0;
 		card->seg_off = 0;
 		card->seg_count = blk_rq_map_sg(req->q, req, card->req_sg);
@@ -2114,7 +2118,7 @@ static int xd_card_set_disk_size(struct xd_card_media *card)
 		card->sectors_per_head = 8;
 		break;
 	case 0xd5:
-		if (!card->sm_media)
+		if (card->sm_media)
 			card->mask_rom = 1; /* deliberate fall-through */
 		else {
 			card->capacity = 4095630;
