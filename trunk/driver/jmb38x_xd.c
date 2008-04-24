@@ -60,6 +60,7 @@ struct jmb38x_xd_host {
 	struct pci_dev          *pdev;
 	void __iomem            *addr;
 	spinlock_t              lock;
+	struct tasklet_struct   notify;
 	char                    id[DEVICE_ID_SIZE];
 	unsigned short          page_size;
 	unsigned short          extra_size;
@@ -390,25 +391,32 @@ static void jmb38x_xd_abort(unsigned long data)
 	spin_unlock_irqrestore(&jhost->lock, flags);
 }
 
-static void jmb38x_xd_request(struct xd_card_host *host)
+static void jmb38x_xd_req_tasklet(unsigned long data)
+{
+	struct xd_card_host *host = (struct xd_card_host *)data;
+	struct jmb38x_xd_host *jhost = xd_card_priv(host);
+	int rc;
+	unsigned long flags;
+
+	spin_lock_irqsave(&jhost->lock, flags);
+	if (!jhost->req) {
+		do {
+			rc = xd_card_next_req(host, &jhost->req);
+		} while (!rc && jmb38x_xd_issue_cmd(host));
+	}
+	spin_unlock_irqrestore(&jhost->lock, flags);
+}
+
+static void jmb38x_xd_dummy_submit(struct xd_card_host *host)
+{
+	return;
+}
+
+static void jmb38x_xd_submit_req(struct xd_card_host *host)
 {
 	struct jmb38x_xd_host *jhost = xd_card_priv(host);
-	unsigned long flags;
-	int rc;
 
-	dev_dbg(host->dev, "new request\n");
-	spin_lock_irqsave(&jhost->lock, flags);
-	if (jhost->req) {
-		spin_unlock_irqrestore(&jhost->lock, flags);
-		BUG();
-		return;
-	}
-
-	do {
-		rc = xd_card_next_req(host, &jhost->req);
-	} while (!rc && jmb38x_xd_issue_cmd(host));
-
-	spin_unlock_irqrestore(&jhost->lock, flags);
+	tasklet_schedule(&jhost->notify);
 }
 
 static void jmb38x_xd_reset(struct jmb38x_xd_host *jhost)
@@ -634,7 +642,8 @@ static int jmb38x_xd_probe(struct pci_dev *pdev,
 	jhost->pdev = pdev;
 	jhost->timeout_jiffies = msecs_to_jiffies(1000);
 
-	host->request = jmb38x_xd_request;
+	tasklet_init(&jhost->notify, jmb38x_xd_req_tasklet, (unsigned long)host);
+	host->request = jmb38x_xd_submit_req;
 	host->set_param = jmb38x_xd_set_param;
 	host->caps = XD_CARD_CAP_AUTO_ECC | XD_CARD_CAP_FIXED_EXTRA
 		     | XD_CARD_CAP_CMD_SHORTCUT;
@@ -673,6 +682,8 @@ static void jmb38x_xd_remove(struct pci_dev *pdev)
 	void __iomem *addr = jhost->addr;
 	unsigned long flags;
 
+	host->request = jmb38x_xd_dummy_submit;
+	tasklet_kill(&jhost->notify);
 	writel(0, addr + INT_SIGNAL_ENABLE);
 	writel(0, addr + INT_STATUS_ENABLE);
 	mmiowb();
@@ -727,7 +738,7 @@ static void __exit jmb38x_xd_exit(void)
 }
 
 MODULE_AUTHOR("Alex Dubov");
-MODULE_DESCRIPTION("JMicron jmb38x MemoryStick driver");
+MODULE_DESCRIPTION("JMicron jmb38x xD Picture card driver");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, jmb38x_xd_id_tbl);
 

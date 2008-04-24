@@ -125,8 +125,8 @@ struct xd_card_media {
 	struct gendisk          *disk;
 	struct request_queue    *queue;
 	spinlock_t              q_lock;
-	wait_queue_head_t       q_wait;
-	struct task_struct      *q_thread;
+	struct task_struct      *f_thread;
+	struct request          *block_req;
 	struct flash_bd_request flash_req;
 	struct flash_bd         *fbd;
 	struct bin_attribute    dev_attr_block_map;
@@ -138,9 +138,12 @@ struct xd_card_media {
 	unsigned char           mask_rom:1,
 				sm_media:1,
 				read_only:1,
-				has_request:1,
-				auto_ecc:1,
-				format:1;
+				auto_ecc:1;
+
+	/* These bits must be protected by q_lock */
+	unsigned char           has_request:1,
+				format:1,
+				eject:1;
 
 	unsigned char           page_addr_bits;
 	unsigned char           block_addr_bits;

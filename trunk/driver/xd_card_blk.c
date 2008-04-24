@@ -26,7 +26,7 @@ static inline int __blk_end_request(struct request *rq, int error,
 {
 	int chunk;
 
-	if (nr_bytes > 0)
+	if (!error)
 		chunk = end_that_request_chunk(rq, 1, nr_bytes);
 	else
 		chunk = end_that_request_first(rq, error, rq->nr_sectors);
@@ -95,6 +95,9 @@ static int h_xd_card_erase(struct xd_card_media *card,
 static int h_xd_card_req_init(struct xd_card_media *card,
 			      struct xd_card_request **req);
 static void xd_card_free_media(struct xd_card_media *card);
+static int xd_card_stop_queue(struct xd_card_media *card);
+static int xd_card_trans_req(struct xd_card_media *card,
+			     struct xd_card_request *req);
 
 #define DRIVER_NAME "xd_card"
 
@@ -185,7 +188,6 @@ static int xd_card_disk_release(struct gendisk *disk)
 		if (card->usage_count)
 			card->usage_count--;
 
-		printk(KERN_EMERG "release usage %d\n", card->usage_count);
 		if (!card->usage_count) {
 			xd_card_free_media(card);
 			disk->private_data = NULL;
@@ -390,39 +392,35 @@ static ssize_t xd_card_format_store(struct device *dev,
 				    const char *buf, size_t count)
 {
 	struct xd_card_host *host = dev_get_drvdata(dev);
-	struct task_struct *f_thread, *q_thread;
 	unsigned long flags;
 
 	mutex_lock(&host->lock);
 	if (!host->card)
 		goto out;
 
-	if (host->card->format)
-		goto out;
-
 	if (count < 6 || strncmp(buf, "format", 6))
 		goto out;
 
-	host->card->format = 1;
-
-	f_thread = kthread_create(xd_card_format_thread, host->card,
-				  DRIVER_NAME"_fmtd");
-	if (IS_ERR(f_thread))
-		goto out;
+	while (!xd_card_stop_queue(host->card))
+		wait_for_completion(&host->card->req_complete);
 
 	spin_lock_irqsave(&host->card->q_lock, flags);
-	blk_stop_queue(host->card->queue);
-	q_thread = host->card->q_thread;
-	host->card->q_thread = f_thread;
-	spin_unlock_irqrestore(&host->card->q_lock, flags);
-
-	if (q_thread) {
-		mutex_unlock(&host->lock);
-		kthread_stop(q_thread);
-		mutex_lock(&host->lock);
+	if (host->card->format || host->card->eject) {
+		spin_unlock_irqrestore(&host->card->q_lock, flags);
+		goto out;
 	}
 
-	wake_up_process(f_thread);
+	host->card->format = 1;
+	spin_unlock_irqrestore(&host->card->q_lock, flags);
+
+	host->card->f_thread = kthread_create(xd_card_format_thread, host->card,
+					      DRIVER_NAME"_fmtd");
+	if (IS_ERR(host->card->f_thread)) {
+		host->card->f_thread = NULL;
+		goto out;
+	}
+
+	wake_up_process(host->card->f_thread);
 out:
 	mutex_unlock(&host->lock);
 	return count;
@@ -494,6 +492,7 @@ void xd_card_new_req(struct xd_card_host *host)
 		host->card->next_request[1] = host->card->next_request[0];
 		host->card->next_request[0] = h_xd_card_req_init;
 		host->retries = cmd_retries;
+		INIT_COMPLETION(host->card->req_complete);
 		host->request(host);
 	}
 }
@@ -544,6 +543,135 @@ EXPORT_SYMBOL(xd_card_get_extra);
  * finished (and request processor should come back some time later).
  */
 
+static int xd_card_issue_req(struct xd_card_media *card, int chunk)
+{
+	unsigned long long offset;
+	unsigned int count = 0;
+	int rc;
+
+try_again:
+	while (chunk) {
+		card->seg_pos = 0;
+		card->seg_off = 0;
+		card->seg_count = blk_rq_map_sg(card->block_req->q,
+						card->block_req,
+						card->req_sg);
+
+		if (!card->seg_count) {
+			rc = -ENOMEM;
+			goto req_failed;
+		}
+
+		offset = card->block_req->sector << 9;
+		count = card->block_req->nr_sectors << 9;
+
+		if (rq_data_dir(card->block_req) == READ) {
+			dev_dbg(card->host->dev, "Read segs: %d, offset: %llx, "
+				"size: %x\n", card->seg_count, offset, count);
+
+			rc = flash_bd_start_reading(card->fbd, offset, count);
+		} else {
+			dev_dbg(card->host->dev, "Write segs: %d, offset: %llx,"
+				" size: %x\n", card->seg_count, offset, count);
+		
+			rc = flash_bd_start_writing(card->fbd, offset, count);
+		}
+
+		if (rc)
+			goto req_failed;
+
+		rc = flash_bd_next_req(card->fbd, &card->flash_req, 0, 0);
+
+		if (rc) {
+			flash_bd_end(card->fbd);
+			goto req_failed;
+		}
+
+		rc = xd_card_trans_req(card, &card->req);
+
+		if (!rc) {
+			xd_card_new_req(card->host);
+			return 0;
+		}
+
+		count = flash_bd_end(card->fbd);
+		if (rc == -EAGAIN)
+			rc = 0;
+
+req_failed:
+		chunk = __blk_end_request(card->block_req, rc, count);
+	}
+
+	dev_dbg(card->host->dev, "elv_next\n");
+	card->block_req = elv_next_request(card->queue);
+	if (!card->block_req) {
+		dev_dbg(card->host->dev, "issue end\n");
+		return -EAGAIN;
+	}
+
+	dev_dbg(card->host->dev, "trying again\n");
+	chunk = 1;
+	goto try_again;
+}
+
+static int h_xd_card_default_bad(struct xd_card_media *card,
+				 struct xd_card_request **req)
+{
+	return -ENXIO;
+}
+
+static int xd_card_complete_req(struct xd_card_media *card, int error)
+{
+	int chunk;
+	unsigned int t_len;
+	unsigned long flags;
+
+	spin_lock_irqsave(&card->q_lock, flags);
+	dev_dbg(card->host->dev, "complete %d, %d\n", card->has_request ? 1 : 0,
+		error);
+	if (card->has_request) {
+		/* Nothing to do - not really an error */
+		if (error == -EAGAIN)
+			error = 0;
+		t_len = flash_bd_end(card->fbd);
+
+		dev_dbg(card->host->dev, "transferred %x (%d)\n", t_len, error);
+		if (error == -EAGAIN)
+			error = 0;
+
+		chunk = __blk_end_request(card->block_req, error, t_len);
+
+		error = xd_card_issue_req(card, chunk);
+
+		if (!error)
+			goto out;
+		else
+			card->has_request = 0;
+	} else {
+		if (!error)
+			error = -EAGAIN;
+	}
+
+	card->next_request[0] = h_xd_card_default_bad;
+	complete_all(&card->req_complete);
+out:
+	spin_unlock_irqrestore(&card->q_lock, flags);
+	return error;
+}
+
+static int xd_card_stop_queue(struct xd_card_media *card)
+{
+	int rc = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(&card->q_lock, flags);
+	if (!card->has_request) {
+		blk_stop_queue(card->queue);
+		rc = 1;
+	}
+	spin_unlock_irqrestore(&card->q_lock, flags);
+	return rc;
+}
 
 static unsigned long long xd_card_req_address(struct xd_card_media *card,
 					      unsigned int byte_off)
@@ -573,26 +701,18 @@ static int h_xd_card_req_init(struct xd_card_media *card,
 static int h_xd_card_default(struct xd_card_media *card,
 			     struct xd_card_request **req)
 {
-	complete(&card->req_complete);
-
-	if (!(*req)->error)
-		return -EAGAIN;
-	else
-		return (*req)->error;
+	return xd_card_complete_req(card, (*req)->error);
 }
 
 static int h_xd_card_read_extra(struct xd_card_media *card,
 				struct xd_card_request **req)
 {
-	if ((*req)->error) {
-		complete(&card->req_complete);
-		return (*req)->error;
-	}
+	if ((*req)->error)
+		return xd_card_complete_req(card, (*req)->error);
 
-	if (!card->host->extra_pos) {
-		complete(&card->req_complete);
-		return -EAGAIN;
-	} else {
+	if (!card->host->extra_pos)
+		return xd_card_complete_req(card, -EAGAIN);
+	else {
 		unsigned int extra_pos = sizeof(struct xd_card_extra)
 					 / (card->page_size
 					    / card->hw_page_size);
@@ -1154,16 +1274,14 @@ static int xd_card_try_next_req(struct xd_card_media *card,
 
 	if (rc) {
 		dev_dbg(card->host->dev, "next req error %d\n", rc);
-		complete(&card->req_complete);
-		return rc;
+		return xd_card_complete_req(card, rc);
 	}
 
 	rc = xd_card_trans_req(card, *req);
 
 	if (rc) {
 		dev_dbg(card->host->dev, "trans req error %d\n", rc);
-		complete(&card->req_complete);
-		return rc;
+		return xd_card_complete_req(card, rc);
 	}
 
 	return 0;
@@ -1543,20 +1661,17 @@ static int h_xd_card_erase_stat_fmt(struct xd_card_media *card,
 		(*req)->count = 0;
 		card->next_request[0] = h_xd_card_default;
 		return 0;
-	} else {
-		complete(&card->req_complete);
-		return (*req)->error;
-	}
+	} else
+		return xd_card_complete_req(card, (*req)->error);
 }
 
 static int h_xd_card_erase_fmt(struct xd_card_media *card,
 			       struct xd_card_request **req)
 {
 	card->host->set_param(card->host, XD_CARD_ADDR_SIZE, card->addr_bytes);
-	if ((*req)->error || (card->host->caps & XD_CARD_CAP_CMD_SHORTCUT)) {
-		complete(&card->req_complete);
-		return (*req)->error;
-	} else {
+	if ((*req)->error || (card->host->caps & XD_CARD_CAP_CMD_SHORTCUT))
+		return xd_card_complete_req(card, (*req)->error);
+	else {
 		(*req)->cmd = XD_CARD_CMD_ERASE_START;
 		(*req)->flags = XD_CARD_REQ_DIR;
 		(*req)->error = 0;
@@ -1903,121 +2018,6 @@ static int xd_card_fill_lut_rom(struct xd_card_host *host)
 	return 0;
 }
 
-/*** Data transfer ***/
-
-static void xd_card_process_request(struct xd_card_media *card,
-				    struct request *req)
-{
-	int rc, chunk;
-	unsigned int t_len;
-	unsigned long flags;
-
-	do {
-		t_len = 0;
-		card->seg_pos = 0;
-		card->seg_off = 0;
-		card->seg_count = blk_rq_map_sg(req->q, req, card->req_sg);
-
-		if (!card->seg_count) {
-			rc = -ENOMEM;
-			goto req_failed;
-		}
-
-		if (rq_data_dir(req) == READ) {
-			dev_dbg(card->host->dev, "Read segs: %d, offset: %lx, "
-				"size: %lx\n", card->seg_count,
-				req->sector << 9,
-				req->nr_sectors << 9);
-			rc = flash_bd_start_reading(card->fbd, req->sector << 9,
-						    req->nr_sectors << 9);
-		} else {
-			dev_dbg(card->host->dev, "Write segs: %d, offset: %lx, "
-				"size: %lx\n", card->seg_count,
-				req->sector << 9,
-				req->nr_sectors << 9);		
-			rc = flash_bd_start_writing(card->fbd, req->sector << 9,
-						    req->nr_sectors << 9);
-		}
-
-		if (rc)
-			goto req_failed;
-
-		rc = flash_bd_next_req(card->fbd, &card->flash_req, 0, 0);
-
-		if (rc) {
-			flash_bd_end(card->fbd);
-			goto req_failed;
-		}
-
-		rc = xd_card_trans_req(card, &card->req);
-		if (!rc) {
-			xd_card_new_req(card->host);
-			wait_for_completion(&card->req_complete);
-			rc = card->req.error;
-		}
-
-		t_len = flash_bd_end(card->fbd);
-		dev_dbg(card->host->dev, "transferred %x (%d)\n", t_len, rc);
-		/* Nothing to do - not really an error */
-		if (rc == -EAGAIN)
-			rc = 0;
-req_failed:
-		spin_lock_irqsave(&card->q_lock, flags);
-		if (t_len > 0)
-			chunk = __blk_end_request(req, 0, t_len);
-		else
-			chunk = __blk_end_request(req, rc, 0);
-
-		spin_unlock_irqrestore(&card->q_lock, flags);
-	} while (chunk);
-}
-
-static int xd_card_has_request(struct xd_card_media *card)
-{
-	int rc = 0;
-	unsigned long flags;
-
-	spin_lock_irqsave(&card->q_lock, flags);
-	if (kthread_should_stop() || card->has_request)
-		rc = 1;
-	spin_unlock_irqrestore(&card->q_lock, flags);
-	return rc;
-}
-
-static int xd_card_queue_thread(void *data)
-{
-	struct xd_card_media *card = data;
-	struct xd_card_host *host = card->host;
-	struct request *req;
-	unsigned long flags;
-
-	while (1) {
-		wait_event(card->q_wait, xd_card_has_request(card));
-		dev_dbg(host->dev, "thread iter\n");
-
-		spin_lock_irqsave(&card->q_lock, flags);
-		req = elv_next_request(card->queue);
-		dev_dbg(host->dev, "next req %p\n", req);
-		if (!req) {
-			card->has_request = 0;
-			if (kthread_should_stop()) {
-				spin_unlock_irqrestore(&card->q_lock, flags);
-				break;
-			}
-		} else
-			card->has_request = 1;
-		spin_unlock_irqrestore(&card->q_lock, flags);
-
-		if (req) {
-			mutex_lock(&host->lock);
-			xd_card_process_request(card, req);
-			mutex_unlock(&host->lock);
-		}
-	}
-	dev_dbg(host->dev, "thread finished\n");
-	return 0;
-}
-
 static int xd_card_format_thread(void *data)
 {
 	struct xd_card_media *card = data;
@@ -2095,40 +2095,44 @@ out:
 	else
 		dev_err(host->dev, "format failed (%d)\n", rc);
 
+	spin_lock_irqsave(&host->card->q_lock, flags);
 	host->card->format = 0;
-	if (!host->card->q_thread) {
-		mutex_unlock(&host->lock);
-		return 0;
-	}
-
-	host->card->q_thread = kthread_run(xd_card_queue_thread,
-					   host->card,
-					   DRIVER_NAME"d");
-	if (IS_ERR(host->card->q_thread)) {
-		host->card->q_thread = NULL;
-		xd_card_detect_change(host);
-	} else {
-		spin_lock_irqsave(&host->card->q_lock, flags);
-		blk_start_queue(host->card->queue);
-		spin_unlock_irqrestore(&host->card->q_lock, flags);
-	}
+	host->card->f_thread = NULL;
+	blk_start_queue(host->card->queue);
+	spin_unlock_irqrestore(&host->card->q_lock, flags);
 
 	mutex_unlock(&host->lock);
 	return 0;
 }
 
-static void xd_card_request(struct request_queue *q)
+static int xd_card_prepare_req(struct request_queue *q, struct request *req)
+{
+	if (!blk_fs_request(req) && !blk_pc_request(req)) {
+		blk_dump_rq_flags(req, "xD card bad request");
+		return BLKPREP_KILL;
+	}
+
+	req->cmd_flags |= REQ_DONTPREP;
+
+	return BLKPREP_OK;
+}
+
+static void xd_card_submit_req(struct request_queue *q)
 {
 	struct xd_card_media *card = q->queuedata;
 	struct request *req = NULL;
 
-	if (card->q_thread) {
-		card->has_request = 1;
-		wake_up_all(&card->q_wait);
-	} else {
+	if (card->eject) {
 		while ((req = elv_next_request(q)) != NULL)
-			end_queued_request(req, -ENODEV);
+				end_queued_request(req, -ENODEV);
+
+		card->has_request = 0;
+		return;
 	}
+
+	card->has_request = 1;
+	if (xd_card_issue_req(card, 0))
+		card->has_request = 0;
 }
 
 
@@ -2310,13 +2314,14 @@ static int xd_card_init_disk(struct xd_card_media *card)
 		goto out_release_id;
 	}
 
-	card->queue = blk_init_queue(xd_card_request, &card->q_lock);
+	card->queue = blk_init_queue(xd_card_submit_req, &card->q_lock);
 	if (!card->queue) {
 		rc = -ENOMEM;
 		goto out_put_disk;
 	}
 
 	card->queue->queuedata = card;
+	blk_queue_prep_rq(card->queue, xd_card_prepare_req);
 
 	max_sectors = card->zone_cnt * card->log_block_cnt * card->page_size
 		      * card->page_cnt;
@@ -2343,9 +2348,7 @@ static int xd_card_init_disk(struct xd_card_media *card)
 	set_capacity(card->disk, card->capacity);
 	dev_dbg(host->dev, "capacity set %d\n", card->capacity);
 
-	mutex_unlock(&host->lock);
 	add_disk(card->disk);
-	mutex_lock(&host->lock);
 	return 0;
 
 out_put_disk:
@@ -2481,7 +2484,6 @@ static void xd_card_test_wr(struct xd_card_host *host)
 #endif
 static int xd_card_init_media(struct xd_card_host *host)
 {
-	struct task_struct *q_thread;
 	int rc;
 
 	xd_card_set_media_param(host);
@@ -2520,34 +2522,16 @@ static int xd_card_init_media(struct xd_card_host *host)
 //		xd_card_test_wr(host);
 //	}
 
-	host->card->q_thread = kthread_run(xd_card_queue_thread,
-					   host->card, DRIVER_NAME"d");
-
-	if (IS_ERR(host->card->q_thread)) {
-		rc = PTR_ERR(host->card->q_thread);
-		host->card->q_thread = NULL;
-		return rc;
-	}
 
 	rc = xd_card_sysfs_register(host);
 	if (rc)
-		goto out_stop_thread;
+		return rc;
 
 	rc = xd_card_init_disk(host->card);
-	if (rc)
-		goto out_sysfs_unregister;
+	if (!rc)
+		return 0;
 
-	wake_up_process(host->card->q_thread);
-	return 0;
-
-out_sysfs_unregister:
 	xd_card_sysfs_unregister(host);
-out_stop_thread:
-	q_thread = host->card->q_thread;
-	host->card->q_thread = NULL;
-	mutex_unlock(&host->lock);
-	kthread_stop(q_thread);
-	mutex_lock(&host->lock);
 	return rc;
 }
 
@@ -2574,7 +2558,6 @@ struct xd_card_media *xd_card_alloc_media(struct xd_card_host *host)
 	host->card = card;
 	card->usage_count = 1;
 	spin_lock_init(&card->q_lock);
-	init_waitqueue_head(&card->q_wait);
 	init_completion(&card->req_complete);
 
 	rc = xd_card_get_status(host, XD_CARD_CMD_RESET, &status);
@@ -2696,7 +2679,7 @@ out:
 static void xd_card_remove_media(struct xd_card_media *card)
 {
 	struct xd_card_host *host = card->host;
-	struct task_struct *q_thread = NULL;
+	struct task_struct *f_thread = NULL;
 	struct gendisk *disk = card->disk;
 	unsigned long flags;
 
@@ -2705,13 +2688,15 @@ static void xd_card_remove_media(struct xd_card_media *card)
 	xd_card_sysfs_unregister(host);
 
 	spin_lock_irqsave(&card->q_lock, flags);
-	q_thread = card->q_thread;
-	card->q_thread = NULL;
+	f_thread = card->f_thread;
+	card->f_thread = NULL;
+	card->eject = 1;
+	blk_start_queue(card->queue);
 	spin_unlock_irqrestore(&card->q_lock, flags);
 
-	if (q_thread) {
+	if (f_thread) {
 		mutex_unlock(&host->lock);
-		kthread_stop(q_thread);
+		kthread_stop(f_thread);
 		mutex_lock(&host->lock);
 	}
 
@@ -2734,6 +2719,10 @@ static void xd_card_check(struct work_struct *work)
 
 	if (!host->card)
 		host->set_param(host, XD_CARD_POWER, XD_CARD_POWER_ON);
+	else {
+		while (!xd_card_stop_queue(host->card))
+			wait_for_completion(&host->card->req_complete);
+	}
 
 	card = xd_card_alloc_media(host);
 	dev_dbg(host->dev, "card allocated %p\n", card);
@@ -2787,20 +2776,20 @@ EXPORT_SYMBOL(xd_card_detect_change);
  */
 int xd_card_suspend_host(struct xd_card_host *host)
 {
-	struct task_struct *q_thread = NULL;
+	struct task_struct *f_thread = NULL;
 	unsigned long flags;
 
 	mutex_lock(&host->lock);
 	if (host->card) {
 		spin_lock_irqsave(&host->card->q_lock, flags);
-		q_thread = host->card->q_thread;
-		host->card->q_thread = NULL;
+		f_thread = host->card->f_thread;
+		host->card->f_thread = NULL;
 		blk_stop_queue(host->card->queue);
 		spin_unlock_irqrestore(&host->card->q_lock, flags);
 
-		if (q_thread) {
+		if (f_thread) {
 			mutex_unlock(&host->lock);
-			kthread_stop(q_thread);
+			kthread_stop(f_thread);
 			mutex_lock(&host->lock);
 		}
 	}
@@ -2830,13 +2819,6 @@ int xd_card_resume_host(struct xd_card_host *host)
 		    && !memcmp(&card->idi, &host->card->idi,
 			       sizeof(card->idi))) {
 			xd_card_free_media(card);
-			host->card->q_thread = kthread_run(xd_card_queue_thread,
-							   host->card,
-							   DRIVER_NAME"d");
-			if (IS_ERR(host->card->q_thread)) {
-				host->card->q_thread = NULL;
-				xd_card_detect_change(host);
-			}
 		} else
 			xd_card_detect_change(host);
 #else
