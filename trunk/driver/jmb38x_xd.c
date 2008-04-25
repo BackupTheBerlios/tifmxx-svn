@@ -382,7 +382,7 @@ static void jmb38x_xd_abort(unsigned long data)
 	struct jmb38x_xd_host *jhost = xd_card_priv(host);
 	unsigned long flags;
 
-	dev_dbg(&jhost->pdev->dev, "abort\n");
+	dev_err(host->dev, "Software timeout!\n");
 	spin_lock_irqsave(&jhost->lock, flags);
 	if (jhost->req) {
 		jhost->req->error = -ETIME;
@@ -402,6 +402,7 @@ static void jmb38x_xd_req_tasklet(unsigned long data)
 	if (!jhost->req) {
 		do {
 			rc = xd_card_next_req(host, &jhost->req);
+			dev_dbg(host->dev, "tasklet req %d\n", rc);
 		} while (!rc && jmb38x_xd_issue_cmd(host));
 	}
 	spin_unlock_irqrestore(&jhost->lock, flags);

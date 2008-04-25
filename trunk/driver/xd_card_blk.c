@@ -13,11 +13,26 @@
 #include <linux/idr.h>
 #include <linux/delay.h>
 #include <linux/version.h>
+
 /*
+static int kill_cnt = 50000;
+
+static int xx_ratelimit(void)
+{
+	if (kill_cnt > 0) {
+		kill_cnt--;
+		return 1;
+	} else if (!kill_cnt) {
+		kill_cnt--;
+		printk(KERN_EMERG "printk stopped\n");
+	}
+	return 0;
+}
+
 #undef dev_dbg
 
 #define dev_dbg(dev, format, arg...)   \
-	dev_printk(KERN_EMERG , dev , format , ## arg)
+	do { if (xx_ratelimit()) dev_printk(KERN_EMERG , dev , format , ## arg); } while (0)
 */
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,25)
@@ -29,7 +44,7 @@ static inline int __blk_end_request(struct request *rq, int error,
 	if (!error)
 		chunk = end_that_request_chunk(rq, 1, nr_bytes);
 	else
-		chunk = end_that_request_first(rq, error, rq->nr_sectors);
+		chunk = end_that_request_first(rq, error, nr_bytes);
 
 	if (!chunk) {
 		add_disk_randomness(rq->rq_disk);
@@ -595,10 +610,13 @@ try_again:
 		}
 
 		count = flash_bd_end(card->fbd);
+req_failed:
 		if (rc == -EAGAIN)
 			rc = 0;
 
-req_failed:
+		if (rc && !count)
+			count = blk_rq_cur_bytes(card->block_req);
+
 		chunk = __blk_end_request(card->block_req, rc, count);
 	}
 
@@ -638,6 +656,9 @@ static int xd_card_complete_req(struct xd_card_media *card, int error)
 		dev_dbg(card->host->dev, "transferred %x (%d)\n", t_len, error);
 		if (error == -EAGAIN)
 			error = 0;
+
+		if (error && !t_len)
+			t_len = blk_rq_cur_bytes(card->block_req);
 
 		chunk = __blk_end_request(card->block_req, error, t_len);
 
@@ -1067,9 +1088,7 @@ process_next:
 			    card->req_sg[card->seg_pos].offset
 			    + card->seg_off);
 
-		dev_dbg(card->host->dev, "trans r %x, %x, %x, %x\n",
-			card->seg_pos, card->seg_off, req->sg.offset,
-			req->sg.length);
+		
 
 		card->trans_cnt = 0;
 		card->trans_len = card->flash_req.page_cnt * card->page_size;
@@ -1080,6 +1099,10 @@ process_next:
 			req->flags |= XD_CARD_REQ_EXTRA;
 			req->sg.length = card->hw_page_size;
 		}
+
+		dev_dbg(card->host->dev, "trans r %x, %x, %x, %x\n",
+			card->seg_pos, card->seg_off, req->sg.offset,
+			req->sg.length);
 
 		card->next_request[0] = h_xd_card_read; 
 		return 0;
@@ -1098,6 +1121,9 @@ process_next:
 			req->flags |= XD_CARD_REQ_EXTRA;
 			sg_set_buf(&req->sg, card->t_buf, card->hw_page_size);
 		}
+
+		dev_dbg(card->host->dev, "trans r_tmp %x, %x\n",
+			req->sg.offset, req->sg.length);
 
 		card->next_request[0] = h_xd_card_read_tmp;
 		return 0;
@@ -1417,7 +1443,8 @@ static int h_xd_card_read_tmp(struct xd_card_media *card,
 				return 0;
 			}
 		}
-	}
+	} else
+		rc = -EIO;
 
 	if (!(*req)->error)
 		(*req)->error = rc;
@@ -1441,10 +1468,12 @@ static int h_xd_card_write_tmp_adv(struct xd_card_media *card,
 	if (!(*req)->error && ((*req)->status & XD_CARD_STTS_FAIL))
 		(*req)->error = -EFAULT;
 
+	dev_dbg(card->host->dev, "card_write_tmp_adv %d, %d, %02x\n",
+		(*req)->error, (*req)->count, (*req)->status);
 	if (!(*req)->error) {
 		card->trans_cnt += card->hw_page_size;
 
-		if (card->trans_cnt < card->trans_len) {
+		if ((card->trans_len - card->trans_cnt) >= card->hw_page_size) {
 			if (!card->host->extra_pos)
 				xd_card_update_extra_tmp(card);
 
@@ -1478,8 +1507,6 @@ static int h_xd_card_write_adv(struct xd_card_media *card,
 	if (!(*req)->error) {
 		xd_card_advance(card, card->hw_page_size);
 		card->trans_cnt += card->hw_page_size;
-		dev_dbg(card->host->dev, "write adv %x, %x\n", card->trans_cnt,
-			card->trans_len);
 
 		if ((card->trans_len - card->trans_cnt) >= card->hw_page_size) {
 			if (!card->host->extra_pos)
@@ -1557,6 +1584,8 @@ static int h_xd_card_write_tmp(struct xd_card_media *card,
 		if ((*req)->count != card->hw_page_size)
 			(*req)->error = -EIO;
 	}
+	dev_dbg(card->host->dev, "card_write_tmp %d, %d\n", (*req)->error,
+		(*req)->count);
 
 	if ((*req)->error)
 		return xd_card_try_next_req(card, req);
@@ -1701,6 +1730,9 @@ static int h_xd_card_erase(struct xd_card_media *card,
 			   struct xd_card_request **req)
 {
 	card->host->set_param(card->host, XD_CARD_ADDR_SIZE, card->addr_bytes);
+	dev_dbg(card->host->dev, "card_erase %d, %02x\n", (*req)->error,
+		(*req)->status);
+
 	if (!(*req)->error) {
 		if (card->host->caps & XD_CARD_CAP_CMD_SHORTCUT) {
 			if ((*req)->status & XD_CARD_STTS_FAIL)
@@ -1969,6 +2001,7 @@ static int xd_card_fill_lut(struct xd_card_host *host)
 			rc = xd_card_read_extra(host, z_cnt, b_cnt, 0);
 			if (rc)
 				return rc;
+
 			dev_dbg(host->dev, "extra (%x) %x : %02x, %04x, %04x\n",
 				z_cnt, b_cnt, host->extra.block_status,
 				host->extra.addr1, host->extra.addr2);
@@ -1990,6 +2023,7 @@ static int xd_card_fill_lut(struct xd_card_host *host)
 			if (rc == -EEXIST)
 				rc = xd_card_resolve_conflict(host, z_cnt,
 							      b_cnt, log_block);
+
 			dev_dbg(host->dev, "fill lut (%x) %x -> %x, %x\n",
 				z_cnt, log_block, b_cnt, rc);
 
@@ -2122,11 +2156,13 @@ static void xd_card_submit_req(struct request_queue *q)
 	struct xd_card_media *card = q->queuedata;
 	struct request *req = NULL;
 
+	if (card->has_request)
+		return;
+
 	if (card->eject) {
 		while ((req = elv_next_request(q)) != NULL)
 				end_queued_request(req, -ENODEV);
 
-		card->has_request = 0;
 		return;
 	}
 
@@ -2698,9 +2734,8 @@ static void xd_card_remove_media(struct xd_card_media *card)
 		mutex_unlock(&host->lock);
 		kthread_stop(f_thread);
 		mutex_lock(&host->lock);
+		dev_dbg(host->dev, "format thread stopped\n");
 	}
-
-	dev_dbg(host->dev, "queue thread stopped\n");
 
 	blk_cleanup_queue(card->queue);
 	card->queue = NULL;
