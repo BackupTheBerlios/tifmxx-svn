@@ -78,6 +78,17 @@ static unsigned int rq_byte_size(struct request *rq)
 	return rq->data_len;
 }
 
+unsigned int blk_rq_cur_bytes(struct request *rq)
+{
+	if (blk_fs_request(rq))
+		return rq->current_nr_sectors << 9;
+
+	if (rq->bio)
+		return rq->bio->bi_size;
+
+	return rq->data_len;
+}
+
 static inline void __end_request(struct request *rq, int uptodate,
 				 unsigned int nr_bytes, int dequeue)
 {
