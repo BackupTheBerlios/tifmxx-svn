@@ -54,6 +54,17 @@ static inline int __blk_end_request(struct request *rq, int error,
 
 	return chunk;
 }
+
+unsigned int blk_rq_cur_bytes(struct request *rq)
+{
+	if (blk_fs_request(rq))
+		return rq->current_nr_sectors << 9;
+
+	if (rq->bio)
+		return rq->bio->bi_size;
+
+	return rq->data_len;
+}
 #endif
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24)
@@ -74,17 +85,6 @@ static unsigned int rq_byte_size(struct request *rq)
 {
 	if (blk_fs_request(rq))
 		return rq->hard_nr_sectors << 9;
-
-	return rq->data_len;
-}
-
-unsigned int blk_rq_cur_bytes(struct request *rq)
-{
-	if (blk_fs_request(rq))
-		return rq->current_nr_sectors << 9;
-
-	if (rq->bio)
-		return rq->bio->bi_size;
 
 	return rq->data_len;
 }
