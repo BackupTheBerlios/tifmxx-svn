@@ -56,6 +56,7 @@ enum {
 };
 
 #define JMB38X_XD_EXTRA_DATA_SIZE 16
+
 struct jmb38x_xd_host {
 	struct pci_dev          *pdev;
 	void __iomem            *addr;
