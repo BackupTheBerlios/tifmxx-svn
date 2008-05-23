@@ -421,33 +421,49 @@ static void jmb38x_xd_submit_req(struct xd_card_host *host)
 	tasklet_schedule(&jhost->notify);
 }
 
-static void jmb38x_xd_reset(struct jmb38x_xd_host *jhost)
+static int jmb38x_xd_reset(struct jmb38x_xd_host *jhost)
 {
-	writel(HOST_CONTROL_RESET_REQ | readl(jhost->addr + HOST_CONTROL),
+	int cnt;
+
+	writel(HOST_CONTROL_RESET_REQ | HOST_CONTROL_CLOCK_EN
+	       | readl(jhost->addr + HOST_CONTROL),
 	       jhost->addr + HOST_CONTROL);
 	mmiowb();
 
-	while (HOST_CONTROL_RESET_REQ & readl(jhost->addr + HOST_CONTROL)) {
-		ndelay(20);
-		dev_dbg(&jhost->pdev->dev, "reset 1\n");
-	}
+	for (cnt = 0; cnt < 20; ++cnt) {
+		if (!(HOST_CONTROL_RESET_REQ
+		      & readl(jhost->addr + HOST_CONTROL)))
+			goto reset_next;
 
-	writel(HOST_CONTROL_RESET | readl(jhost->addr + HOST_CONTROL),
+		ndelay(20);
+	}
+	dev_dbg(&jhost->pdev->dev, "reset_req timeout\n");
+	return -EIO;
+
+reset_next:
+	writel(HOST_CONTROL_RESET | HOST_CONTROL_CLOCK_EN
+	       |readl(jhost->addr + HOST_CONTROL),
 	       jhost->addr + HOST_CONTROL);
 	mmiowb();
 
-	while (HOST_CONTROL_RESET & readl(jhost->addr + HOST_CONTROL)) {
+	for (cnt = 0; cnt < 20; ++cnt) {
+		if (!(HOST_CONTROL_RESET
+		      & readl(jhost->addr + HOST_CONTROL)))
+			return 0;
+
 		ndelay(20);
-		dev_dbg(&jhost->pdev->dev, "reset 2\n");
 	}
+	dev_dbg(&jhost->pdev->dev, "reset timeout\n");
+	return -EIO;
 }
 
-static void jmb38x_xd_set_param(struct xd_card_host *host,
-				enum xd_card_param param,
-				int value)
+static int jmb38x_xd_set_param(struct xd_card_host *host,
+			       enum xd_card_param param,
+			       int value)
 {
 	struct jmb38x_xd_host *jhost = xd_card_priv(host);
 	unsigned int t_val;
+	int rc = 0;
 
 	switch(param) {
 	case XD_CARD_POWER:
@@ -483,7 +499,7 @@ static void jmb38x_xd_set_param(struct xd_card_host *host,
 			writel(jhost->host_ctl, jhost->addr + HOST_CONTROL);
 
 			dev_dbg(host->dev, "p1\n");
-			jmb38x_xd_reset(jhost);
+			rc = jmb38x_xd_reset(jhost);
 
 			dev_dbg(host->dev, "p2\n");
 			msleep(1);
@@ -514,39 +530,52 @@ static void jmb38x_xd_set_param(struct xd_card_host *host,
 			writel(INT_STATUS_ALL, jhost->addr + INT_SIGNAL_ENABLE);
 			writel(INT_STATUS_ALL, jhost->addr + INT_STATUS_ENABLE);
 			mmiowb();
-		}
+		} else
+			rc = -EINVAL;
 		break;
 	case XD_CARD_CLOCK:
 		if (value == XD_CARD_SLOW)
 			jhost->host_ctl |= HOST_CONTROL_SLOW_CLK;
 		else if (value == XD_CARD_NORMAL)
 			jhost->host_ctl &= ~HOST_CONTROL_SLOW_CLK;
+		else
+			return -EINVAL;
 
 		writel(jhost->host_ctl, jhost->addr + HOST_CONTROL);
 		break;
 	case XD_CARD_PAGE_SIZE:
-		jhost->page_size = 0xfff & value;
-		dev_dbg(host->dev, "set page size %d\n", jhost->page_size);
-		t_val = readl(jhost->addr + DEBUG_PARAM);
-		t_val &= ~0xfff;
-		t_val |= jhost->page_size;
-		writel(t_val, jhost->addr + DEBUG_PARAM);
+		if (value >  2047)
+			rc = -EINVAL;
+		else {
+			jhost->page_size = value;
+			t_val = readl(jhost->addr + DEBUG_PARAM);
+			t_val &= ~0xfff;
+			t_val |= jhost->page_size;
+			writel(t_val, jhost->addr + DEBUG_PARAM);
+		}
 		break;
 	case XD_CARD_EXTRA_SIZE:
-		BUG_ON(value > JMB38X_XD_EXTRA_DATA_SIZE);
-		jhost->extra_size = value;
-		t_val = readl(jhost->addr + DEBUG_PARAM);
-		t_val &= ~(0xff << 16);
-		t_val |= value << 16;
-		writel(t_val, jhost->addr + DEBUG_PARAM);
+		if (value > JMB38X_XD_EXTRA_DATA_SIZE)
+			rc = -EINVAL;
+		else {
+			jhost->extra_size = value;
+			t_val = readl(jhost->addr + DEBUG_PARAM);
+			t_val &= ~(0xff << 16);
+			t_val |= value << 16;
+			writel(t_val, jhost->addr + DEBUG_PARAM);
+		}
 		break;
 	case XD_CARD_ADDR_SIZE:
-		BUG_ON((value < 3) || (value > 6));
-		jhost->host_ctl &= ~ HOST_CONTROL_ADDR_SIZE_MASK;
-		jhost->host_ctl |= (value - 3) << 1;
-		writel(jhost->host_ctl, jhost->addr + HOST_CONTROL);
+		if ((value < 3) || (value > 6))
+			rc = -EINVAL;
+		else {
+			jhost->host_ctl &= ~ HOST_CONTROL_ADDR_SIZE_MASK;
+			jhost->host_ctl |= (value - 3) << 1;
+			writel(jhost->host_ctl, jhost->addr + HOST_CONTROL);
+		}
 		break;
 	};
+	return rc;
 }
 
 
@@ -644,7 +673,8 @@ static int jmb38x_xd_probe(struct pci_dev *pdev,
 	jhost->pdev = pdev;
 	jhost->timeout_jiffies = msecs_to_jiffies(1000);
 
-	tasklet_init(&jhost->notify, jmb38x_xd_req_tasklet, (unsigned long)host);
+	tasklet_init(&jhost->notify, jmb38x_xd_req_tasklet,
+		     (unsigned long)host);
 	host->request = jmb38x_xd_submit_req;
 	host->set_param = jmb38x_xd_set_param;
 	host->caps = XD_CARD_CAP_AUTO_ECC | XD_CARD_CAP_FIXED_EXTRA

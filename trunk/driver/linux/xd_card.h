@@ -211,7 +211,7 @@ struct xd_card_host {
 	/* Notify the host that some flash memory requests are pending. */
 	void (*request)(struct xd_card_host *host);
 	/* Set host IO parameters (power, clock, etc).     */
-	void (*set_param)(struct xd_card_host *host, enum xd_card_param param,
+	int  (*set_param)(struct xd_card_host *host, enum xd_card_param param,
 			  int value);
 	unsigned long       private[0] ____cacheline_aligned;
 };
