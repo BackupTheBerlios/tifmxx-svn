@@ -555,11 +555,6 @@ static int h_mspro_block_get_ro(struct memstick_dev *card,
 static int h_mspro_block_wait_for_ced(struct memstick_dev *card,
 				      struct memstick_request **mrq)
 {
-	if ((*mrq)->error) {
-		complete(&card->mrq_complete);
-		return (*mrq)->error;
-	}
-
 	dev_dbg(&card->dev, "wait for ced: value %x\n", (*mrq)->data[0]);
 
 	if (!(*mrq)->error) {
@@ -1208,8 +1203,6 @@ static int mspro_block_init_disk(struct memstick_dev *card)
 		goto out_release_id;
 	}
 
-	spin_lock_init(&msb->q_lock);
-
 	msb->queue = blk_init_queue(mspro_block_submit_req, &msb->q_lock);
 	if (!msb->queue) {
 		rc = -ENOMEM;
@@ -1292,6 +1285,7 @@ static int mspro_block_probe(struct memstick_dev *card)
 		return -ENOMEM;
 	memstick_set_drvdata(card, msb);
 	msb->card = card;
+	spin_lock_init(&msb->q_lock);
 
 	rc = mspro_block_init_card(card);
 
