@@ -2,6 +2,7 @@
  *  MTDX legacy Sony Memorystick support
  *
  *  Copyright (C) 2008 Alex Dubov <oakad@yahoo.com>
+ *  Copyright (C) 2008 JMicron Technology Corporation <www.jmicron.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -12,6 +13,7 @@
 #include "../driver/linux/memstick.h"
 #include "mtdx_common.h"
 #include <linux/err.h>
+#include <linux/hdreg.h>
 
 #define DRIVER_NAME "ms_block"
 
@@ -75,7 +77,7 @@ struct ms_boot_page {
 	struct ms_boot_attr_info attr;
 } __attribute__((packed));
 
-struct ms_cis_idi {
+struct ms_idi {
 	unsigned short general_config;
 	unsigned short logical_cylinders;
 	unsigned short reserved0;
@@ -108,28 +110,228 @@ struct ms_cis_idi {
 } __attribute__((packed));
 
 struct ms_block_data {
-	struct memstick_dev           *card;
-	struct mtdx_dev               *mdev;
-	struct mtdx_dev               *fdev;
-	struct mtdx_dev_geo           geo;
+	struct memstick_dev      *card;
+	struct mtdx_dev          *mdev;
+	struct mtdx_dev          *fdev;
+	spinlock_t               lock;
 
-	unsigned char                 system;
-	unsigned char                 read_only:1,
-				      active:1,
-				      has_request:1,
-				      format_media:1;
+	unsigned char            system;
+	unsigned char            read_only:1,
+				 active:1,
+				 stopped:1,
+				 format_media:1;
 
-	struct ms_boot_attr_info      boot_attr;
-	struct ms_cis_idi             cis_idi;
+	struct ms_boot_attr_info boot_attr;
+	char                     cis[256];
+	struct ms_idi            idi;
+	unsigned int             boot_blocks[2];
+	unsigned int             *bad_blocks;
+	unsigned int             page_size;
 
 	struct ms_extra_data_register current_extra;
+	struct mtdx_request      *req_in;
+	int                      (*mrq_handler)(struct memstick_dev *card,
+						struct memstick_request **mrq);
+	unsigned int             t_count;
 };
 
+static int ms_block_complete_req(struct memstick_dev *card, int error);
+
+static int h_ms_block_req_init(struct memstick_dev *card,
+			       struct memstick_request **mrq)
+{
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+
+	*mrq = &card->current_mrq;
+	card->next_request = msb->mrq_handler;
+	return 0;
+}
+
+static int h_ms_block_default(struct memstick_dev *card,
+			      struct memstick_request **mrq)
+{
+	return ms_block_complete_req(card, (*mrq)->error);
+}
+
+static int h_ms_block_default_bad(struct memstick_dev *card,
+				  struct memstick_request **mrq)
+{
+	return -ENXIO;
+}
+
+static int ms_block_complete_req(struct memstick_dev *card, int error)
+{
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	int chunk, cnt;
+	unsigned int t_len = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(&msb->lock, flags);
+	dev_dbg(&card->dev, "complete %p, %d\n", msb->req_in, error);
+
+	if (msb->req_in) {
+		/* Nothing to do - not really an error */
+		if (error == -EAGAIN)
+			error = 0;
+
+		mtdx_complete_request(msb->req_in, error, msb->t_count);
+
+		if (msb->fdev->get_request)
+			msb->req_in = msb->fdev->get_request(msb->fdev);
+
+		if (!msb->req_in)
+			error = -EAGAIN;
+
+#warning Ugh!!!
+
+	}
+
+	card->next_request = h_ms_block_default_bad;
+	complete_all(&card->mrq_complete);
+out:
+	spin_unlock_irqrestore(&msb->lock, flags);
+	return error;
+}
+
+static int ms_block_switch_to_parallel(struct memstick_dev *card)
+{
+	struct memstick_host *host = card->host;
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct ms_param_register param = {
+		.system = msb->system | MEMSTICK_SYS_PAM,
+		.block_address_msb = 0,
+		.block_address = 0,
+		.cp = MEMSTICK_CP_BLOCK,
+		.page_address = 0
+	};
+
+	card->next_request = h_ms_block_req_init;
+	msb->mrq_handler = h_ms_block_default;
+	memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, &param,
+			  sizeof(param));
+	memstick_new_req(card->host);
+	wait_for_completion(&card->mrq_complete);
+
+	if (card->current_mrq.error)
+		return card->current_mrq.error;
+
+	msb->system |= MEMSTICK_SYS_PAM;
+	host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_PAR4);
+
+	card->next_request = h_ms_block_req_init;
+	msb->mrq_handler = h_ms_block_default;
+	memstick_init_req(&card->current_mrq, MS_TPC_GET_INT, NULL, 1);
+	memstick_new_req(host);
+	wait_for_completion(&card->mrq_complete);
+
+	if (card->current_mrq.error) {
+		msb->system &= ~MEMSTICK_SYS_PAM;
+		host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_SERIAL);
+		return -EFAULT;
+	}
+
+	return 0;
+}
 
 static int ms_block_init_card(struct memstick_dev *card)
 {
-#warning Implement!!!
-	return 0;
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct memstick_host *host = card->host;
+	char *buf;
+	struct ms_boot_page *boot_pages[2];
+	int rc;
+	unsigned char t_val = MS_CMD_RESET;
+
+	msb->boot_blocks[0] = MTDX_INVALID_BLOCK;
+	msb->boot_blocks[1] = MTDX_INVALID_BLOCK;
+	msb->page_size = sizeof(struct ms_boot_page);
+	msb->system = MEMSTICK_SYS_BAMD;
+
+	card->next_request = h_ms_block_req_init;
+	msb->mrq_handler = h_ms_block_default;
+	memstick_init_req(&card->current_mrq, MS_TPC_SET_CMD, &t_val, 1);
+	card->current_mrq.need_card_int = 0;
+	memstick_new_req(card->host);
+	wait_for_completion(&card->mrq_complete);
+
+	if (card->current_mrq.error)
+		return -ENODEV;
+
+	card->reg_addr = (struct ms_register_addr){
+		offsetof(struct ms_register, status),
+		sizeof(struct ms_status_register),
+		offsetof(struct ms_register, param),
+		sizeof(struct ms_param_register)
+	};
+
+	if (memstick_set_rw_addr(card))
+		return -EIO;
+
+	if (host->caps & MEMSTICK_CAP_PAR4) {
+		if (ms_block_switch_to_parallel(card))
+			printk(KERN_WARNING "%s: could not switch to "
+			       "parallel interface\n", card->dev.bus_id);
+	}
+
+	buf = kmalloc(2 * msb->page_size, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+ 	boot_pages[0] = (struct ms_boot_page*)buf;
+	boot_pages[1] = (struct ms_boot_page*)(buf + msb->page_size);
+ 
+	rc = ms_block_find_boot_blocks(card, boot_pages, boot_blocks);
+	if (rc || boot_blocks[0] == MTDX_INVALID_BLOCK)
+		goto out_free_buf;
+
+	memcpy(&msb->boot_attr, &boot_pages[0]->attr, sizeof(msb->boot_attr));
+
+	ms_block_mark_used(msb, boot_blocks[0]);
+	if (boot_blocks[1] != MTDX_INVALID_BLOCK)
+		ms_block_mark_used(msb, boot_blocks[1]);
+
+	rc = ms_block_fetch_bad_blocks(card, boot_pages[0],
+				       boot_blocks[0]);
+
+	if (rc && boot_blocks[1] != MTDX_INVALID_BLOCK) {
+		memcpy(&msb->boot_attr, &boot_pages[1]->attr,
+		       sizeof(msb->boot_attr));
+		boot_blocks[0] = MTDX_INVALID_BLOCK;
+		rc = ms_block_fetch_bad_blocks(card, boot_pages[1],
+					       boot_blocks[1]);
+	}
+
+	if (rc)
+		goto out_free_buf;
+
+	if (boot_blocks[0] != MTDX_INVALID_BLOCK) {
+		rc = ms_block_fetch_cis_idi(card, boot_pages[0],
+					    boot_blocks[0]);
+
+		if (rc && boot_blocks[1] != MTDX_INVALID_BLOCK) {
+			memcpy(&msb->boot_attr, &boot_pages[1]->attr,
+			       sizeof(msb->boot_attr));
+			rc = ms_block_fetch_cis_idi(card, boot_pages[1],
+						    boot_blocks[1]);
+		}
+	} else if (boot_blocks[1] != MTDX_INVALID_BLOCK)
+		rc = ms_block_fetch_cis_idi(card, boot_pages[1],
+					    boot_blocks[1]);
+
+	if (rc)
+		goto out_free_buf;
+
+	card->next_request = h_ms_block_req_init;
+	msb->mrq_handler = h_ms_block_get_ro;
+	memstick_init_req(&card->current_mrq, MS_TPC_READ_REG, NULL,
+			  sizeof(struct ms_status_register));
+	memstick_new_req(card->host);
+	wait_for_completion(&card->mrq_complete);
+	rc = card->current_mrq.error;
+
+out_free_buf:
+	kfree(buf);
+	return rc;
+
 }
 
 static int ms_block_check_card(struct memstick_dev *card)
@@ -148,8 +350,7 @@ static void ms_block_start(struct memstick_dev *card)
 #warning Implement!!!
 }
 
-static void ms_block_new_mtd_request(struct mtdx_dev *this_dev,
-				     struct mtdx_dev *src_dev)
+static void ms_block_new_mtdx_request(struct mtdx_dev *this_dev)
 {
 #warning Implement!!!
 }
@@ -165,6 +366,92 @@ static void ms_block_sysfs_unregister(struct memstick_dev *card)
 #warning Implement!!!
 }
 
+static int ms_block_oob_to_info(struct mtdx_dev *this_dev,
+				struct mtdx_page_info *p_info,
+				void *oob)
+{
+	struct memstick_dev *card = container_of(this_dev->dev.parent,
+						 struct memstick_dev,
+						 dev);
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct ms_extra_data_register *ms_oob = oob;
+
+	unsigned int addr = be16_to_cpu(ms_oob->logical_address);
+
+	if (addr == 0xffff) {
+		p_info->status = MTDX_PAGE_UNMAPPED;
+		p_info->log_block = MTDX_INVALID_BLOCK;
+	} else {
+		p_info->status = MTDX_PAGE_MAPPED;
+		p_info->log_block = addr;
+
+		if (!(ms_oob->overwrite_flag & MEMSTICK_OVERWRITE_UDST))
+			p_info->status = MTDX_PAGE_SMAPPED;
+	}
+
+	if (!(ms_oob->overwrite_flag & MEMSTICK_OVERWRITE_BKST))
+		p_info->status = MTDX_PAGE_INVALID;
+	else if (!(ms_oob->overwrite_flag
+		   & (MEMSTICK_OVERWRITE_PGST0 | MEMSTICK_OVERWRITE_PGST1)))
+		p_info->status = MTDX_PAGE_FAILURE;
+	else if (p_info->phy_block != MTDX_INVALID_BLOCK) {
+		if ((p_info->phy_block == msb->boot_blocks[0])
+		     || (p_info->phy_block == msb->boot_blocks[1]))
+				p_info->status = MTDX_PAGE_RESERVED;
+		else {
+			int cnt;
+
+			if (!msb->bad_blocks)
+				return 0;
+
+			for (cnt = 0;
+			     msb->bad_blocks[cnt] != MTDX_INVALID_BLOCK;
+			     ++cnt) {
+				if (msb->bad_blocks[cnt] == p_info->phy_block) {
+					p_info->status = MTDX_PAGE_INVALID;
+					break;
+				}
+			}
+		}
+	}
+	return 0;
+}
+
+static int ms_block_info_to_oob(struct mtdx_dev *this_dev,
+				void *oob,
+				struct mtdx_page_info *p_info)
+{
+	struct ms_extra_data_register *ms_oob = oob;
+
+	ms_oob->overwrite_flag = 0xff;
+	ms_oob->management_flag = 0xff;
+	ms_oob->logical_address = 0xffff;
+
+	switch (p_info->status) {
+	case MTDX_PAGE_ERASED:
+	case MTDX_PAGE_UNMAPPED:
+		break;
+	case MTDX_PAGE_MAPPED:
+		ms_oob->logical_address = cpu_to_be16(p_info->log_block);
+		break;
+	case MTDX_PAGE_SMAPPED:
+		ms_oob->logical_address = cpu_to_be16(p_info->log_block);
+		ms_oob->overwrite_flag &= ~MEMSTICK_OVERWRITE_UDST;
+		break;
+	case MTDX_PAGE_INVALID:
+		ms_oob->overwrite_flag &= ~MEMSTICK_OVERWRITE_BKST;
+		break;
+	case MTDX_PAGE_FAILURE:
+		ms_oob->overwrite_flag &= ~(MEMSTICK_OVERWRITE_PGST0
+					    | MEMSTICK_OVERWRITE_PGST1);
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int ms_block_get_param(struct mtdx_dev *this_dev, enum mtdx_param param,
 			      void *val)
 {
@@ -174,9 +461,27 @@ static int ms_block_get_param(struct mtdx_dev *this_dev, enum mtdx_param param,
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 
 	switch (param) {
-	case MTDX_PARAM_GEO:
-		memcpy(val, &msb->geo, sizeof(struct mtdx_dev_geo));
+	case MTDX_PARAM_GEO: {
+		struct mtdx_dev_geo *geo = val;
+
+		geo->zone_cnt_log = 9;
+		geo->log_block_cnt
+			= msb->boot_attr.number_of_effective_blocks;
+		geo->phy_block_cnt
+			= msb->boot_attr.number_of_blocks;
+		geo->page_size = msb->boot_attr.page_size;
+		geo->page_cnt = msb->boot_attr.block_size / geo->page_size;
+		geo->oob_size = sizeof(struct ms_extra_data_register);
 		return 0;
+	}
+	case MTDX_PARAM_HD_GEO: {
+		struct hd_geometry *geo = val;
+
+		geo->heads = msb->idi.current_logical_heads;
+		geo->sectors = msb->idi.current_sectors_per_track;
+		geo->cylinders = msb->idi.current_logical_cylinders;
+		return 0;
+	}
 	default:
 		return -EINVAL;
 	}
@@ -195,6 +500,7 @@ static int ms_block_probe(struct memstick_dev *card)
 
 	memstick_set_drvdata(card, msb);
 	msb->card = card;
+	spin_lock_init(&msb->lock);
 
 	rc = ms_block_init_card(card);
 	if (rc)
@@ -214,7 +520,9 @@ static int ms_block_probe(struct memstick_dev *card)
 		goto err_out_free;
 	}
 
-	msb->mdev->new_request = ms_block_new_mtd_request;
+	msb->mdev->new_request = ms_block_new_mtdx_request;
+	msb->mdev->oob_to_info = ms_block_oob_to_info;
+	msb->mdev->info_to_oob = ms_block_info_to_oob;
 	msb->mdev->get_param = ms_block_get_param;
 
 	rc = ms_block_sysfs_register(card);
@@ -289,9 +597,9 @@ static int ms_block_resume(struct memstick_dev *card)
 
 static struct memstick_device_id ms_block_id_tbl[] = {
 	{MEMSTICK_MATCH_ALL, MEMSTICK_TYPE_LEGACY, MEMSTICK_CATEGORY_STORAGE,
-	 MEMSTICK_CLASS_GENERIC},
+	 MEMSTICK_CLASS_FLASH},
 	{MEMSTICK_MATCH_ALL, MEMSTICK_TYPE_DUO, MEMSTICK_CATEGORY_STORAGE_DUO,
-	 MEMSTICK_CLASS_GENERIC_DUO},
+	 MEMSTICK_CLASS_DUO},
 	{}
 };
 

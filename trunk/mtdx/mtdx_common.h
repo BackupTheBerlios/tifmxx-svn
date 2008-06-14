@@ -39,12 +39,12 @@ struct mtdx_device_id {
 };
 
 struct mtdx_dev_geo {
-	unsigned int zone_cnt;
-	unsigned int log_block_cnt;
-	unsigned int phy_block_cnt;
-	unsigned int page_cnt;
-	unsigned int page_size;
-	unsigned int oob_size;
+	unsigned int zone_cnt_log;  /* Number of bits set aside for zoning */
+	unsigned int log_block_cnt; /* Number of logical eraseblocks       */
+	unsigned int phy_block_cnt; /* Number of physical eraseblocks      */
+	unsigned int page_cnt;      /* Number of pages per eraseblock      */
+	unsigned int page_size;     /* Size of page in bytes               */
+	unsigned int oob_size;      /* Size of oob in bytes                */
 };
 
 struct mtdx_dev;
@@ -52,33 +52,46 @@ struct mtdx_dev;
 enum mtdx_command {
 	MTDX_CMD_NONE = 0,
 	MTDX_CMD_READ,
-	MTDX_CMD_WRITE,
+	MTDX_CMD_READ_OOB,
+	MTDX_CMD_READ_ALL,
 	MTDX_CMD_ERASE,
+	MTDX_CMD_WRITE,
+	MTDX_CMD_WRITE_OOB,
+	MTDX_CMD_WRITE_ALL,
+	MTDX_CMD_INVALIDATE,
 	MTDX_CMD_COPY
 };
 
-enum mtdx_block_info {
-	MTDX_BLK_UNKNOWN = 0,
-	MTDX_BLK_ERASED,
-	MTDX_BLK_UNMAPPED,
-	MTDX_BLK_MAPPED,
-	MTDX_BLK_INVALID
+enum mtdx_page_status {
+	MTDX_PAGE_UNKNOWN = 0,
+	MTDX_PAGE_ERASED,      /* Page is clean                            */
+	MTDX_PAGE_UNMAPPED,    /* Page is good for writing but needs erase */
+	MTDX_PAGE_MAPPED,      /* Page contains live data                  */
+	MTDX_PAGE_SMAPPED,     /* Prefer this page in case of conflict     */
+	MTDX_PAGE_INVALID,     /* Page is defective                        */
+	MTDX_PAGE_FAILURE,     /* Page data is not guaranteed              */
+	MTDX_PAGE_RESERVED     /* Page is good,  but shouldn't be used     */
+};
+
+/* Generic oob structure. Produced by the MTD device method from the opaque
+ * oob blob.
+ */
+struct mtdx_page_info {
+	enum mtdx_page_status status;
+	unsigned int          log_block;
+	unsigned int          phy_block;
+	unsigned int          page_offset;
 };
 
 enum mtdx_param {
 	MTDX_PARAM_NONE = 0,
-	MTDX_PARAM_GEO
+	MTDX_PARAM_GEO,        /* Get device geometry | struct mtdx_geo      */
+	MTDX_PARAM_HD_GEO      /* Get device geometry | struct hd_geometry   */
 };
 
 struct mtdx_request {
 	struct mtdx_dev      *src_dev;
 	enum mtdx_command    cmd;
-	enum mtdx_block_info block_info;
-	unsigned int         flags;
-/* Request has associated data pending */
-#define MTDX_REQ_DATA  1
-/* log_block and block_info fields must be set from/to oob */
-#define MTDX_REQ_TRANS 2
 	unsigned int         log_block;
 	unsigned int         phy_block;
 	unsigned int         offset;
@@ -93,16 +106,22 @@ struct mtdx_dev {
 	struct mtdx_device_id id;
 	unsigned int          ord;
 
-	void                 (*new_request)(struct mtdx_dev *this_dev,
-					    struct mtdx_dev *src_dev);
-	struct mtdx_request  *(*get_request)(struct mtdx_dev *this_dev,
-					     struct mtdx_dev *dst_dev);
-	void                 (*end_request)(struct mtdx_request *req);
+	void                 (*new_request)(struct mtdx_dev *this_dev);
+	struct mtdx_request  *(*get_request)(struct mtdx_dev *this_dev);
+	void                 (*end_request)(struct mtdx_request *req,
+					    int error, unsigned int count);
 
-	int                  (*get_data_buf)(struct mtdx_request *req,
-					     char **buf);
+	char                 *(*get_data_buf)(struct mtdx_request *req);
 	int                  (*get_data_buf_sg)(struct mtdx_request *req,
 					        struct scatterlist *sg);
+	char                 *(*get_oob_buf)(struct mtdx_request *req);
+
+	int                  (*oob_to_info)(struct mtdx_dev *this_dev,
+					    struct mtdx_page_info *p_info,
+					    void *oob);
+	int                  (*info_to_oob)(struct mtdx_dev *this_dev,
+					    void *oob,
+					    struct mtdx_page_info *p_info);
 
 	int                  (*get_param)(struct mtdx_dev *this_dev,
 					  enum mtdx_param param,
@@ -132,5 +151,10 @@ struct mtdx_dev *mtdx_create_dev(struct device *parent,
 				 struct mtdx_device_id *id);
 struct mtdx_dev *mtdx_create_child(struct mtdx_dev *parent, unsigned int ord,
 				   struct mtdx_device_id *id);
+static inline void mtdx_complete_request(struct mtdx_request *req, int error,
+					 unsigned int count)
+{
+	req->src_dev->end_request(req, error, count);
+}
 
 #endif
