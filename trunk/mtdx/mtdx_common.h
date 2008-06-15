@@ -51,15 +51,15 @@ struct mtdx_dev;
 
 enum mtdx_command {
 	MTDX_CMD_NONE = 0,
-	MTDX_CMD_READ,
-	MTDX_CMD_READ_OOB,
-	MTDX_CMD_READ_ALL,
-	MTDX_CMD_ERASE,
-	MTDX_CMD_WRITE,
-	MTDX_CMD_WRITE_OOB,
-	MTDX_CMD_WRITE_ALL,
-	MTDX_CMD_INVALIDATE,
-	MTDX_CMD_COPY
+	MTDX_CMD_READ,       /* read both page data and oob  */
+	MTDX_CMD_READ_DATA,  /* read only page data          */
+	MTDX_CMD_READ_OOB,   /* read only page oob           */
+	MTDX_CMD_ERASE,      /* erase block                  */
+	MTDX_CMD_WRITE,      /* write both page data and oob */
+	MTDX_CMD_WRITE_DATA, /* write only page data         */
+	MTDX_CMD_WRITE_OOB,  /* write only page oob          */
+	MTDX_CMD_INVALIDATE, /* mark pages as bad            */
+	MTDX_CMD_COPY        /* copy pages                   */
 };
 
 enum mtdx_page_status {

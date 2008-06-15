@@ -147,7 +147,7 @@ struct ms_register_addr {
 	unsigned char w_length;
 } __attribute__((packed));
 
-enum {
+enum memstick_tpc {
 	MS_TPC_READ_MG_STATUS   = 0x01,
 	MS_TPC_READ_LONG_DATA   = 0x02,
 	MS_TPC_READ_SHORT_DATA  = 0x03,
@@ -167,7 +167,7 @@ enum {
 	MS_TPC_SET_CMD          = 0x0e
 };
 
-enum {
+enum memstick_command {
 	MS_CMD_BLOCK_END       = 0x33,
 	MS_CMD_RESET           = 0x3c,
 	MS_CMD_BLOCK_WRITE     = 0x55,
