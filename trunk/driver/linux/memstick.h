@@ -320,9 +320,9 @@ void memstick_suspend_host(struct memstick_host *host);
 void memstick_resume_host(struct memstick_host *host);
 
 void memstick_init_req_sg(struct memstick_request *mrq, unsigned char tpc,
-			  struct scatterlist *sg);
+			  const struct scatterlist *sg);
 void memstick_init_req(struct memstick_request *mrq, unsigned char tpc,
-		       void *buf, size_t length);
+		       const void *buf, size_t length);
 int memstick_next_req(struct memstick_host *host,
 		      struct memstick_request **mrq);
 void memstick_new_req(struct memstick_host *host);
