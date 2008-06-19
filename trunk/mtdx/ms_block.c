@@ -190,8 +190,8 @@ static void ms_block_reg_addr_set(struct memstick_dev *card,
  * 5-1-1. set_extra_addr_r
  * 5-1-2. read_extra
  * 5-2 (error)
- * 5-2-1. set_param_addr_r
- * 5-2-2. read_status
+ * 5-2-1. set_stat_addr_r
+ * 5-2-2. read_status ?-> 5-1
  * 5-3 (end, page_inc)
  * 5-3-1. set_cmd
  * 5-3-2. cmd_get_int
@@ -235,7 +235,9 @@ static void ms_block_reg_addr_set(struct memstick_dev *card,
  * Expected callback activation sequence for copying:
  * 1. write_param
  * 2. set_cmd
- * 3. cmd_get_int -> 1
+ * 3. cmd_get_int
+ * 4-1 read_status
+ * 5. -> 1
  */
 
 static int h_ms_block_req_init(struct memstick_dev *card,
@@ -266,39 +268,53 @@ static int h_ms_block_cmd_get_int(struct memstick_dev *card,
 	unsigned char int_reg = (*mrq)->data[0];
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 
-	if ((*mrq)->error)
-		return ms_block_complete_req(card, (*mrq)->error);
-
-	switch (msb->cmd) {
-	case MS_CMD_BLOCK_END:
-	case MS_CMD_BLOCK_ERASE:
-		return ms_block_complete_req(card, (*mrq)->error);
-	case MS_CMD_BLOCK_WRITE:
-
-	case MS_CMD_BLOCK_READ:
-
-	default:
-		(*mrq)->error = -EINVAL;
-		return ms_block_complete_req(card, (*mrq)->error);
+	if (!(*mrq)->error) {
+		if (int_reg & MEMSTICK_INT_CMDNAK)
+			(*mrq)->error = -EIO;
+		else if (int_reg & MEMSTICK_INT_ERR)
+			(*mrq)->error = -EFAULT;
 	}
 
-	if (int_reg & (MEMSTICK_INT_CMDNAK | MEMSTICK_INT_ERR))
-		(*mrq)->error = -EFAULT;
-
-
-	if ((*mrq)->error)
+	if ((msb->cmd == MS_CMD_BLOCK_ERASE)
+	    || (msb->cmd == MS_CMD_BLOCK_END))
 		return ms_block_complete_req(card, (*mrq)->error);
 
-	if ((msb->cmd == MS_CMD_BLOCK_WRITE)
-	    || (msb->cmd == MS_CMD_BLOCK_READ)) {
-#error Check BREQ condition
-		if (!(int_reg & MEMSTICK_INT_BREQ)) {
-			memstick_init_req(*mrq, MS_TPC_GET_INT, NULL, 1);
-			card->next_request = h_ms_block_cmd_get_int;
-			return 0;
+	if (msb->cmd == MS_CMD_BLOCK_READ) {
+		if (int_reg & MEMSTICK_INT_ERR) {
+			memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
+					  &ms_block_r_stat_w_param,
+					  sizeof(ms_block_r_stat_w_param));
+			if (ms_block_reg_addr_cmp(card,
+						  &ms_block_r_stat_w_param)) {
+				card->next_request = h_ms_block_set_stat_addr_r;
+				return 0;
+			} else
+				return h_ms_block_set_stat_addr_r(card, mrq);
 		}
+
+		if ((*mrq)->error)
+			return ms_block_complete_req(card, (*mrq)->error);
+
+		if (msb->cmd_flags & MS_BLOCK_FLG_EXTRA) {
+			if (ms_block_reg_addr_cmp(card,
+						  &ms_block_r_extra_w_param)) {
+				card->next_request
+					= h_ms_block_set_extra_addr_r;
+				return 0;
+			} else
+				return h_ms_block_set_extra_addr_r(card, &mrq);
+		}
+
+		if (msb->cmd_flags & MS_BLOCK_FLG_DATA) {
+			card->next_request = h_ms_block_read_data;
+		}
+	} else if (msb->cmd == MS_CMD_BLOCK_WRITE) {
+		
+	} else {
+		if (!(*mrq)->error)
+			(*mrq)->error = -EINVAL;
+		return ms_block_complete_req(card, (*mrq)->error);
 	}
-	
 }
 
 static int h_ms_block_set_cmd(struct memstick_dev *card,
