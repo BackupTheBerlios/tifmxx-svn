@@ -175,6 +175,12 @@ static inline void mtdx_complete_request(struct mtdx_request *req, int error,
 	req->src_dev->end_request(req, error, count);
 }
 
+static inline int mtdx_get_data_buf_sg(struct mtdx_request *req,
+				       struct scatterlist *sg)
+{
+	return req->src_dev->get_data_buf_sg(req, sg);	
+}
+
 static inline char *mtdx_get_oob_buf(struct mtdx_request *req)
 {
 	return req->src_dev->get_oob_buf(req);	
