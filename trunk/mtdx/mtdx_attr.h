@@ -15,19 +15,31 @@
 #include <linux/sysfs.h>
 #include "mtdx_common.h"
 
-struct mtdx_attr_parser {
-	struct list_head node;
-	struct mtdx_attr_parser *children;
+struct mtdx_attr;
+
+struct mtdx_attr_value {
+	char             *name;
+	long             param;
+	int              (*verify)(struct mtdx_attr *attr, int offset,
+				   long param);
+	int              (*print)(struct mtdx_attr *attr, int offset,
+				  char *out_buf, unsigned int out_count,
+				  long param);
+};
+
+struct mtdx_attr_entry {
+	struct list_head       node;
+	struct mtdx_attr_value *values;
 };
 
 struct mtdx_attr {
-	struct mtdx_dev         *mdev;
-	struct attribute_group  grp;
-	unsigned int            page_cnt;
-	unsigned int            page_size;
-	unsigned int            page_fill;
-	struct mtdx_attr_parser *parsers;
-	char                    *pages[];
+	struct mtdx_dev        *mdev;
+	struct attribute_group grp;
+	unsigned int           page_cnt;
+	unsigned int           page_size;
+	unsigned int           page_fill;
+	struct mtdx_attr_entry *entries;
+	char                   *pages[];
 };
 
 unsigned int mtdx_attr_get_byte_range(struct mtdx_attr *attr, char *buf,
@@ -37,5 +49,6 @@ unsigned int mtdx_attr_set_byte_range(struct mtdx_attr *attr, char *buf,
 void mtdx_attr_free(struct mtdx_attr *attr);
 struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, unsigned int page_cnt,
 				  unsigned int page_size);
+int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values);
 
 #endif

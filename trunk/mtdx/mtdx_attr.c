@@ -10,11 +10,14 @@
  */
 
 #include "mtdx_attr.h"
+#include <linux/module.h>
+#include <linux/err.h>
 
 unsigned int mtdx_attr_get_byte_range(struct mtdx_attr *attr, char *buf,
 				      unsigned int offset, unsigned int count)
 {
 	unsigned int i_count = count;
+	unsigned int c_page, p_off, c_count;
 
 	while (count) {
 		c_page = offset / attr->page_size;
@@ -39,7 +42,8 @@ unsigned int mtdx_attr_get_byte_range(struct mtdx_attr *attr, char *buf,
 unsigned int mtdx_attr_set_byte_range(struct mtdx_attr *attr, char *buf,
 				      unsigned int offset, unsigned int count)
 {
-		unsigned int i_count = count;
+	unsigned int i_count = count;
+	unsigned int c_page, p_off, c_count;
 
 	while (count) {
 		c_page = offset / attr->page_size;
@@ -87,8 +91,11 @@ struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, unsigned int page_cnt,
 					 GFP_KERNEL);
 
 	if (!attr)
-		return attr;
+		return ERR_PTR(-ENOMEM);
 
+	attr->mdev = mdev;
 	attr->page_cnt = page_cnt;
 	attr->page_size = page_size;
+
+	return attr;
 }
