@@ -13,7 +13,7 @@
 #include <linux/module.h>
 #include <linux/err.h>
 
-unsigned int mtdx_attr_get_byte_range(struct mtdx_attr *attr, char *buf,
+unsigned int mtdx_attr_get_byte_range(struct mtdx_attr *attr, void *buf,
 				      unsigned int offset, unsigned int count)
 {
 	unsigned int i_count = count;
@@ -39,7 +39,7 @@ unsigned int mtdx_attr_get_byte_range(struct mtdx_attr *attr, char *buf,
 	return i_count - count;
 }
 
-unsigned int mtdx_attr_set_byte_range(struct mtdx_attr *attr, char *buf,
+unsigned int mtdx_attr_set_byte_range(struct mtdx_attr *attr, void *buf,
 				      unsigned int offset, unsigned int count)
 {
 	unsigned int i_count = count;
@@ -98,4 +98,80 @@ struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, unsigned int page_cnt,
 	attr->page_size = page_size;
 
 	return attr;
+}
+
+int mtdx_attr_value_range_verify(struct mtdx_attr *attr, int offset, long param)
+{
+	if ((offset + param) <= (attr->page_cnt * attr->page_size))
+		return param;
+	else
+		return -E2BIG;
+}
+
+int mtdx_attr_value_string_verify(struct mtdx_attr *attr, int offset,
+				  long param)
+{
+	unsigned int c_page = offset / attr->page_size;
+	unsigned int p_off = offset % / attr->page_size;
+	char delim = param;
+	int count;
+
+
+}
+
+int mtdx_attr_value_be_num_print(struct mtdx_attr *attr, int offset,
+				 char *out_buf, unsigned int out_count,
+				 long param)
+{
+	unsigned long long val;
+	char format[8];
+
+	if (param > 8)
+		return -EINVAL;
+
+	if (param != mtdx_attr_get_byte_range(attr, &val, offset, count))
+		return -EINVAL;
+
+	val = be64_to_cpu(val);
+
+	if (param <= sizeof(int)) {
+		sprintf(format, "%%0%dx", param * 2);
+		return snprintf(out_buf, out_count, format, (unsigned int)val);
+	} else if (param <= sizeof(long) {
+		sprintf(format, "%%0%dlx", param * 2);
+		return snprintf(out_buf, out_count, format, (unsigned long)val);
+	} else if (param <= sizeof(long long) {
+		sprintf(format, "%%0%dllx", param * 2);
+		return snprintf(out_buf, out_count, format,
+				(unsigned long long)val);
+	} else
+		return -EINVAL;
+}
+
+int mtdx_attr_value_le_num_print(struct mtdx_attr *attr, int offset,
+				 char *out_buf, unsigned int out_count,
+				 long param)
+{
+	unsigned long long val;
+	char format[8];
+
+	if (param > 8)
+		return -EINVAL;
+
+	if (param != mtdx_attr_get_byte_range(attr, &val, offset, count))
+		return -EINVAL;
+
+	val = le64_to_cpu(val);
+
+	if (param <= sizeof(int)) {
+		sprintf(format, "%%0%dx", param * 2);
+		return snprintf(out_buf, out_count, format, (unsigned int)val);
+	} else if (param <= sizeof(long) {
+		sprintf(format, "%%0%dlx", param * 2);
+		return snprintf(out_buf, out_count, format, (unsigned long)val);
+	} else if (param <= sizeof(long long) {
+		sprintf(format, "%%0%dllx", param * 2);
+		return snprintf(out_buf, out_count, format, (unsigned long long)val);
+	} else
+		return -EINVAL;
 }
