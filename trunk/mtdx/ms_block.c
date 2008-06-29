@@ -12,8 +12,11 @@
 
 #include "../driver/linux/memstick.h"
 #include "mtdx_common.h"
+#include "mtdx_attr.h"
 #include <linux/err.h>
 #include <linux/hdreg.h>
+#include <linux/sched.h>
+#include <linux/wait.h>
 
 #define DRIVER_NAME "ms_block"
 
@@ -55,21 +58,144 @@ struct ms_boot_attr_info {
 	unsigned short     memory_mamufacturer_code;
 	unsigned short     memory_device_code;
 	unsigned short     implemented_capacity;
-	unsigned char      format_unique_value4[2];
+	unsigned char      format_unique_value4;
+	unsigned char      format_unique_value5;
 	unsigned char      vcc;
 	unsigned char      vpp;
 	unsigned short     controller_number;
 	unsigned short     controller_function;
 	unsigned char      reserved0[9];
 	unsigned char      transfer_supporting;
-	unsigned short     format_unique_value5;
+	unsigned short     format_unique_value6;
 	unsigned char      format_type;
 	unsigned char      memorystick_application;
 	unsigned char      device_type;
 	unsigned char      reserved1[22];
-	unsigned char      format_uniqure_value6[2];
+	unsigned char      format_uniqure_value7;
+	unsigned char      format_uniqure_value8;
 	unsigned char      reserved2[15];
 } __attribute__((packed));
+
+int ms_block_attr_date_verify(struct mtdx_attr *attr, int offset,
+			      long param)
+{
+	unsigned char val[8];
+	const char days[] = {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+
+	if (mtdx_attr_get_byte_range(attr, &val, offset, sizeof(val))
+	    != sizeof(val))
+		return -E2BIG;
+
+	if (val[0] != 0x80) {
+		if (((char)val[0] > 48) || ((char)val[0] < -48))
+			return -EINVAL;
+	}
+
+	if (val[3] != 0xff) {
+		if (!val[3] || (val[3] > 12))
+			return -EINVAL;
+	}
+
+	if (val[4] != 0xff) {
+		if (!val[4] || (val[4] > days[val[3] - 1]))
+			return -EINVAL;
+	}
+
+	if (val[5] != 0xff) {
+		if (val[5] > 23)
+			return -EINVAL;
+	}
+
+	if (val[6] != 0xff) {
+		if (val[6] > 59)
+			return -EINVAL;
+	}
+
+	if (val[7] != 0xff) {
+		if (val[7] > 59)
+			return -EINVAL;
+	}
+
+	return 8;
+}
+
+char *ms_block_attr_date_print(struct mtdx_attr *attr, int offset, int size,
+			       long param)
+{
+	unsigned char val[8];
+
+	if (size != 8)
+		return NULL;
+
+	if (mtdx_attr_get_byte_range(attr, &val, offset, size) != size)
+		return NULL;
+
+
+	return NULL;
+}
+
+struct mtdx_attr_value ms_block_boot_attr_values[] = {
+	{"Memory Stick class", 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Format unique value 1", 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Block size", 2, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Number of blocks", 2, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Number of effective blocks", 2, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Page size", 2, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Extra Data Area size", 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Format unique value 2", 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Assembly date and time", 0, ms_block_attr_date_verify,
+	 ms_block_attr_date_print},
+	{"Format unique value 3", 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Manufacturer area", 3, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Assembly manufacturer code", 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Assembly model code", 3, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Memory manufacturer code", 2, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Memory device code", 2, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Implemented capacity", 2, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Format unique value 4", 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Format unique value 5", 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"VCC", 1, mtdx_attr_value_range_verify, mtdx_attr_value_be_num_print},
+	{"VPP", 1, mtdx_attr_value_range_verify, mtdx_attr_value_be_num_print},
+	{"Controller number", 2, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Controller function", 2, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{NULL, 9, mtdx_attr_value_range_verify, NULL},
+	{"Parallel-Transfer supporting", 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Format unique value 6", 2, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Format type", 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Memory Stick application", 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Device type", 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{NULL, 22, mtdx_attr_value_range_verify, NULL},
+	{"Format unique value 7", 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Format unique value 8", 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{NULL, 15, mtdx_attr_value_range_verify, NULL},
+	{NULL, 0, NULL, NULL}
+};
 
 struct ms_boot_page {
 	struct ms_boot_header    header;
@@ -113,15 +239,12 @@ struct ms_block_data {
 	struct memstick_dev      *card;
 	unsigned int             caps; 
 	struct mtdx_dev          *mdev;
-	struct mtdx_dev          *fdev;
 	spinlock_t               lock;
 
 	unsigned char            system;
 	unsigned char            read_only:1,
 				 active:1,
-				 stopped:1,
-				 format_media:1,
-				 int_req:1;
+				 stopped:1;
 	unsigned char            cmd_flags;
 #define MS_BLOCK_FLG_DATA     0x01
 #define MS_BLOCK_FLG_EXTRA    0x02
@@ -136,6 +259,8 @@ struct ms_block_data {
 	unsigned int             *bad_blocks;
 	unsigned int             page_size;
 
+	wait_queue_head_t        req_wq;
+	struct mtdx_dev          *req_dev;
 	struct mtdx_request      *req_in;
 	int                      (*mrq_handler)(struct memstick_dev *card,
 						struct memstick_request **mrq);
@@ -265,22 +390,30 @@ static void ms_block_reg_addr_set(struct memstick_dev *card,
  * 5. -> 1
  */
 
+static int h_ms_block_internal_req_init(struct memstick_dev *card,
+					struct memstick_request **mrq)
+{
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+
+	*mrq = &card->current_mrq;
+	card->next_request = msb->mrq_handler;
+	return 0;
+}
+
 static int h_ms_block_req_init(struct memstick_dev *card,
 			       struct memstick_request **mrq)
 {
-	struct ms_block_data *msb = memstick_get_drvdata(card);	
+	struct ms_block_data *msb = memstick_get_drvdata(card);
 
 	*mrq = &card->current_mrq;
 
+	if (!msb->req_in && msb->req_dev)
+		msb->req_in = msb->req_dev->get_request(msb->req_dev);
+
 	if (!msb->req_in) {
-		if (msb->int_req) {
-			card->next_request = msb->mrq_handler;
-			return 0;
-		} else {
-			*mrq = NULL;
-			complete_all(&card->mrq_complete);
-			return -EAGAIN;
-		}
+		*mrq = NULL;
+		complete_all(&card->mrq_complete);
+		return -EAGAIN;
 	}
 
 	memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
@@ -952,8 +1085,7 @@ static int ms_block_complete_req(struct memstick_dev *card, int error)
 		msb->req_in = NULL;
 		card->next_request = h_ms_block_req_init;
 
-		if (msb->fdev->get_request)
-			msb->req_in = msb->fdev->get_request(msb->fdev);
+		msb->req_in = msb->req_dev->get_request(msb->req_dev);
 
 		if (!msb->req_in)
 			error = -EAGAIN;
@@ -962,8 +1094,14 @@ static int ms_block_complete_req(struct memstick_dev *card, int error)
 
 	if (!error)
 		memstick_new_req(card->host);
-	else
+	else {
+		if (msb->req_dev) {
+			msb->req_dev = NULL;
+			wake_up(&msb->req_wq);
+		}
+
 		complete_all(&card->mrq_complete);
+	}
 
 	spin_unlock_irqrestore(&msb->lock, flags);
 	return error;
@@ -1114,8 +1252,16 @@ out_free_buf:
 
 static int ms_block_check_card(struct memstick_dev *card)
 {
-#warning Implement!!!
-	return 0;
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	int rc = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(&msb->lock, flags);
+	if (msb->active)
+		rc = 1;
+	spin_unlock_irqrestore(&msb->lock, flags);
+
+	return rc;
 }
 
 static void ms_block_stop(struct memstick_dev *card)
@@ -1128,9 +1274,48 @@ static void ms_block_start(struct memstick_dev *card)
 #warning Implement!!!
 }
 
-static void ms_block_new_mtdx_request(struct mtdx_dev *this_dev)
+static int ms_block_dummy_new_mtdx_request(struct mtdx_dev *this_dev,
+					   struct mtdx_dev *req_dev)
 {
-#warning Implement!!!
+	return -ENODEV;
+}
+
+static int ms_block_new_mtdx_request(struct mtdx_dev *this_dev,
+				     struct mtdx_dev *req_dev)
+{
+	struct memstick_dev *card = container_of(this_dev->dev.parent,
+						 struct memstick_dev,
+						 dev);
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	int rc = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(&msb->lock, flags);
+	while (1) {
+		if (!msb->active)
+			rc = -ENODEV;
+		else if (msb->stopped)
+			rc = -EAGAIN;
+
+		if (rc)
+			break;
+
+		if (!msb->req_dev) {
+			msb->req_dev = req_dev;
+			break;
+		} else {
+			spin_unlock_irqrestore(&msb->lock, flags);
+			rc = wait_event_interruptible(msb->req_wq,
+						      !(msb->req_dev));
+			spin_lock_irqsave(&msb->lock, flags);
+		}
+	}
+
+	if (!rc)
+		memstick_new_req(card->host);
+
+	spin_unlock_irqrestore(&msb->lock, flags);
+	return rc;
 }
 
 static int ms_block_sysfs_register(struct memstick_dev *card)
@@ -1279,6 +1464,7 @@ static int ms_block_probe(struct memstick_dev *card)
 	memstick_set_drvdata(card, msb);
 	msb->card = card;
 	spin_lock_init(&msb->lock);
+	init_waitqueue_head(&msb->req_wq);
 
 	rc = ms_block_init_card(card);
 	if (rc)
@@ -1309,13 +1495,7 @@ static int ms_block_probe(struct memstick_dev *card)
 
 	c_id.role = MTDX_ROLE_FTL;
 	c_id.id = MTDX_ID_FTL_DUMB;
-	msb->fdev = mtdx_create_child(msb->mdev, 0, &c_id);
 
-	if (IS_ERR(msb->fdev)) {
-		rc = PTR_ERR(msb->fdev);
-		msb->fdev = NULL;
-		goto err_out_sysfs_unregister;
-	}
 	return 0;
 
 err_out_sysfs_unregister:
@@ -1331,11 +1511,19 @@ err_out_free:
 static void ms_block_remove(struct memstick_dev *card)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
+	unsigned long flags;
+
+	msb->mdev->new_request = ms_block_dummy_new_mtdx_request;
+
+	spin_lock_irqsave(&msb->lock, flags);
+	msb->active = 0;
+	wake_up_all(&msb->req_wq);
+	spin_unlock_irqrestore(&msb->lock, flags);
+
+	while (waitqueue_active(&msb->req_wq))
+		msleep(1);
 
 	ms_block_sysfs_unregister(card);
-
-	if (msb->fdev)
-		device_unregister(&msb->fdev->dev);
 
 	if (msb->mdev)
 		device_unregister(&msb->mdev->dev);

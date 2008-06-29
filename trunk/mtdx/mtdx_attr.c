@@ -17,11 +17,11 @@ unsigned int mtdx_attr_get_byte_range(struct mtdx_attr *attr, void *buf,
 				      unsigned int offset, unsigned int count)
 {
 	unsigned int i_count = count;
-	unsigned int c_page, p_off, c_count;
+	unsigned int c_page = offset / attr->page_size;
+	unsigned int p_off = offset % attr->page_size;
+	unsigned int c_count;
 
 	while (count) {
-		c_page = offset / attr->page_size;
-		p_off = offset % attr->page_size;
 		c_count = min(count, attr->page_size - p_off);
 
 		if (c_page >= attr->page_cnt)
@@ -32,22 +32,26 @@ unsigned int mtdx_attr_get_byte_range(struct mtdx_attr *attr, void *buf,
 		else
 			memcpy(buf + offset, attr->pages[c_page] + p_off,
 			       c_count);
+
 		offset += c_count;
 		count -= c_count;
+		p_off = 0;
+		c_page++;
 	}
 
 	return i_count - count;
 }
+EXPORT_SYMBOL(mtdx_attr_get_byte_range);
 
 unsigned int mtdx_attr_set_byte_range(struct mtdx_attr *attr, void *buf,
 				      unsigned int offset, unsigned int count)
 {
-	unsigned int i_count = count;
-	unsigned int c_page, p_off, c_count;
+	unsigned int i_count = count, c_count;
+	unsigned int c_page = offset / attr->page_size;
+	unsigned int p_off = offset % attr->page_size;
+
 
 	while (count) {
-		c_page = offset / attr->page_size;
-		p_off = offset % attr->page_size;
 		c_count = min(count, attr->page_size - p_off);
 
 		if (c_page >= attr->page_cnt)
@@ -68,10 +72,13 @@ unsigned int mtdx_attr_set_byte_range(struct mtdx_attr *attr, void *buf,
 		       c_count);
 		offset += c_count;
 		count -= c_count;
+		p_off = 0;
+		c_page++;
 	}
 
 	return i_count - count;
 }
+EXPORT_SYMBOL(mtdx_attr_set_byte_range);
 
 void mtdx_attr_free(struct mtdx_attr *attr)
 {
@@ -82,6 +89,7 @@ void mtdx_attr_free(struct mtdx_attr *attr)
 
 	kfree(attr);
 }
+EXPORT_SYMBOL(mtdx_attr_free);
 
 struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, unsigned int page_cnt,
 				  unsigned int page_size)
@@ -99,6 +107,7 @@ struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, unsigned int page_cnt,
 
 	return attr;
 }
+EXPORT_SYMBOL(mtdx_attr_alloc);
 
 int mtdx_attr_value_range_verify(struct mtdx_attr *attr, int offset, long param)
 {
@@ -107,71 +116,106 @@ int mtdx_attr_value_range_verify(struct mtdx_attr *attr, int offset, long param)
 	else
 		return -E2BIG;
 }
+EXPORT_SYMBOL(mtdx_attr_value_range_verify);
 
 int mtdx_attr_value_string_verify(struct mtdx_attr *attr, int offset,
 				  long param)
 {
 	unsigned int c_page = offset / attr->page_size;
-	unsigned int p_off = offset % / attr->page_size;
-	char delim = param;
-	int count;
+	unsigned int p_off = offset % attr->page_size;
+	int count = 0;
+	char *c_ptr;
 
-
+	while (c_page < attr->page_cnt) {
+		if (!attr->pages[c_page]) {
+			if (param == attr->page_fill)
+				break;
+			else
+				count += attr->page_size - p_off;
+		} else {
+			c_ptr = memchr(attr->pages[c_page] + p_off, param,
+				       attr->page_size - p_off);
+			if (c_ptr) {
+				count += c_ptr - (attr->pages[c_page] + p_off);
+				break;
+			}
+		}
+		p_off = 0;
+		c_page++;
+	}
+	return count;
 }
+EXPORT_SYMBOL(mtdx_attr_value_string_verify);
 
-int mtdx_attr_value_be_num_print(struct mtdx_attr *attr, int offset,
-				 char *out_buf, unsigned int out_count,
-				 long param)
+char *mtdx_attr_value_string_print(struct mtdx_attr *attr, int offset, int size,
+				   long param)
 {
-	unsigned long long val;
+	char *rv = kmalloc(size, GFP_KERNEL);
+
+	if (!rv)
+		return rv;
+
+	if (size != mtdx_attr_get_byte_range(attr, rv, offset, size)) {
+		kfree(rv);
+		return NULL;
+	}
+
+	return rv;
+}
+EXPORT_SYMBOL(mtdx_attr_value_string_print);
+
+char *mtdx_attr_value_be_num_print(struct mtdx_attr *attr, int offset, int size,
+				   long param)
+{
+	unsigned long long val = 0;
 	char format[8];
 
-	if (param > 8)
-		return -EINVAL;
+	if (size > 8)
+		return NULL;
 
-	if (param != mtdx_attr_get_byte_range(attr, &val, offset, count))
-		return -EINVAL;
+	if (size != mtdx_attr_get_byte_range(attr, &val, offset, size))
+		return NULL;
 
 	val = be64_to_cpu(val);
 
-	if (param <= sizeof(int)) {
-		sprintf(format, "%%0%dx", param * 2);
-		return snprintf(out_buf, out_count, format, (unsigned int)val);
-	} else if (param <= sizeof(long) {
-		sprintf(format, "%%0%dlx", param * 2);
-		return snprintf(out_buf, out_count, format, (unsigned long)val);
-	} else if (param <= sizeof(long long) {
-		sprintf(format, "%%0%dllx", param * 2);
-		return snprintf(out_buf, out_count, format,
-				(unsigned long long)val);
+	if (size <= sizeof(int)) {
+		sprintf(format, "%%0%dx", size * 2);
+		return kasprintf(GFP_KERNEL, format, (unsigned int)val);
+	} else if (size <= sizeof(long)) {
+		sprintf(format, "%%0%dlx", size * 2);
+		return kasprintf(GFP_KERNEL, format, (unsigned long)val);
+	} else if (size <= sizeof(long long)) {
+		sprintf(format, "%%0%dllx", size * 2);
+		return kasprintf(GFP_KERNEL, format, (unsigned long long)val);
 	} else
-		return -EINVAL;
+		return NULL;
 }
+EXPORT_SYMBOL(mtdx_attr_value_be_num_print);
 
-int mtdx_attr_value_le_num_print(struct mtdx_attr *attr, int offset,
-				 char *out_buf, unsigned int out_count,
-				 long param)
+char *mtdx_attr_value_le_num_print(struct mtdx_attr *attr, int offset, int size,
+				   long param)
 {
-	unsigned long long val;
+	unsigned long long val = 0;
 	char format[8];
 
-	if (param > 8)
-		return -EINVAL;
+	if (size > 8)
+		return NULL;
 
-	if (param != mtdx_attr_get_byte_range(attr, &val, offset, count))
-		return -EINVAL;
+	if (size != mtdx_attr_get_byte_range(attr, &val, offset, size))
+		return NULL;
 
 	val = le64_to_cpu(val);
 
-	if (param <= sizeof(int)) {
-		sprintf(format, "%%0%dx", param * 2);
-		return snprintf(out_buf, out_count, format, (unsigned int)val);
-	} else if (param <= sizeof(long) {
-		sprintf(format, "%%0%dlx", param * 2);
-		return snprintf(out_buf, out_count, format, (unsigned long)val);
-	} else if (param <= sizeof(long long) {
-		sprintf(format, "%%0%dllx", param * 2);
-		return snprintf(out_buf, out_count, format, (unsigned long long)val);
+	if (size <= sizeof(int)) {
+		sprintf(format, "%%0%dx", size * 2);
+		return kasprintf(GFP_KERNEL, format, (unsigned int)val);
+	} else if (size <= sizeof(long)) {
+		sprintf(format, "%%0%dlx", size * 2);
+		return kasprintf(GFP_KERNEL, format, (unsigned long)val);
+	} else if (size <= sizeof(long long)) {
+		sprintf(format, "%%0%dllx", size * 2);
+		return kasprintf(GFP_KERNEL, format, (unsigned long long)val);
 	} else
-		return -EINVAL;
+		return NULL;
 }
+EXPORT_SYMBOL(mtdx_attr_value_le_num_print);

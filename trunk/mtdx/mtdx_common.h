@@ -108,7 +108,8 @@ struct mtdx_dev {
 	unsigned int          ord;
 
 	/* notify device of pending requests                          */
-	void                 (*new_request)(struct mtdx_dev *this_dev);
+	int                  (*new_request)(struct mtdx_dev *this_dev,
+					    struct mtdx_dev *req_dev);
 	
 	/* get any available requests from device                     */
 	struct mtdx_request  *(*get_request)(struct mtdx_dev *this_dev);

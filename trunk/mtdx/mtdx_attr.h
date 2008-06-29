@@ -22,9 +22,8 @@ struct mtdx_attr_value {
 	long             param;
 	int              (*verify)(struct mtdx_attr *attr, int offset,
 				   long param);
-	int              (*print)(struct mtdx_attr *attr, int offset,
-				  char *out_buf, unsigned int out_count,
-				  long param);
+	char             *(*print)(struct mtdx_attr *attr, int offset, int size,
+				   long param);
 };
 
 struct mtdx_attr_entry {
@@ -51,4 +50,24 @@ struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, unsigned int page_cnt,
 				  unsigned int page_size);
 int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values);
 
+
+/* Verification function is applied to attribute blob at certain offset and
+ * returns number of bytes that will be consumed by current value (if positive)
+ * or error code (if negative).
+ */
+
+int mtdx_attr_value_range_verify(struct mtdx_attr *attr, int offset,
+				 long param);
+int mtdx_attr_value_string_verify(struct mtdx_attr *attr, int offset,
+				  long param);
+
+/* Print function should set the representation of the value into newly
+ * allocated buffer, which will be later freed by kfree.
+ */
+char *mtdx_attr_value_string_print(struct mtdx_attr *attr, int offset, int size,
+				   long param);
+char *mtdx_attr_value_be_num_print(struct mtdx_attr *attr, int offset, int size,
+				   long param);
+char *mtdx_attr_value_le_num_print(struct mtdx_attr *attr, int offset, int size,
+				   long param);
 #endif
