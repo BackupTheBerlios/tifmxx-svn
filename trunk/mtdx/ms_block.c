@@ -123,6 +123,10 @@ char *ms_block_attr_date_print(struct mtdx_attr *attr, int offset, int size,
 			       long param)
 {
 	unsigned char val[8];
+	char tz_str[7]; /* +xx:xx */
+	char year_str[5], date_str[5][3];
+	int v1;
+	char *rv;
 
 	if (size != 8)
 		return NULL;
@@ -130,8 +134,34 @@ char *ms_block_attr_date_print(struct mtdx_attr *attr, int offset, int size,
 	if (mtdx_attr_get_byte_range(attr, &val, offset, size) != size)
 		return NULL;
 
+	if (val[0] == 0x80)
+		strcpy(tz_str, "+??");
+	else {
+		int v2;
+		v1 = v2 = val[0];
+		v1 /= 4;
+		if (v2 < 0)
+			v2 = -v2;
+		v2 = (v2 % 4) * 15;
+		snprintf(tz_str, sizeof(tz_str), "%+d:%d", v1, v2);
+	}
 
-	return NULL;
+	v1 = (val[1] << 8) + val[2];
+	if (v1 == 0xffff)
+		strcpy(year_str, "xxxx");
+	else
+		snprintf(year_str, sizeof(year_str), "%04d", v1);
+
+	for (v1 = 0; v1 < 5; ++v1) {
+		if (val[v1 + 3] == 0xff)
+			strcpy(date_str[v1], "xx");
+		else
+			snprintf(date_str[v1], 3, "%02d", val[v1 + 3]);
+	}
+
+	return kasprintf(GFP_KERNEL, "GMT%s %s-%s-%s %s:%s:%s", tz_str,
+			 year_str, date_str[0], date_str[1], date_str[2],
+			 date_str[3], date_str[4]);
 }
 
 struct mtdx_attr_value ms_block_boot_attr_values[] = {
@@ -1264,23 +1294,65 @@ static int ms_block_check_card(struct memstick_dev *card)
 	return rc;
 }
 
+static int ms_block_wake_next(struct ms_block_data *msb)
+{
+	int rc = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(&msb->lock, flags);
+	if (!msb->active || !(msb->stopped || msb->req_dev))
+		rc = 1;
+	spin_unlock_irqrestore(&msb->lock, flags);
+	return rc;
+}
+
 static void ms_block_stop(struct memstick_dev *card)
 {
-#warning Implement!!!
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	unsigned long flags;
+
+	spin_lock_irqsave(&msb->lock, flags);
+	while (1) {
+		if (!msb->active || msb->stopped)
+			break;
+
+		if (!msb->req_dev) {
+			msb->stopped = 1;
+			break;
+		}
+
+		spin_unlock_irqrestore(&msb->lock, flags);
+		wait_event(msb->req_wq, ms_block_wake_next(msb));
+		spin_lock_irqsave(&msb->lock, flags);
+	}
+	spin_unlock_irqrestore(&msb->lock, flags);
 }
 
 static void ms_block_start(struct memstick_dev *card)
 {
-#warning Implement!!!
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	unsigned long flags;
+	
+	spin_lock_irqsave(&msb->lock, flags);
+	if (!msb->stopped)
+		goto out;
+
+	msb->stopped = 0;
+	if (!msb->active)
+		wake_up_all(&msb->req_wq);
+	else if (msb->req_dev)
+		wake_up(&msb->req_wq);
+out:
+	spin_unlock_irqrestore(&msb->lock, flags);
 }
 
-static int ms_block_dummy_new_mtdx_request(struct mtdx_dev *this_dev,
+static int ms_block_mtdx_dummy_new_request(struct mtdx_dev *this_dev,
 					   struct mtdx_dev *req_dev)
 {
 	return -ENODEV;
 }
 
-static int ms_block_new_mtdx_request(struct mtdx_dev *this_dev,
+static int ms_block_mtdx_new_request(struct mtdx_dev *this_dev,
 				     struct mtdx_dev *req_dev)
 {
 	struct memstick_dev *card = container_of(this_dev->dev.parent,
@@ -1292,21 +1364,18 @@ static int ms_block_new_mtdx_request(struct mtdx_dev *this_dev,
 
 	spin_lock_irqsave(&msb->lock, flags);
 	while (1) {
-		if (!msb->active)
+		if (!msb->active) {
 			rc = -ENODEV;
-		else if (msb->stopped)
-			rc = -EAGAIN;
-
-		if (rc)
 			break;
+		}
 
-		if (!msb->req_dev) {
+		if (!(msb->stopped || msb->req_dev)) {
 			msb->req_dev = req_dev;
 			break;
 		} else {
 			spin_unlock_irqrestore(&msb->lock, flags);
 			rc = wait_event_interruptible(msb->req_wq,
-						      !(msb->req_dev));
+						      ms_block_wake_next);
 			spin_lock_irqsave(&msb->lock, flags);
 		}
 	}
@@ -1329,9 +1398,9 @@ static void ms_block_sysfs_unregister(struct memstick_dev *card)
 #warning Implement!!!
 }
 
-static int ms_block_oob_to_info(struct mtdx_dev *this_dev,
-				struct mtdx_page_info *p_info,
-				void *oob)
+static int ms_block_mtdx_oob_to_info(struct mtdx_dev *this_dev,
+				     struct mtdx_page_info *p_info,
+				     void *oob)
 {
 	struct memstick_dev *card = container_of(this_dev->dev.parent,
 						 struct memstick_dev,
@@ -1380,9 +1449,9 @@ static int ms_block_oob_to_info(struct mtdx_dev *this_dev,
 	return 0;
 }
 
-static int ms_block_info_to_oob(struct mtdx_dev *this_dev,
-				void *oob,
-				struct mtdx_page_info *p_info)
+static int ms_block_mtdx_info_to_oob(struct mtdx_dev *this_dev,
+				     void *oob,
+				     struct mtdx_page_info *p_info)
 {
 	struct ms_extra_data_register *ms_oob = oob;
 
@@ -1415,8 +1484,8 @@ static int ms_block_info_to_oob(struct mtdx_dev *this_dev,
 	return 0;
 }
 
-static int ms_block_get_param(struct mtdx_dev *this_dev, enum mtdx_param param,
-			      void *val)
+static int ms_block_mtdx_get_param(struct mtdx_dev *this_dev,
+				   enum mtdx_param param, void *val)
 {
 	struct memstick_dev *card = container_of(this_dev->dev.parent,
 						 struct memstick_dev,
@@ -1484,10 +1553,10 @@ static int ms_block_probe(struct memstick_dev *card)
 		goto err_out_free;
 	}
 
-	msb->mdev->new_request = ms_block_new_mtdx_request;
-	msb->mdev->oob_to_info = ms_block_oob_to_info;
-	msb->mdev->info_to_oob = ms_block_info_to_oob;
-	msb->mdev->get_param = ms_block_get_param;
+	msb->mdev->new_request = ms_block_mtdx_new_request;
+	msb->mdev->oob_to_info = ms_block_mtdx_oob_to_info;
+	msb->mdev->info_to_oob = ms_block_mtdx_info_to_oob;
+	msb->mdev->get_param = ms_block_mtdx_get_param;
 
 	rc = ms_block_sysfs_register(card);
 	if (rc)
@@ -1513,7 +1582,7 @@ static void ms_block_remove(struct memstick_dev *card)
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	unsigned long flags;
 
-	msb->mdev->new_request = ms_block_dummy_new_mtdx_request;
+	msb->mdev->new_request = ms_block_mtdx_dummy_new_request;
 
 	spin_lock_irqsave(&msb->lock, flags);
 	msb->active = 0;

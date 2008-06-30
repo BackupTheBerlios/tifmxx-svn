@@ -80,6 +80,63 @@ unsigned int mtdx_attr_set_byte_range(struct mtdx_attr *attr, void *buf,
 }
 EXPORT_SYMBOL(mtdx_attr_set_byte_range);
 
+static int mtdx_attr_verify_print(struct mtdx_attr *attr,
+				  struct mtdx_attr_entry *entry,
+				  unsigned int attr_off, char *out_buf,
+				  unsigned int out_off, unsigned int *out_size)
+{
+	struct mtdx_attr_value *c_val;
+	unsigned int val_cnt = 0, p_size = 0, l_size;
+	int rc = 0, c_size, p_size = 0;
+	char *c_buf;
+
+	while (1) {
+		c_val = entry->values[val_cnt++];
+		if (!c_val->verify)
+			break;
+
+		c_size = c_val->verify(attr, attr_off, c_val->param);
+		if (c_size < 0) {
+			rc = c_size;
+			break;
+		}
+
+		l_size = 0;
+
+		if (c_val->name)
+			l_size = strlen(c_val->name) + 1;
+
+		if (c_val->print) {
+			c_buf = c_val->print(attr, attr_off, c_size,
+					     c_val->param);
+			if (!c_buf) {
+				rc = -ENOMEM;
+				break;
+			}
+
+			if (l_size)
+				l_size++;
+
+			l_size += strlen(c_buf) + 1;
+		}
+
+		if (l_size && out_buf) {
+			if (out_off > p_size) {
+				off_p = 0;
+				
+			}
+			int off_s = out_off - p_size;
+			int off_p = 
+			if (off_s <= 0)
+				off_s = 0;
+
+			
+			int off_e = (out_off + out_size) - (p_size + l_size);
+			if (off_s < 0 && off_e)
+		}
+	}
+}
+
 void mtdx_attr_free(struct mtdx_attr *attr)
 {
 	unsigned int cnt;
@@ -109,7 +166,8 @@ struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, unsigned int page_cnt,
 }
 EXPORT_SYMBOL(mtdx_attr_alloc);
 
-int mtdx_attr_value_range_verify(struct mtdx_attr *attr, int offset, long param)
+int mtdx_attr_value_range_verify(struct mtdx_attr *attr, unsigned int offset,
+				 long param)
 {
 	if ((offset + param) <= (attr->page_cnt * attr->page_size))
 		return param;
@@ -118,7 +176,7 @@ int mtdx_attr_value_range_verify(struct mtdx_attr *attr, int offset, long param)
 }
 EXPORT_SYMBOL(mtdx_attr_value_range_verify);
 
-int mtdx_attr_value_string_verify(struct mtdx_attr *attr, int offset,
+int mtdx_attr_value_string_verify(struct mtdx_attr *attr, unsigned int offset,
 				  long param)
 {
 	unsigned int c_page = offset / attr->page_size;
@@ -147,8 +205,8 @@ int mtdx_attr_value_string_verify(struct mtdx_attr *attr, int offset,
 }
 EXPORT_SYMBOL(mtdx_attr_value_string_verify);
 
-char *mtdx_attr_value_string_print(struct mtdx_attr *attr, int offset, int size,
-				   long param)
+char *mtdx_attr_value_string_print(struct mtdx_attr *attr, unsigned int offset,
+				   unsigned int size, long param)
 {
 	char *rv = kmalloc(size, GFP_KERNEL);
 
@@ -164,8 +222,8 @@ char *mtdx_attr_value_string_print(struct mtdx_attr *attr, int offset, int size,
 }
 EXPORT_SYMBOL(mtdx_attr_value_string_print);
 
-char *mtdx_attr_value_be_num_print(struct mtdx_attr *attr, int offset, int size,
-				   long param)
+char *mtdx_attr_value_be_num_print(struct mtdx_attr *attr, unsigned int offset,
+				   unsigned int size, long param)
 {
 	unsigned long long val = 0;
 	char format[8];
@@ -192,8 +250,8 @@ char *mtdx_attr_value_be_num_print(struct mtdx_attr *attr, int offset, int size,
 }
 EXPORT_SYMBOL(mtdx_attr_value_be_num_print);
 
-char *mtdx_attr_value_le_num_print(struct mtdx_attr *attr, int offset, int size,
-				   long param)
+char *mtdx_attr_value_le_num_print(struct mtdx_attr *attr, unsigned int offset,
+				   unsigned int size, long param)
 {
 	unsigned long long val = 0;
 	char format[8];
