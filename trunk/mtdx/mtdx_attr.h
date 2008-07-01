@@ -28,12 +28,16 @@ struct mtdx_attr_value {
 
 struct mtdx_attr_entry {
 	struct list_head       node;
+	struct bin_attribute   sysfs_attr;
 	struct mtdx_attr_value *values;
+	unsigned int           skip;
 };
 
 struct mtdx_attr {
 	struct mtdx_dev        *mdev;
-	struct attribute_group grp;
+	struct mutex           *lock;
+	struct attribute_group sysfs_grp;
+	struct bin_attribute   sysfs_blob;
 	unsigned int           page_cnt;
 	unsigned int           page_size;
 	unsigned int           page_fill;
@@ -46,9 +50,11 @@ unsigned int mtdx_attr_get_byte_range(struct mtdx_attr *attr, void *buf,
 unsigned int mtdx_attr_set_byte_range(struct mtdx_attr *attr, void *buf,
 				      unsigned int offset, unsigned int count);
 void mtdx_attr_free(struct mtdx_attr *attr);
-struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, unsigned int page_cnt,
+struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, const char *name, 
+				  unsigned int page_cnt,
 				  unsigned int page_size);
-int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values);
+int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values
+			unsigned int skip);
 
 
 /* Verification function is applied to attribute blob at certain offset and
