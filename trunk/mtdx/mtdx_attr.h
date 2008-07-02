@@ -41,7 +41,9 @@ struct mtdx_attr {
 	unsigned int           page_cnt;
 	unsigned int           page_size;
 	unsigned int           page_fill;
-	struct mtdx_attr_entry *entries;
+	unsigned int           last_offset;
+	struct list_head       entries;
+	struct list_head       bad_entries;
 	char                   *pages[];
 };
 
@@ -54,7 +56,7 @@ struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, const char *name,
 				  unsigned int page_cnt,
 				  unsigned int page_size);
 int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values
-			unsigned int skip);
+			const char *name, unsigned int skip);
 
 
 /* Verification function is applied to attribute blob at certain offset and

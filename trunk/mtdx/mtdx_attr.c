@@ -128,16 +128,63 @@ static int append_string(char *buf, unsigned int buf_off,
 	return str_size;
 }
 
-static int mtdx_attr_verify_print(struct mtdx_attr *attr,
+static int mtdx_attr_verify_entry(struct mtdx_attr *attr,
 				  struct mtdx_attr_entry *entry,
-				  unsigned int attr_off, char *out_buf,
-				  unsigned int *out_off, int out_size)
+				  unsigned int attr_off)
+{
+	struct mtdx_attr_value *c_val;
+	unsigned int val_cnt = 0;
+	int rc = 0, c_size;
+
+	if (!entry->values) {
+		if ((attr_off + entry->skip)
+		    <= (attr->page_cnt * attr->page_size))
+			return entry->skip;
+		else
+			return -E2BIG;
+	}
+
+	while (1) {
+		c_val = entry->values[val_cnt++];
+		if (!c_val->verify)
+			break;
+
+		c_size = c_val->verify(attr, attr_off, c_val->param);
+		if (c_size < 0) {
+			rc = c_size;
+			break;
+		}
+
+		rc += c_size;
+	}
+
+	if (rc >= 0) {
+		rc += entry->skip;
+		if ((attr_off + rc) >= (attr->page_cnt * attr->page_size))
+			rc = -E2BIG;
+	}
+
+	return rc;
+}
+
+static int mtdx_attr_print_entry(struct mtdx_attr *attr,
+				 struct mtdx_attr_entry *entry,
+				 unsigned int attr_off, char *out_buf,
+				 unsigned int *out_off, int out_size)
 {
 	struct mtdx_attr_value *c_val;
 	unsigned int val_cnt = 0, l_size;
 	unsigned int c_str_off = 0, c_str_size;
 	int rc = 0, c_size;
 	char *c_buf;
+
+	if (!entry->values) {
+		if ((attr_off + entry->skip)
+		    <= (attr->page_cnt * attr->page_size))
+			return entry->skip;
+		else
+			return -E2BIG;
+	}
 
 	while (1) {
 		if (out_buf && (out_size <= 0))
@@ -208,8 +255,104 @@ static int mtdx_attr_verify_print(struct mtdx_attr *attr,
 		}
 	}
 
+	if (rc >= 0) {
+		rc += entry->skip;
+		if ((attr_off + rc) >= (attr->page_cnt * attr->page_size))
+			rc = -E2BIG;
+	}
+
 	return rc;
 }
+
+static int mtdx_attr_verify_all(struct mtdx_attr *attr)
+{
+	struct list_head *p;
+	struct mtdx_attr_entry *entry;
+	int rc = 0;
+
+	attr->last_offset = 0;
+
+	__list_for_each(p, attr->entries) {
+		entry = list_entry(p, struct mtdx_attr_entry, node);
+
+		rc = mtdx_attr_verify_entry(attr, entry, attr->last_offset);
+		if (rc >= 0)
+			attr->last_offset += rc;
+		else {
+			struct list_head *q;
+
+			while (p != &attr->entries) {
+				q= p->next;
+				list_move_tail(p, &attr->bad_entries);
+				entry = list_entry(p, struct mtdx_attr_entry,
+						   node);
+				sysfs_remove_file_from_group(
+					&attr->mdev.dev.kobj,
+					&entry->sysfs_attr.attr,
+					attr->sysfs_grp.name);
+				p = q;
+			}
+			return rc;
+		}
+	}
+
+	while (!list_empty(&attr->bad_entries)) {
+		
+	}
+
+	return 0;
+}
+
+int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values,
+			const char *name, unsigned int skip)
+{
+	struct mtdx_attr_entry *entry = NULL;
+	unsigned int p_off = 0;
+	int rc = 0;
+
+	mutex_lock(&attr->lock);
+	if (attr->bad_entries) {
+		rc = -EACCESS;
+		goto out;
+	}
+
+	if ((value && !name) || (!value && !skip)) {
+		rc = -EINVAL;
+		goto out;
+	}
+		
+	entry = kzalloc(sizeof(struct mtdx_attr_entry), GFP_KERNEL);
+	if (!entry) {
+		rc = -ENOMEM;
+		goto out;
+	}
+
+	entry->values = values;
+	entry->skip = skip;
+
+	rc = mtdx_attr_print_entry(attr, entry, attr->last_offset, null,
+				   &p_off, 0);
+
+	if (rc < 0)
+		goto out;
+
+	list_add_tail(&entry->node, attr->entries);
+	entry->sysfs_attr.attr.name = name;
+	entry->sysfs_attr.attr.mode = 0444;
+	entry->sysfs_attr.size = p_off;
+	entry->sysfs_attr.private = attr;
+	entry->sysfs_attr.read = mtdx_attr_entry_read;
+
+	rc = sysfs_add_file_to_group(&attr->mdev.dev.kobj, &entry->sysfs_attr,
+				     attr->sysfs_grp.name);
+out:
+	if (rc)
+		kfree(entry);
+
+	mutex_unlock(&attr->lock);
+	return rc;
+}
+EXPORT_SYMBOL(mtdx_attr_add_entry);
 
 void mtdx_attr_free(struct mtdx_attr *attr)
 {
@@ -257,12 +400,15 @@ struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, const char *name,
 		rc = -ENOMEM;
 		goto err_out;
 	}
-	attr->sysfs_blob.attr.mode = 0600;
+	attr->sysfs_blob.attr.mode = 0644;
 
 	attr->sysfs_blob.size = page_cnt * page_size;
 	attr->sysfs_blob.private = attr;
 	attr->sysfs_blob.read = mtdx_attr_blob_read;
 	attr->sysfs_blob.write = mtdx_attr_blob_write;
+
+	INIT_LIST_HEAD(attr->entries);
+	INIT_LIST_HEAD(attr->bad_entries);
 
 	rc = sysfs_add_file_to_group(&mdev->dev.kobj, &attr->sysfs_blob, name);
 	if (rc)
