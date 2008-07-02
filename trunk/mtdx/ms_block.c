@@ -76,8 +76,9 @@ struct ms_boot_attr_info {
 	unsigned char      reserved2[15];
 } __attribute__((packed));
 
-int ms_block_attr_date_verify(struct mtdx_attr *attr, int offset,
-			      long param)
+static int ms_block_attr_date_verify(struct mtdx_attr *attr,
+				     unsigned int offset,
+				     long param)
 {
 	unsigned char val[8];
 	const char days[] = {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
@@ -119,14 +120,14 @@ int ms_block_attr_date_verify(struct mtdx_attr *attr, int offset,
 	return 8;
 }
 
-char *ms_block_attr_date_print(struct mtdx_attr *attr, int offset, int size,
-			       long param)
+static char *ms_block_attr_date_print(struct mtdx_attr *attr,
+				      unsigned int offset,
+				      unsigned int size, long param)
 {
 	unsigned char val[8];
 	char tz_str[7]; /* +xx:xx */
 	char year_str[5], date_str[5][3];
 	int v1;
-	char *rv;
 
 	if (size != 8)
 		return NULL;
@@ -181,8 +182,10 @@ struct mtdx_attr_value ms_block_boot_attr_values[] = {
 	 mtdx_attr_value_be_num_print},
 	{"Format unique value 2", 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
+
 	{"Assembly date and time", 0, ms_block_attr_date_verify,
 	 ms_block_attr_date_print},
+
 	{"Format unique value 3", 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
 	{"Manufacturer area", 3, mtdx_attr_value_range_verify,
@@ -1375,7 +1378,7 @@ static int ms_block_mtdx_new_request(struct mtdx_dev *this_dev,
 		} else {
 			spin_unlock_irqrestore(&msb->lock, flags);
 			rc = wait_event_interruptible(msb->req_wq,
-						      ms_block_wake_next);
+						      ms_block_wake_next(msb));
 			spin_lock_irqsave(&msb->lock, flags);
 		}
 	}

@@ -30,6 +30,8 @@ struct mtdx_attr_entry {
 	struct list_head       node;
 	struct bin_attribute   sysfs_attr;
 	struct mtdx_attr_value *values;
+	unsigned int           offset;
+	unsigned int           c_size;
 	unsigned int           skip;
 };
 
@@ -41,7 +43,6 @@ struct mtdx_attr {
 	unsigned int           page_cnt;
 	unsigned int           page_size;
 	unsigned int           page_fill;
-	unsigned int           last_offset;
 	struct list_head       entries;
 	struct list_head       bad_entries;
 	char                   *pages[];
@@ -55,7 +56,7 @@ void mtdx_attr_free(struct mtdx_attr *attr);
 struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, const char *name, 
 				  unsigned int page_cnt,
 				  unsigned int page_size);
-int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values
+int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values,
 			const char *name, unsigned int skip);
 
 
