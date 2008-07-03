@@ -20,28 +20,17 @@
 
 #define DRIVER_NAME "ms_block"
 
-struct ms_boot_header {
-	unsigned short block_id;
-	unsigned short format_reserved;
-	unsigned char  reserved0[184];
-	unsigned char  data_entry;
-	unsigned char  reserved1[179];
-} __attribute__((packed));
-
-struct ms_system_item {
+struct ms_block_system_item {
 	unsigned int  start_addr;
 	unsigned int  data_size;
 	unsigned char data_type_id;
+#define MS_BLOCK_ENTRY_BAD_BLOCKS 0x01
+#define MS_BLOCK_ENTRY_CIS_IDI    0x0a
+
 	unsigned char reserved[3];
 } __attribute__((packed));
 
-struct ms_system_entry {
-	struct ms_system_item disabled_block;
-	struct ms_system_item cis_idi;
-	unsigned char         reserved[24];
-} __attribute__((packed));
-
-struct ms_boot_attr_info {
+struct ms_block_boot_attr_info {
 	unsigned char      memorystick_class;
 	unsigned char      format_unique_value1;
 	unsigned short     block_size;
@@ -76,6 +65,20 @@ struct ms_boot_attr_info {
 	unsigned char      reserved2[15];
 } __attribute__((packed));
 
+struct ms_block_boot_header {
+	unsigned short                 block_id;
+#define MS_BLOCK_ID_BOOT 0x0001
+
+	unsigned short                 format_reserved;
+	unsigned char                  reserved0[184];
+	unsigned char                  sys_entry_cnt;
+	unsigned char                  reserved1[179];
+	struct ms_block_system_item    sys_entry[4];
+	struct ms_block_boot_attr_info info;
+} __attribute__((packed));
+
+#define MS_BLOCK_MAX_BOOT_ADDR 12
+
 static int ms_block_attr_date_verify(struct mtdx_attr *attr,
 				     unsigned int offset,
 				     long param)
@@ -83,7 +86,7 @@ static int ms_block_attr_date_verify(struct mtdx_attr *attr,
 	unsigned char val[8];
 	const char days[] = {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
 
-	if (mtdx_attr_get_byte_range(attr, &val, offset, sizeof(val))
+	if (__mtdx_attr_get_byte_range(attr, &val, offset, sizeof(val))
 	    != sizeof(val))
 		return -E2BIG;
 
@@ -132,7 +135,7 @@ static char *ms_block_attr_date_print(struct mtdx_attr *attr,
 	if (size != 8)
 		return NULL;
 
-	if (mtdx_attr_get_byte_range(attr, &val, offset, size) != size)
+	if (__mtdx_attr_get_byte_range(attr, &val, offset, size) != size)
 		return NULL;
 
 	if (val[0] == 0x80)
@@ -182,10 +185,8 @@ struct mtdx_attr_value ms_block_boot_attr_values[] = {
 	 mtdx_attr_value_be_num_print},
 	{"Format unique value 2", 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-
 	{"Assembly date and time", 0, ms_block_attr_date_verify,
 	 ms_block_attr_date_print},
-
 	{"Format unique value 3", 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
 	{"Manufacturer area", 3, mtdx_attr_value_range_verify,
@@ -229,12 +230,6 @@ struct mtdx_attr_value ms_block_boot_attr_values[] = {
 	{NULL, 15, mtdx_attr_value_range_verify, NULL},
 	{NULL, 0, NULL, NULL}
 };
-
-struct ms_boot_page {
-	struct ms_boot_header    header;
-	struct ms_system_entry   entry;
-	struct ms_boot_attr_info attr;
-} __attribute__((packed));
 
 struct ms_idi {
 	unsigned short general_config;
@@ -285,12 +280,15 @@ struct ms_block_data {
 #define MS_BLOCK_FLG_PAGE_INC 0x08
 #define MS_BLOCK_FLG_COPY     0x10
 
-	struct ms_boot_attr_info boot_attr;
-	char                     cis[256];
-	struct ms_idi            idi;
-	unsigned int             boot_blocks[2];
+	struct {
+		unsigned int     phy_block;
+		struct mtdx_attr *attr;
+	} boot_blocks[2];
+
 	unsigned int             *bad_blocks;
-	unsigned int             page_size;
+	struct mtdx_attr_value   *bad_blocks_val;
+	struct mtdx_dev_geo      geo;
+	struct hd_geometry       hd_geo;
 
 	wait_queue_head_t        req_wq;
 	struct mtdx_dev          *req_dev;
@@ -481,7 +479,8 @@ static int ms_block_set_req_data(struct ms_block_data *msb,
 		return -EINVAL;
 
 	if (msb->page_count - msb->t_count) {
-		if ((msb->req_sg.length - msb->sg_offset) < msb->page_size) {
+		if ((msb->req_sg.length - msb->sg_offset)
+		    < msb->geo.page_size) {
 			mrq->error = mtdx_get_data_buf_sg(msb->req_in,
 							  &msb->req_sg);
 			msb->sg_offset = 0;
@@ -490,7 +489,7 @@ static int ms_block_set_req_data(struct ms_block_data *msb,
 		}
 		memcpy(&sg, &msb->req_sg, sizeof(sg));
 		sg.offset += msb->sg_offset;
-		sg.length = msb->page_size;
+		sg.length = msb->geo.page_size;
 		memstick_init_req_sg(mrq, tpc, &sg);
 	}
 
@@ -1016,7 +1015,7 @@ static int h_ms_block_set_param_addr_init(struct memstick_dev *card,
 		.block_address_msb = (msb->req_in->phy_block >> 16) & 0xff,
 		.block_address = cpu_to_be16(msb->req_in->phy_block & 0xffff),
 		.cp = MEMSTICK_CP_BLOCK,
-		.page_address = msb->req_in->offset / msb->page_size
+		.page_address = msb->req_in->offset / msb->geo.page_size
 	};
 
 	if ((*mrq)->error)
@@ -1027,7 +1026,7 @@ static int h_ms_block_set_param_addr_init(struct memstick_dev *card,
 	msb->cmd_flags = 0;
 	msb->sg_offset = 0;
 	msb->dst_page = param.page_address;
-	msb->page_count = msb->req_in->length / msb->page_size;
+	msb->page_count = msb->req_in->length / msb->geo.page_size;
 	msb->t_count = 0;
 	msb->trans_err = 0;
 
@@ -1086,7 +1085,8 @@ static int h_ms_block_set_param_addr_init(struct memstick_dev *card,
 		param.block_address = cpu_to_be16(msb->req_in->src.phy_block
 						  & 0xffff);
 		param.cp = MEMSTICK_CP_PAGE | MEMSTICK_CP_EXTRA;
-		param.page_address = msb->req_in->src.offset / msb->page_size;
+		param.page_address = msb->req_in->src.offset
+				     / msb->geo.page_size;
 		msb->src_page = param.page_address;
 		break;
 	default:
@@ -1154,7 +1154,7 @@ static int ms_block_switch_to_parallel(struct memstick_dev *card)
 		.page_address = 0
 	};
 
-	card->next_request = h_ms_block_req_init;
+	card->next_request = h_ms_block_internal_req_init;
 	msb->mrq_handler = h_ms_block_default;
 	memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, &param,
 			  sizeof(param));
@@ -1167,7 +1167,7 @@ static int ms_block_switch_to_parallel(struct memstick_dev *card)
 	msb->system |= MEMSTICK_SYS_PAM;
 	host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_PAR4);
 
-	card->next_request = h_ms_block_req_init;
+	card->next_request = h_ms_block_internal_req_init;
 	msb->mrq_handler = h_ms_block_default;
 	memstick_init_req(&card->current_mrq, MS_TPC_GET_INT, NULL, 1);
 	memstick_new_req(host);
@@ -1186,17 +1186,16 @@ static int ms_block_init_card(struct memstick_dev *card)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct memstick_host *host = card->host;
-	char *buf;
-	struct ms_boot_page *boot_pages[2];
+	struct ms_block_boot_header *header;
 	int rc;
 	unsigned char t_val = MS_CMD_RESET;
 
-	msb->boot_blocks[0] = MTDX_INVALID_BLOCK;
-	msb->boot_blocks[1] = MTDX_INVALID_BLOCK;
-	msb->page_size = sizeof(struct ms_boot_page);
+	msb->boot_blocks[0].phy_block = MTDX_INVALID_BLOCK;
+	msb->boot_blocks[1].phy_block = MTDX_INVALID_BLOCK;
+	msb->geo.page_size = sizeof(struct ms_block_boot_header);
 	msb->system = MEMSTICK_SYS_BAMD;
 
-	card->next_request = h_ms_block_req_init;
+	card->next_request = h_ms_block_internal_req_init;;
 	msb->mrq_handler = h_ms_block_default;
 	memstick_init_req(&card->current_mrq, MS_TPC_SET_CMD, &t_val, 1);
 	card->current_mrq.need_card_int = 0;
@@ -1206,15 +1205,19 @@ static int ms_block_init_card(struct memstick_dev *card)
 	if (card->current_mrq.error)
 		return -ENODEV;
 
-	card->reg_addr = (struct ms_register_addr){
-		offsetof(struct ms_register, status),
-		sizeof(struct ms_status_register),
-		offsetof(struct ms_register, param),
-		sizeof(struct ms_param_register)
-	};
+	if (ms_block_reg_addr_cmp(card, &ms_block_r_stat_w_param)) {
+		card->next_request = h_ms_block_internal_req_init;;
+		msb->mrq_handler = h_ms_block_default;
+		memstick_init_req(&card->current_mrq, MS_TPC_SET_RW_REG_ADRS,
+				  &ms_block_r_stat_w_param,
+				  sizeof(ms_block_r_stat_w_param));
+		memstick_new_req(card->host);
+		wait_for_completion(&card->mrq_complete);
+		if (card->current_mrq.error)
+			return card->current_mrq.error;
 
-	if (memstick_set_rw_addr(card))
-		return -EIO;
+		ms_block_reg_addr_set(card, &ms_block_r_stat_w_param);
+	}
 
 	if (host->caps & MEMSTICK_CAP_PAR4) {
 		if (ms_block_switch_to_parallel(card))
@@ -1222,65 +1225,51 @@ static int ms_block_init_card(struct memstick_dev *card)
 			       "parallel interface\n", card->dev.bus_id);
 	}
 
-	buf = kmalloc(2 * msb->page_size, GFP_KERNEL);
-	if (!buf)
+	header = kzalloc(sizeof(struct ms_block_boot_header), GFP_KERNEL);
+	if (!header)
 		return -ENOMEM;
- 	boot_pages[0] = (struct ms_boot_page*)buf;
-	boot_pages[1] = (struct ms_boot_page*)(buf + msb->page_size);
  
-	rc = ms_block_find_boot_blocks(card, boot_pages, msb->boot_blocks);
-	if (rc || msb->boot_blocks[0] == MTDX_INVALID_BLOCK)
-		goto out_free_buf;
+	msb->boot_blocks[0].phy_block = ms_block_find_boot_block(card, header,
+								 0);
 
-	memcpy(&msb->boot_attr, &boot_pages[0]->attr, sizeof(msb->boot_attr));
-
-	//ms_block_mark_used(msb, boot_blocks[0]);
-	//if (msb->boot_blocks[1] != MTDX_INVALID_BLOCK)
-	//	ms_block_mark_used(msb, boot_blocks[1]);
-
-	rc = ms_block_fetch_bad_blocks(card, boot_pages[0],
-				       msb->boot_blocks[0]);
-
-	if (rc && msb->boot_blocks[1] != MTDX_INVALID_BLOCK) {
-		memcpy(&msb->boot_attr, &boot_pages[1]->attr,
-		       sizeof(msb->boot_attr));
-		msb->boot_blocks[0] = MTDX_INVALID_BLOCK;
-		rc = ms_block_fetch_bad_blocks(card, boot_pages[1],
-					       msb->boot_blocks[1]);
+	if (msb->boot_blocks[0].phy_block == MTDX_INVALID_BLOCK) {
+		rc = -EFAULT;
+		goto err_out;
 	}
 
-	if (rc)
-		goto out_free_buf;
+	msb->geo.zone_cnt_log = 9;
+	msb->geo.log_block_cnt
+		= be16_to_cpu(header->info.number_of_effective_blocks);
+	msb->geo.phy_block_cnt = be16_to_cpu(header->info.number_of_blocks);
+	msb->geo.page_size = be16_to_cpu(header->info.page_size);
+	msb->geo.page_cnt = be16_to_cpu(header->info.block_size)
+			    / msb->geo.page_size;
+	msb->geo.oob_size = sizeof(struct ms_extra_data_register);
 
-	if (boot_blocks[0] != MTDX_INVALID_BLOCK) {
-		rc = ms_block_fetch_cis_idi(card, boot_pages[0],
-					    boot_blocks[0]);
+	msb->boot_blocks[1].phy_block
+		= ms_block_find_boot_block(card, header,
+					   msb->boot_blocks[0].phy_block + 1);
 
-		if (rc && boot_blocks[1] != MTDX_INVALID_BLOCK) {
-			memcpy(&msb->boot_attr, &boot_pages[1]->attr,
-			       sizeof(msb->boot_attr));
-			rc = ms_block_fetch_cis_idi(card, boot_pages[1],
-						    boot_blocks[1]);
-		}
-	} else if (boot_blocks[1] != MTDX_INVALID_BLOCK)
-		rc = ms_block_fetch_cis_idi(card, boot_pages[1],
-					    boot_blocks[1]);
 
-	if (rc)
-		goto out_free_buf;
 
-	card->next_request = h_ms_block_req_init;
-	msb->mrq_handler = h_ms_block_get_ro;
+
+	card->next_request = h_ms_block_internal_req_init;
+	msb->mrq_handler = h_ms_block_default;
 	memstick_init_req(&card->current_mrq, MS_TPC_READ_REG, NULL,
 			  sizeof(struct ms_status_register));
 	memstick_new_req(card->host);
 	wait_for_completion(&card->mrq_complete);
 	rc = card->current_mrq.error;
 
-out_free_buf:
-	kfree(buf);
-	return rc;
+	if (!rc) {
+		msb->read_only = card->current_mrq.data[2]
+				 & MEMSTICK_STATUS0_WP ? 1 : 0;
+		return 0;
+	}
 
+err_out:
+	kfree(header);
+	return rc;
 }
 
 static int ms_block_check_card(struct memstick_dev *card)
@@ -1430,8 +1419,8 @@ static int ms_block_mtdx_oob_to_info(struct mtdx_dev *this_dev,
 		   & (MEMSTICK_OVERWRITE_PGST0 | MEMSTICK_OVERWRITE_PGST1)))
 		p_info->status = MTDX_PAGE_FAILURE;
 	else if (p_info->phy_block != MTDX_INVALID_BLOCK) {
-		if ((p_info->phy_block == msb->boot_blocks[0])
-		     || (p_info->phy_block == msb->boot_blocks[1]))
+		if ((p_info->phy_block == msb->boot_blocks[0].phy_block)
+		     || (p_info->phy_block == msb->boot_blocks[1].phy_block))
 				p_info->status = MTDX_PAGE_RESERVED;
 		else {
 			int cnt;
@@ -1497,19 +1486,11 @@ static int ms_block_mtdx_get_param(struct mtdx_dev *this_dev,
 
 	switch (param) {
 	case MTDX_PARAM_GEO: {
-		struct mtdx_dev_geo *geo = val;
-
-		geo->zone_cnt_log = 9;
-		geo->log_block_cnt
-			= msb->boot_attr.number_of_effective_blocks;
-		geo->phy_block_cnt
-			= msb->boot_attr.number_of_blocks;
-		geo->page_size = msb->boot_attr.page_size;
-		geo->page_cnt = msb->boot_attr.block_size / geo->page_size;
-		geo->oob_size = sizeof(struct ms_extra_data_register);
+		memcpy(val, &msb->geo, sizeof(msb->geo));
 		return 0;
 	}
 	case MTDX_PARAM_HD_GEO: {
+		memcpy(val, &msb->hd_geo, sizeof(msb->hd_geo));
 		struct hd_geometry *geo = val;
 
 		geo->heads = msb->idi.current_logical_heads;

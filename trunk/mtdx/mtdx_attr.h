@@ -42,16 +42,28 @@ struct mtdx_attr {
 	struct bin_attribute   sysfs_blob;
 	unsigned int           page_cnt;
 	unsigned int           page_size;
-	unsigned int           page_fill;
+	char                   page_fill;
+	char                   modified;
 	struct list_head       entries;
 	struct list_head       bad_entries;
 	char                   *pages[];
 };
 
+/* Unlocked version */
+unsigned int __mtdx_attr_get_byte_range(struct mtdx_attr *attr, void *buf,
+					unsigned int offset,
+					unsigned int count);
+unsigned int __mtdx_attr_set_byte_range(struct mtdx_attr *attr, void *buf,
+					unsigned int offset,
+					unsigned int count);
+
+/* Locked version */
 unsigned int mtdx_attr_get_byte_range(struct mtdx_attr *attr, void *buf,
 				      unsigned int offset, unsigned int count);
 unsigned int mtdx_attr_set_byte_range(struct mtdx_attr *attr, void *buf,
 				      unsigned int offset, unsigned int count);
+
+
 void mtdx_attr_free(struct mtdx_attr *attr);
 struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, const char *name, 
 				  unsigned int page_cnt,

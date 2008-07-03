@@ -13,8 +13,9 @@
 #include <linux/module.h>
 #include <linux/err.h>
 
-unsigned int mtdx_attr_get_byte_range(struct mtdx_attr *attr, void *buf,
-				      unsigned int offset, unsigned int count)
+unsigned int __mtdx_attr_get_byte_range(struct mtdx_attr *attr, void *buf,
+					unsigned int offset,
+					unsigned int count)
 {
 	unsigned int i_count = count;
 	unsigned int c_page = offset / attr->page_size;
@@ -41,10 +42,11 @@ unsigned int mtdx_attr_get_byte_range(struct mtdx_attr *attr, void *buf,
 
 	return i_count - count;
 }
-EXPORT_SYMBOL(mtdx_attr_get_byte_range);
+EXPORT_SYMBOL(__mtdx_attr_get_byte_range);
 
-unsigned int mtdx_attr_set_byte_range(struct mtdx_attr *attr, void *buf,
-				      unsigned int offset, unsigned int count)
+unsigned int __mtdx_attr_set_byte_range(struct mtdx_attr *attr, void *buf,
+					unsigned int offset,
+					unsigned int count)
 {
 	unsigned int i_count = count, c_count, cnt;
 	unsigned int c_page = offset / attr->page_size;
@@ -99,7 +101,7 @@ unsigned int mtdx_attr_set_byte_range(struct mtdx_attr *attr, void *buf,
 
 	return i_count - count;
 }
-EXPORT_SYMBOL(mtdx_attr_set_byte_range);
+EXPORT_SYMBOL(__mtdx_attr_set_byte_range);
 
 static int append_string(char *buf, unsigned int buf_off,
 			 int buf_size, char *str,
@@ -329,7 +331,7 @@ static ssize_t mtdx_attr_blob_read(struct kobject *kobj,
 	ssize_t rc = 0;
 
 	mutex_lock(attr->lock);
-	rc = mtdx_attr_get_byte_range(attr, buf, offset, count);
+	rc = __mtdx_attr_get_byte_range(attr, buf, offset, count);
 
 	if (rc >= 0)
 		rc = count;
@@ -344,7 +346,15 @@ static ssize_t mtdx_attr_blob_write(struct kobject *kobj,
 	struct mtdx_attr *attr = sysfs_attr->private;
 	ssize_t rc = 0;
 
-#warning Implement!
+	mutex_lock(attr->lock);
+	if(0 < __mtdx_attr_set_byte_range(attr, buf, offset, count)) {
+		attr->modified = 1;
+		rc = mtdx_attr_verify_all(attr);
+	}
+
+	if (rc >= 0)
+		rc = count;
+	mutex_unlock(attr->lock);
 	return rc;
 }
 
@@ -392,6 +402,14 @@ int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values,
 		goto out;
 	}
 
+	if (name) {
+		entry->sysfs_attr.attr.name = kstrdup(name, GFP_KERNEL);
+		if (!entry->sysfs_attr.attr.name) {
+			rc = -ENOMEM;
+			goto out;
+		}
+	}
+
 	entry->values = values;
 	entry->skip = skip;
 	entry->offset = 0;
@@ -412,7 +430,6 @@ int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values,
 
 	entry->c_size = rc;
 	list_add_tail(&entry->node, &attr->entries);
-	entry->sysfs_attr.attr.name = name;
 	entry->sysfs_attr.attr.mode = 0444;
 	entry->sysfs_attr.size = p_off;
 	entry->sysfs_attr.private = attr;
@@ -422,8 +439,12 @@ int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values,
 				     &entry->sysfs_attr.attr,
 				     attr->sysfs_grp.name);
 out:
-	if (rc)
-		kfree(entry);
+	if (rc) {
+		if (entry) {
+			kfree(entry->sysfs_attr.attr.name);
+			kfree(entry);
+		}
+	}
 
 	mutex_unlock(attr->lock);
 	return rc;
@@ -440,11 +461,13 @@ void mtdx_attr_free(struct mtdx_attr *attr)
 		sysfs_remove_group(&attr->mdev->dev.kobj, &attr->sysfs_grp);
 
 	kfree(attr->sysfs_blob.attr.name);
+	kfree(attr->sysfs_grp.name);
 
 	while (!list_empty(&attr->entries)) {
 		p = attr->entries.next;
 		entry = list_entry(p, struct mtdx_attr_entry, node);
 		list_del(p);
+		kfree(entry->sysfs_attr.attr.name);
 		kfree(entry);
 	}
 
@@ -452,6 +475,7 @@ void mtdx_attr_free(struct mtdx_attr *attr)
 		p = attr->bad_entries.next;
 		entry = list_entry(p, struct mtdx_attr_entry, node);
 		list_del(p);
+		kfree(entry->sysfs_attr.attr.name);
 		kfree(entry);
 	}
 
@@ -479,7 +503,12 @@ struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, const char *name,
 	attr->page_cnt = page_cnt;
 	attr->page_size = page_size;
 
-	attr->sysfs_grp.name = name;
+	attr->sysfs_grp.name = kstrdup(name, GFP_KERNEL);
+	if (!attr->sysfs_grp.name) {
+		rc = -ENOMEM;
+		goto err_out;
+	}
+
 	rc = sysfs_create_group(&mdev->dev.kobj, &attr->sysfs_grp);
 
 	if (rc) {
@@ -561,7 +590,7 @@ char *mtdx_attr_value_string_print(struct mtdx_attr *attr, unsigned int offset,
 	if (!rv)
 		return rv;
 
-	if (size != mtdx_attr_get_byte_range(attr, rv, offset, size)) {
+	if (size != __mtdx_attr_get_byte_range(attr, rv, offset, size)) {
 		kfree(rv);
 		return NULL;
 	}
@@ -579,7 +608,7 @@ char *mtdx_attr_value_be_num_print(struct mtdx_attr *attr, unsigned int offset,
 	if (size > 8)
 		return NULL;
 
-	if (size != mtdx_attr_get_byte_range(attr, &val, offset, size))
+	if (size != __mtdx_attr_get_byte_range(attr, &val, offset, size))
 		return NULL;
 
 	val = be64_to_cpu(val);
@@ -607,7 +636,7 @@ char *mtdx_attr_value_le_num_print(struct mtdx_attr *attr, unsigned int offset,
 	if (size > 8)
 		return NULL;
 
-	if (size != mtdx_attr_get_byte_range(attr, &val, offset, size))
+	if (size != __mtdx_attr_get_byte_range(attr, &val, offset, size))
 		return NULL;
 
 	val = le64_to_cpu(val);
