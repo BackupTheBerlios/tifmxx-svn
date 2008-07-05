@@ -14,38 +14,19 @@
 #include <linux/idr.h>
 #include <linux/err.h>
 
-static DEFINE_IDR(mtdx_dev_idr);
+static DEFINE_IDA(mtdx_dev_ida);
 static DEFINE_SPINLOCK(mtdx_dev_lock);
 
 static void mtdx_free_dev(struct device *dev)
 {
 	struct mtdx_dev *mdev = container_of(dev, struct mtdx_dev, dev);
-	struct mtdx_dev *mdev_r;
-
-	spin_lock(&mtdx_dev_lock);
-	mdev_r = idr_find(&mtdx_dev_idr, mdev->ord);
-	if (mdev_r == mdev)
-		idr_remove(&mtdx_dev_idr, mdev->ord);
-	spin_unlock(&mtdx_dev_lock);
 
 	kfree(mdev);
 }
 
 static int mtdx_dev_match(struct mtdx_dev *mdev, struct mtdx_device_id *id)
 {
-	if (!id->role || !id->id)
-		return 0;
-
-	if (id->role != mdev->id.role)
-		return 0;
-
-	if (id->w_policy != mdev->id.w_policy)
-		return 0;
-
-	if (id->id != mdev->id.id)
-		return 0;
-
-	return 1;
+	return !memcmp(id, &mdev->id, sizeof(struct mtdx_device_id));
 }
 
 static int mtdx_bus_match(struct device *dev, struct device_driver *drv)
@@ -70,10 +51,16 @@ static int mtdx_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
 	struct mtdx_dev *mdev = container_of(dev, struct mtdx_dev, dev);
 
-	if (add_uevent_var(env, "MTDX_ROLE=%02X", mdev->id.role))
+	if (add_uevent_var(env, "MTDX_INP_WMODE=%02X", mdev->id.inp_wmode))
+		return -ENOMEM;
+	if (add_uevent_var(env, "MTDX_OUT_WMODE=%02X", mdev->id.out_wmode))
+		return -ENOMEM;
+	if (add_uevent_var(env, "MTDX_INP_RMODE=%02X", mdev->id.inp_rmode))
+		return -ENOMEM;
+	if (add_uevent_var(env, "MTDX_OUT_RMODE=%02X", mdev->id.out_rmode))
 		return -ENOMEM;
 
-	if (add_uevent_var(env, "MTDX_W_POLICY=%02X", mdev->id.w_policy))
+	if (add_uevent_var(env, "MTDX_TYPE=%04X", mdev->id.type))
 		return -ENOMEM;
 
 	if (add_uevent_var(env, "MTDX_ID=%04X", mdev->id.id))
@@ -107,6 +94,10 @@ static int mtdx_device_remove(struct device *dev)
 		drv->remove(mdev);
 		mdev->dev.driver = NULL;
 	}
+
+	spin_lock(&mtdx_dev_lock);
+	ida_remove(&mtdx_dev_ida, mdev->ord);
+	spin_unlock(&mtdx_dev_lock);
 
 	put_device(dev);
 	return 0;
@@ -144,25 +135,116 @@ static int mtdx_device_resume(struct device *dev)
 
 #endif /* CONFIG_PM */
 
-#define MTDX_ATTR(name, format)                                               \
-static ssize_t name##_show(struct device *dev, struct device_attribute *attr, \
-                            char *buf)                                        \
-{                                                                             \
-	struct mtdx_dev *mdev = container_of(dev, struct mtdx_dev,            \
-					     dev);                            \
-	return sprintf(buf, format, mdev->id.name);                           \
+struct mtdx_print_buf {
+	char         *buf;
+	unsigned int size;
+	unsigned int offset;
+};
+
+static int mtdx_print_child_id(struct device *dev, void *data)
+{
+	struct mtdx_dev *cdev = container_of(dev, struct mtdx_dev, dev);
+	struct mtdx_print_buf *pb = data;
+	int rc;
+
+	if (pb->offset >= pb->size)
+		return -EAGAIN;
+
+	rc = scnprintf(pb->buf + pb->offset, pb->size - pb->offset,
+		       "mtdx%d: iw%02xow%02xir%02xor%02xt%04xi%04x\n",
+		       cdev->ord, cdev->id.inp_wmode, cdev->id.out_wmode,
+		       cdev->id.inp_rmode, cdev->id.out_rmode, cdev->id.type,
+		       cdev->id.id);
+
+	if (rc < 0)
+		return rc;
+
+	pb->offset += rc;
+	return 0;
 }
 
-MTDX_ATTR(role, "%02X");
-MTDX_ATTR(w_policy, "%02X");
-MTDX_ATTR(id, "%02X");
+static ssize_t mtdx_children_show(struct device *dev,
+				  struct device_attribute *attr,
+				  char *buf)
+{
+	struct mtdx_print_buf pb = { buf, PAGE_SIZE, 0 };
+	ssize_t rc;
 
-#define MTDX_ATTR_RO(name) __ATTR(name, S_IRUGO, name##_show, NULL)
+	rc = device_for_each_child(dev, &pb, mtdx_print_child_id);
+
+	if (rc >= 0)
+		rc = pb.offset;
+
+	return rc;
+}
+
+static ssize_t mtdx_children_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct mtdx_device_id id;
+	struct mtdx_dev *pdev = container_of(dev, struct mtdx_dev, dev);
+	struct mtdx_dev *mdev;
+	int rc;
+
+	if (count == strnlen(buf, count))
+		return -EINVAL;
+
+	rc = sscanf(buf, "iw%hhxow%hhxir%hhxor%hhxt%hxi%hx", &id.inp_wmode,
+		    &id.out_wmode, &id.inp_rmode, &id.out_rmode,
+		    &id.type, &id.id);
+
+	if (rc != 6)
+		return -EINVAL;
+
+	if ((pdev->id.inp_wmode != id.out_wmode)
+	    || (pdev->id.inp_rmode != id.out_rmode)) {
+		dev_err(dev, "Couldn't attach child device with "
+			"out_wmode %02x, out_rmode %02x\n", id.out_wmode,
+			id.out_rmode);
+		return -ENODEV;
+	}
+
+	mdev = mtdx_alloc_dev(dev, &id);
+	if (!mdev)
+		return -ENOMEM;
+
+	rc = device_register(&mdev->dev);
+	if (rc) {
+		__mtdx_free_dev(mdev);
+		return rc;
+	}
+	return count;
+}
+
+#define MTDX_ATTR(name, format)                                      \
+static ssize_t mtdx_ ## name ## _show(struct device *dev,            \
+				      struct device_attribute *attr, \
+				      char *buf)                     \
+{                                                                    \
+	struct mtdx_dev *mdev = container_of(dev, struct mtdx_dev,   \
+					     dev);                   \
+	return sprintf(buf, format, mdev->id.name);                  \
+}
+
+MTDX_ATTR(inp_wmode, "%02X");
+MTDX_ATTR(out_wmode, "%02X");
+MTDX_ATTR(inp_rmode, "%02X");
+MTDX_ATTR(out_rmode, "%02X");
+MTDX_ATTR(type, "%04X");
+MTDX_ATTR(id, "%04X");
+
+#define MTDX_ATTR_RO(name) __ATTR(name, S_IRUGO, mtdx_ ## name ## _show, NULL)
 
 static struct device_attribute mtdx_dev_attrs[] = {
-	MTDX_ATTR_RO(role),
-	MTDX_ATTR_RO(w_policy),
+	MTDX_ATTR_RO(inp_wmode),
+	MTDX_ATTR_RO(out_wmode),
+	MTDX_ATTR_RO(inp_rmode),
+	MTDX_ATTR_RO(out_rmode),
+	MTDX_ATTR_RO(type),
 	MTDX_ATTR_RO(id),
+	__ATTR("children", (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH),
+	       mtdx_children_show, mtdx_children_store),
 	__ATTR_NULL
 };
 
@@ -192,37 +274,26 @@ void mtdx_unregister_driver(struct mtdx_driver *drv)
 }
 EXPORT_SYMBOL(mtdx_unregister_driver);
 
-/**
- * Allocate "parent" MTDX device.
- */
-struct mtdx_dev *mtdx_create_dev(struct device *parent,
-				 struct mtdx_device_id *id)
+struct mtdx_dev *mtdx_alloc_dev(struct device *parent,
+				const struct mtdx_device_id *id)
 {
 	struct mtdx_dev *mdev = kzalloc(sizeof(struct mtdx_dev), GFP_KERNEL);
 	int rc;
 
 	if (!mdev)
-		return ERR_PTR(-ENOMEM);
+		return NULL;
 
-	if (!id->role || !id->id) {
-		rc = -EINVAL;
-		goto err_out;
-	}
-
-	mdev->id = *id;
-
-	if (!idr_pre_get(&mtdx_dev_idr, GFP_KERNEL)) {
-		rc = -ENOMEM;
-		goto err_out;
-	}
+	if (!ida_pre_get(&mtdx_dev_ida, GFP_KERNEL))
+		goto err_out_free;
 
 	spin_lock(&mtdx_dev_lock);
-	rc = idr_get_new(&mtdx_dev_idr, mdev, &mdev->ord);
+	rc = ida_get_new(&mtdx_dev_ida, &mdev->ord);
 	spin_unlock(&mtdx_dev_lock);
 
 	if (rc)
-		goto err_out;
+		goto err_out_free;
 
+	memcpy(&mdev->id, id, sizeof(struct mtdx_device_id));
 	mdev->dev.parent = parent;
 	mdev->dev.bus = &mtdx_bus_type;
 	mdev->dev.release = mtdx_free_dev;
@@ -230,75 +301,24 @@ struct mtdx_dev *mtdx_create_dev(struct device *parent,
 	snprintf(mdev->dev.bus_id, sizeof(mdev->dev.bus_id),
 		 "mtdx%d", mdev->ord);
 
-	rc = device_register(&mdev->dev);
-	if (!rc)
-		return mdev;
+	return mdev;
 
-	spin_lock(&mtdx_dev_lock);
-	idr_remove(&mtdx_dev_idr, mdev->ord);
-	spin_unlock(&mtdx_dev_lock);
-
-err_out:
+err_out_free:
 	kfree(mdev);
-	return ERR_PTR(rc);
+	return NULL;
 }
-EXPORT_SYMBOL(mtdx_create_dev);
+EXPORT_SYMBOL(mtdx_alloc_dev);
 
-/**
- * Allocate "child" MTDX device.
- */
-
-struct mtdx_dev *mtdx_create_child(struct mtdx_dev *parent, unsigned int ord,
-				   struct mtdx_device_id *id)
+void __mtdx_free_dev(struct mtdx_dev *mdev)
 {
-	struct mtdx_dev *mdev = kzalloc(sizeof(struct mtdx_dev), GFP_KERNEL);
-	const char *c_code;
-	int rc;
-
-	if (!mdev)
-		return ERR_PTR(-ENOMEM);
-
-	if (!id->role || !id->id) {
-		rc = -EINVAL;
-		goto err_out;
+	if (mdev) {
+		spin_lock(&mtdx_dev_lock);
+		ida_remove(&mtdx_dev_ida, mdev->ord);
+		spin_unlock(&mtdx_dev_lock);
+		kfree(mdev);
 	}
-
-	mdev->id = *id;
-
-	mdev->dev.parent = &parent->dev;
-	mdev->dev.bus = &mtdx_bus_type;
-	mdev->dev.release = mtdx_free_dev;
-	mdev->ord = ord;
-
-	switch (id->role) {
-	case MTDX_ROLE_MTD:
-		if (!id->w_policy)
-			c_code = "rom";
-		else
-			c_code = "ram";
-		break;
-	case MTDX_ROLE_FTL:
-		c_code = "t";
-		break;
-	case MTDX_ROLE_BLK:
-		c_code = "b";
-		break;
-	default:
-		c_code = "g";
-	}
-
-	snprintf(mdev->dev.bus_id, sizeof(mdev->dev.bus_id), "%s%s%d",
-			 parent->dev.bus_id, c_code, ord);
-
-	rc = device_register(&mdev->dev);
-	if (!rc)
-		return mdev;
-
-err_out:
-	kfree(mdev);
-	return ERR_PTR(rc);
 }
-EXPORT_SYMBOL(mtdx_create_child);
+EXPORT_SYMBOL(__mtdx_free_dev);
 
 static int __init mtdx_init(void)
 {
@@ -312,7 +332,7 @@ static int __init mtdx_init(void)
 static void __exit mtdx_exit(void)
 {
 	bus_unregister(&mtdx_bus_type);
-	idr_destroy(&mtdx_dev_idr);
+	ida_destroy(&mtdx_dev_ida);
 }
 
 module_init(mtdx_init);

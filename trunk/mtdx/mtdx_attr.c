@@ -403,8 +403,8 @@ int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values,
 	}
 
 	if (name) {
-		entry->sysfs_attr.attr.name = kstrdup(name, GFP_KERNEL);
-		if (!entry->sysfs_attr.attr.name) {
+		attr_name(entry->sysfs_attr) = kstrdup(name, GFP_KERNEL);
+		if (!attr_name(entry->sysfs_attr)) {
 			rc = -ENOMEM;
 			goto out;
 		}
@@ -441,7 +441,7 @@ int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values,
 out:
 	if (rc) {
 		if (entry) {
-			kfree(entry->sysfs_attr.attr.name);
+			kfree(attr_name(entry->sysfs_attr));
 			kfree(entry);
 		}
 	}
@@ -460,14 +460,14 @@ void mtdx_attr_free(struct mtdx_attr *attr)
 	if (attr->sysfs_grp.name)
 		sysfs_remove_group(&attr->mdev->dev.kobj, &attr->sysfs_grp);
 
-	kfree(attr->sysfs_blob.attr.name);
+	kfree(attr_name(attr->sysfs_blob));
 	kfree(attr->sysfs_grp.name);
 
 	while (!list_empty(&attr->entries)) {
 		p = attr->entries.next;
 		entry = list_entry(p, struct mtdx_attr_entry, node);
 		list_del(p);
-		kfree(entry->sysfs_attr.attr.name);
+		kfree(attr_name(entry->sysfs_attr));
 		kfree(entry);
 	}
 
@@ -475,7 +475,7 @@ void mtdx_attr_free(struct mtdx_attr *attr)
 		p = attr->bad_entries.next;
 		entry = list_entry(p, struct mtdx_attr_entry, node);
 		list_del(p);
-		kfree(entry->sysfs_attr.attr.name);
+		kfree(attr_name(entry->sysfs_attr));
 		kfree(entry);
 	}
 
@@ -516,8 +516,8 @@ struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, const char *name,
 		goto err_out;
 	}
 
-	attr->sysfs_blob.attr.name = kasprintf(GFP_KERNEL, "%s.bin", name);
-	if (!attr->sysfs_blob.attr.name) {
+	attr_name(attr->sysfs_blob) = kasprintf(GFP_KERNEL, "%s.bin", name);
+	if (!attr_name(attr->sysfs_blob)) {
 		rc = -ENOMEM;
 		goto err_out;
 	}

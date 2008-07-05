@@ -18,24 +18,34 @@
 #define MTDX_INVALID_BLOCK 0xffffffff
 
 struct mtdx_device_id {
-	char           role;
-#define MTDX_ROLE_INVALID       0x00
-#define MTDX_ROLE_MTD           0x01
-#define MTDX_ROLE_FTL           0x02
-#define MTDX_ROLE_BLK           0x03
+	unsigned char inp_wmode;
+	unsigned char out_wmode;
+#define MTDX_WMODE_NONE       0x00
+#define MTDX_WMODE_PEB        0x01
+#define MTDX_WMODE_PAGE_INC   0x02
+#define MTDX_WMODE_PAGE       0x03
+#define MTDX_WMODE_RAM        0x04
 
-	char           w_policy;
-#define MTDX_WPOLICY_NONE       0x00
-#define MTDX_WPOLICY_PEB        0x01
-#define MTDX_WPOLICY_PAGE_INC   0x02
-#define MTDX_WPOLICY_PAGE       0x03
-#define MTDX_WPOLICY_RAM        0x04
+	unsigned char inp_rmode;
+	unsigned char out_rmode;
+#define MTDX_RMODE_NONE       0x00
+#define MTDX_RMODE_PAGE       0x01
+#define MTDX_RMODE_MPAGE_BLK  0x02
+#define MTDX_RMODE_MPAGE      0x03
+#define MTDX_RMODE_RAM        0x04
+
+	unsigned short type;
+#define MTDX_TYPE_NONE       0x00
+#define MTDX_TYPE_MEDIA      0x01
+#define MTDX_TYPE_FTL        0x02
+#define MTDX_TYPE_ADAPTER    0x03
 
 	unsigned short id;
-#define MTDX_ID_DEV_INVALID     0x0000
-#define MTDX_ID_DEV_SMARTMEDIA  0x0001
-#define MTDX_ID_DEV_MEMORYSTICK 0x0002
-#define MTDX_ID_FTL_DUMB        0x0003
+#define MTDX_ID_INVALID           0x0000
+#define MTDX_ID_MEDIA_SMARTMEDIA  0x0001
+#define MTDX_ID_MEDIA_MEMORYSTICK 0x0002
+#define MTDX_ID_FTL_SIMPLE        0x0003
+#define MTDX_ID_ADAPTER_BLKDEV    0x0004
 };
 
 struct mtdx_dev_geo {
@@ -165,10 +175,9 @@ struct mtdx_driver {
 int mtdx_register_driver(struct mtdx_driver *drv);
 void mtdx_unregister_driver(struct mtdx_driver *drv);
 
-struct mtdx_dev *mtdx_create_dev(struct device *parent,
-				 struct mtdx_device_id *id);
-struct mtdx_dev *mtdx_create_child(struct mtdx_dev *parent, unsigned int ord,
-				   struct mtdx_device_id *id);
+struct mtdx_dev *mtdx_alloc_dev(struct device *parent,
+				const struct mtdx_device_id *id);
+void __mtdx_free_dev(struct mtdx_dev *mdev);
 
 static inline void mtdx_complete_request(struct mtdx_request *req, int error,
 					 unsigned int count)
