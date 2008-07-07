@@ -44,6 +44,19 @@ unsigned int __mtdx_attr_get_byte_range(struct mtdx_attr *attr, void *buf,
 }
 EXPORT_SYMBOL(__mtdx_attr_get_byte_range);
 
+unsigned int mtdx_attr_get_byte_range(struct mtdx_attr *attr, void *buf,
+				      unsigned int offset,
+				      unsigned int count)
+{
+	unsigned int rc;
+
+	mutex_lock(attr->lock);
+	rc = __mtdx_attr_get_byte_range(attr, buf, offset, count);
+	mutex_unlock(attr->lock);
+	return rc;
+}
+EXPORT_SYMBOL(mtdx_attr_get_byte_range);
+
 unsigned int __mtdx_attr_set_byte_range(struct mtdx_attr *attr, void *buf,
 					unsigned int offset,
 					unsigned int count)
@@ -102,6 +115,19 @@ unsigned int __mtdx_attr_set_byte_range(struct mtdx_attr *attr, void *buf,
 	return i_count - count;
 }
 EXPORT_SYMBOL(__mtdx_attr_set_byte_range);
+
+unsigned int mtdx_attr_set_byte_range(struct mtdx_attr *attr, void *buf,
+				      unsigned int offset,
+				      unsigned int count)
+{
+	unsigned int rc;
+
+	mutex_lock(attr->lock);
+	rc = __mtdx_attr_set_byte_range(attr, buf, offset, count);
+	mutex_unlock(attr->lock);
+	return rc;
+}
+EXPORT_SYMBOL(mtdx_attr_set_byte_range);
 
 static int append_string(char *buf, unsigned int buf_off,
 			 int buf_size, char *str,
@@ -347,10 +373,8 @@ static ssize_t mtdx_attr_blob_write(struct kobject *kobj,
 	ssize_t rc = 0;
 
 	mutex_lock(attr->lock);
-	if(0 < __mtdx_attr_set_byte_range(attr, buf, offset, count)) {
-		attr->modified = 1;
+	if(0 < __mtdx_attr_set_byte_range(attr, buf, offset, count))
 		rc = mtdx_attr_verify_all(attr);
-	}
 
 	if (rc >= 0)
 		rc = count;
@@ -376,6 +400,22 @@ static ssize_t mtdx_attr_entry_read(struct kobject *kobj,
 		rc = count;
 	mutex_unlock(attr->lock);
 	return rc;
+}
+
+static ssize_t mtdx_attr_commit_show(struct device *dev,
+				     struct device_attribute *attr,
+				     char *buf)
+{
+#warning Implement me!
+	return 0;
+}
+
+static ssize_t mtdx_attr_commit_store(struct device *dev,
+				      struct device_attribute *attr,
+				      const char *buf, size_t count)
+{
+#warning Implement me!
+	return 0;
 }
 
 int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values,
@@ -457,7 +497,10 @@ void mtdx_attr_free(struct mtdx_attr *attr)
 	struct list_head *p;
 	struct mtdx_attr_entry *entry;
 
-	if (attr->sysfs_grp.name)
+	if (!attr)
+		return;
+
+	if (attr->mdev)
 		sysfs_remove_group(&attr->mdev->dev.kobj, &attr->sysfs_grp);
 
 	kfree(attr_name(attr->sysfs_blob));
@@ -486,8 +529,7 @@ void mtdx_attr_free(struct mtdx_attr *attr)
 }
 EXPORT_SYMBOL(mtdx_attr_free);
 
-struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, const char *name,
-				  unsigned int page_cnt,
+struct mtdx_attr *mtdx_attr_alloc(const char *name, unsigned int page_cnt,
 				  unsigned int page_size)
 {
 	struct mtdx_attr *attr = kzalloc(sizeof(struct mtdx_attr)
@@ -498,21 +540,14 @@ struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, const char *name,
 	if (!attr)
 		return ERR_PTR(-ENOMEM);
 
-	attr->mdev = mdev;
 	mutex_init(attr->lock);
 	attr->page_cnt = page_cnt;
 	attr->page_size = page_size;
+	attr->phy_block = MTDX_INVALID_BLOCK;
 
 	attr->sysfs_grp.name = kstrdup(name, GFP_KERNEL);
 	if (!attr->sysfs_grp.name) {
 		rc = -ENOMEM;
-		goto err_out;
-	}
-
-	rc = sysfs_create_group(&mdev->dev.kobj, &attr->sysfs_grp);
-
-	if (rc) {
-		attr->sysfs_grp.name = NULL;
 		goto err_out;
 	}
 
@@ -521,18 +556,22 @@ struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, const char *name,
 		rc = -ENOMEM;
 		goto err_out;
 	}
-	attr->sysfs_blob.attr.mode = 0644;
 
+	attr->sysfs_blob.attr.mode = 0644;
 	attr->sysfs_blob.size = page_cnt * page_size;
 	attr->sysfs_blob.private = attr;
 	attr->sysfs_blob.read = mtdx_attr_blob_read;
 	attr->sysfs_blob.write = mtdx_attr_blob_write;
 
+	attr->sysfs_commit.attr.name = "commit";
+	attr->sysfs_commit.attr.mode = 0644;
+	attr->sysfs_commit.show = mtdx_attr_commit_show;
+	attr->sysfs_commit.store = mtdx_attr_commit_store;
+
 	INIT_LIST_HEAD(&attr->entries);
 	INIT_LIST_HEAD(&attr->bad_entries);
 
-	rc = sysfs_add_file_to_group(&mdev->dev.kobj, &attr->sysfs_blob.attr,
-				     name);
+
 	if (rc)
 		goto err_out;
 
@@ -542,6 +581,35 @@ err_out:
 	return ERR_PTR(rc);
 }
 EXPORT_SYMBOL(mtdx_attr_alloc);
+
+int mtdx_attr_sysfs_register(struct mtdx_attr *attr, struct mtdx_dev *mdev,
+			     unsigned int phy_block, unsigned int page_off)
+{
+	int rc;
+
+	rc = sysfs_create_group(&mdev->dev.kobj, &attr->sysfs_grp);
+
+	if (rc)
+		return rc;
+
+	rc = sysfs_add_file_to_group(&mdev->dev.kobj, &attr->sysfs_blob.attr,
+				     attr->sysfs_grp.name);
+
+	if (!rc)
+		rc = sysfs_add_file_to_group(&mdev->dev.kobj,
+					     &attr->sysfs_commit.attr,
+					     attr->sysfs_grp.name);
+	if (!rc) {
+		attr->mdev = mdev;
+		attr->phy_block = phy_block;
+		attr->page_off = page_off;
+		return 0;
+	}
+
+	sysfs_remove_group(&mdev->dev.kobj, &attr->sysfs_grp);
+	return rc;
+}
+EXPORT_SYMBOL(mtdx_attr_sysfs_register);
 
 int mtdx_attr_value_range_verify(struct mtdx_attr *attr, unsigned int offset,
 				 long param)

@@ -36,17 +36,19 @@ struct mtdx_attr_entry {
 };
 
 struct mtdx_attr {
-	struct mtdx_dev        *mdev;
-	struct mutex           *lock;
-	struct attribute_group sysfs_grp;
-	struct bin_attribute   sysfs_blob;
-	unsigned int           page_cnt;
-	unsigned int           page_size;
-	char                   page_fill;
-	char                   modified;
-	struct list_head       entries;
-	struct list_head       bad_entries;
-	char                   *pages[];
+	struct mtdx_dev         *mdev;
+	struct mutex            *lock;
+	struct attribute_group  sysfs_grp;
+	struct bin_attribute    sysfs_blob;
+	struct device_attribute sysfs_commit;
+	unsigned int            phy_block;
+	unsigned int            page_off;
+	unsigned int            page_cnt;
+	unsigned int            page_size;
+	unsigned int            page_fill;
+	struct list_head        entries;
+	struct list_head        bad_entries;
+	char                    *pages[];
 };
 
 /* Unlocked version */
@@ -65,9 +67,10 @@ unsigned int mtdx_attr_set_byte_range(struct mtdx_attr *attr, void *buf,
 
 
 void mtdx_attr_free(struct mtdx_attr *attr);
-struct mtdx_attr *mtdx_attr_alloc(struct mtdx_dev *mdev, const char *name, 
-				  unsigned int page_cnt,
+struct mtdx_attr *mtdx_attr_alloc(const char *name, unsigned int page_cnt,
 				  unsigned int page_size);
+int mtdx_attr_sysfs_register(struct mtdx_attr *attr, struct mtdx_dev *mdev,
+			     unsigned int phy_block, unsigned int page_off);
 int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values,
 			const char *name, unsigned int skip);
 

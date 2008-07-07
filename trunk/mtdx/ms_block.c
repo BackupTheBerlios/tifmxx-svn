@@ -1228,11 +1228,169 @@ unsigned int ms_block_find_boot_block(struct memstick_dev *card,
 	return MTDX_INVALID_BLOCK;
 }
 
+static struct mtdx_attr
+*ms_block_read_boot_block(struct memstick_dev *card,
+			  struct ms_block_boot_header *header,
+			  unsigned int phy_block, const char *name)
+{
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct mtdx_attr *rv = NULL;
+	char *buf = NULL;
+	unsigned int page_size = be16_to_cpu(header->info.page_size);
+	unsigned int p1, p2, p_sum = 0;
+	int rc;
+	struct mtdx_request m_req = {
+		.src_dev = msb->mdev,
+		.cmd = MTDX_CMD_READ,
+		.log_block = MTDX_INVALID_BLOCK,
+		.phy_block = phy_block,
+		.offset = 0,
+		.length = 0
+	};
+
+	if (page_size != msb->geo.page_size) {
+		rc = -EINVAL;
+		goto out;
+	}
+
+	for (rc = 0; rc < header->sys_entry_cnt; ++rc) {
+		p1 = be32_to_cpu(header->sys_entry[rc].start_addr);
+		p2 = be32_to_cpu(header->sys_entry[rc].data_size);
+		p_sum = max(p_sum, p1 + p2);
+	}
+
+	p_sum += sizeof(struct ms_block_boot_header);
+	p1 = p_sum;
+	p_sum /= page_size;
+	if ((p_sum * page_size) < p1)
+		p_sum++;
+
+	buf = kmalloc(p_sum * page_size, GFP_KERNEL);
+	if (!buf)
+		return NULL;
+
+	m_req.length = p_sum * page_size;
+
+	msb->req_in = &m_req;
+	sg_set_buf(&msb->req_sg, buf, m_req.length);
+	memset(&msb->extra, 0xff, sizeof(msb->extra));
+
+	card->next_request = h_ms_block_req_init;
+	memstick_new_req(card->host);
+	wait_for_completion(&card->mrq_complete);
+
+	if (msb->trans_err) {
+		rc = msb->trans_err;
+		goto out;
+	}
+
+	if (msb->t_count != m_req.length) {
+		rc = -EIO;
+		goto out;
+	}
+
+	if (!(msb->extra.overwrite_flag & MEMSTICK_OVERWRITE_BKST)) {
+		rc = -EFAULT;
+		goto out;
+	}
+
+	if (!(msb->extra.overwrite_flag
+	      & (MEMSTICK_OVERWRITE_PGST0 | MEMSTICK_OVERWRITE_PGST1))) {
+		rc = -EFAULT;
+		goto out;
+	}
+
+	rv = mtdx_attr_alloc(name, p_sum, page_size);
+	if (mtdx_attr_set_byte_range(rv, buf, 0, m_req.length)
+	    != m_req.length) {
+		mtdx_attr_free(rv);
+		rv = NULL;
+		rc = -ENOMEM;
+	}
+
+out:
+	if (rc)
+		dev_err(&card->dev, "Error %d reading boot block %x\n", rc,
+			phy_block);
+
+	kfree(buf);
+	return rv;
+}
+
+static int ms_block_get_boot_values(struct ms_block_data *msb,
+				    struct mtdx_attr *attr,
+				    struct ms_block_boot_header *header)
+{
+	int off, cnt, rc;
+
+	if (sizeof(struct ms_block_boot_header)
+	    != mtdx_attr_get_byte_range(attr, header, 0,
+					sizeof(struct ms_block_boot_header)))
+		return -E2BIG;
+
+	for (rc = 0; rc < header->sys_entry_cnt; ++rc) {
+		off = be32_to_cpu(header->sys_entry[rc].start_addr);
+		cnt = be32_to_cpu(header->sys_entry[rc].data_size);
+		off += sizeof(struct ms_block_boot_header);
+
+		if (header->sys_entry[rc].data_type_id
+		    == MS_BLOCK_ENTRY_BAD_BLOCKS) {
+			unsigned short *bblk;
+
+			if (!cnt)
+				continue;
+			msb->bad_blocks = kmalloc((cnt / 2 + 1)
+						  * sizeof(unsigned int),
+						  GFP_KERNEL);
+			if (!msb->bad_blocks)
+				return -ENOMEM;
+
+			bblk = kmalloc(cnt, GFP_KERNEL);
+			if (!bblk)
+				return -ENOMEM;
+
+			if (cnt != mtdx_attr_get_byte_range(attr, bblk, off,
+							    cnt))
+				return -E2BIG;
+
+			cnt /= 2;
+			msb->bad_blocks[cnt] = MTDX_INVALID_BLOCK;
+
+			for (cnt -= 1; cnt >= 0; --cnt)
+				msb->bad_blocks[cnt] = be16_to_cpu(bblk[cnt]);
+
+			kfree(bblk);
+		} else if (header->sys_entry[rc].data_type_id
+			   == MS_BLOCK_ENTRY_CIS_IDI) {
+			struct ms_block_idi *idi;
+
+			idi = kmalloc(sizeof(struct ms_block_idi), GFP_KERNEL);
+			if (!idi)
+				return -ENOMEM;
+
+			off += 256;
+			cnt -= 256;
+			if (cnt != sizeof(struct ms_block_idi))
+				return -EINVAL;
+			if (cnt != mtdx_attr_get_byte_range(attr, idi, off,
+							    cnt))
+				return -E2BIG;
+
+			msb->hd_geo.heads = idi->current_logical_heads;
+			msb->hd_geo.sectors = idi->current_sectors_per_track;
+			msb->hd_geo.cylinders = idi->current_logical_cylinders;
+			kfree(idi);
+		}
+	}
+	return 0;
+}
+
 static int ms_block_init_card(struct memstick_dev *card)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct memstick_host *host = card->host;
-	struct ms_block_boot_header *header;
+	struct ms_block_boot_header *header = NULL;
+	struct mtdx_attr *attr;
 	int rc;
 	enum memstick_command cmd = MS_CMD_RESET;
 
@@ -1294,7 +1452,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 
 	if (msb->boot_blocks[0].phy_block == MTDX_INVALID_BLOCK) {
 		rc = -EFAULT;
-		goto err_out;
+		goto out;
 	}
 
 	msb->geo.zone_cnt_log = 9;
@@ -1306,11 +1464,32 @@ static int ms_block_init_card(struct memstick_dev *card)
 			    / msb->geo.page_size;
 	msb->geo.oob_size = sizeof(struct ms_extra_data_register);
 
+	msb->boot_blocks[0].attr = ms_block_read_boot_block(card, header,
+					msb->boot_blocks[0].phy_block,
+					"boot_block0");
+
 	msb->boot_blocks[1].phy_block
 		= ms_block_find_boot_block(card, header,
 					   msb->boot_blocks[0].phy_block + 1);
 
-err_out:
+	if (msb->boot_blocks[1].phy_block != MTDX_INVALID_BLOCK) {
+		msb->boot_blocks[1].attr = ms_block_read_boot_block(card,
+						header,
+						msb->boot_blocks[1].phy_block,
+						"boot_block1");
+	}
+
+	attr = msb->boot_blocks[0].attr;
+	if (!attr)
+		attr = msb->boot_blocks[1].attr;
+	if (!attr) {
+		rc = -EFAULT;
+		goto out;
+	}
+
+	rc = ms_block_get_boot_values(msb, attr, header);
+
+out:
 	kfree(header);
 	return rc;
 }
@@ -1430,11 +1609,6 @@ static int ms_block_sysfs_register(struct memstick_dev *card)
 	return 0;
 }
 
-static void ms_block_sysfs_unregister(struct memstick_dev *card)
-{
-#warning Implement!!!
-}
-
 static int ms_block_mtdx_oob_to_info(struct mtdx_dev *this_dev,
 				     struct mtdx_page_info *p_info,
 				     void *oob)
@@ -1536,13 +1710,6 @@ static int ms_block_mtdx_get_param(struct mtdx_dev *this_dev,
 	}
 	case MTDX_PARAM_HD_GEO: {
 		memcpy(val, &msb->hd_geo, sizeof(msb->hd_geo));
-/*
-		struct hd_geometry *geo = val;
-
-		geo->heads = msb->idi.current_logical_heads;
-		geo->sectors = msb->idi.current_sectors_per_track;
-		geo->cylinders = msb->idi.current_logical_cylinders;
-*/
 		return 0;
 	}
 	default:
@@ -1604,7 +1771,6 @@ static int ms_block_probe(struct memstick_dev *card)
 	msb->card = card;
 	spin_lock_init(&msb->lock);
 	init_waitqueue_head(&msb->req_wq);
-	msb->stopped = 1;
 
 	rc = ms_block_init_card(card);
 	if (rc)
@@ -1634,15 +1800,19 @@ static int ms_block_probe(struct memstick_dev *card)
 		goto err_out_free;
 	}
 
-	card->start(card);
-
 	rc = ms_block_attr_register(card);
-	if (!rc)
+
+	if (!rc) {
+		msb->active = 1;
 		return 0;
+	}
 
 	device_unregister(&msb->mdev->dev);	
 err_out_free:
 	memstick_set_drvdata(card, NULL);
+	mtdx_attr_free(msb->boot_blocks[0].attr);
+	mtdx_attr_free(msb->boot_blocks[1].attr);
+	kfree(msb->bad_blocks);
 	kfree(msb);
 	return rc;
 }
@@ -1662,7 +1832,9 @@ static void ms_block_remove(struct memstick_dev *card)
 	while (waitqueue_active(&msb->req_wq))
 		msleep(1);
 
-	ms_block_attr_unregister(card);
+	mtdx_attr_free(msb->boot_blocks[0].attr);
+	mtdx_attr_free(msb->boot_blocks[1].attr);
+	kfree(msb->bad_blocks);
 	device_unregister(&msb->mdev->dev);
 
 	memstick_set_drvdata(card, NULL);
