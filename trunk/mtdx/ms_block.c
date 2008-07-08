@@ -169,63 +169,65 @@ static char *ms_block_attr_date_print(struct mtdx_attr *attr,
 }
 
 struct mtdx_attr_value ms_block_boot_attr_values[] = {
-	{"Memory Stick class", 1, mtdx_attr_value_range_verify,
+	{"Memory Stick class", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Format unique value 1", 1, mtdx_attr_value_range_verify,
+	{"Format unique value 1", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Block size", 2, mtdx_attr_value_range_verify,
+	{"Block size", 1, 2, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Number of blocks", 2, mtdx_attr_value_range_verify,
+	{"Number of blocks", 1, 2, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Number of effective blocks", 2, mtdx_attr_value_range_verify,
+	{"Number of effective blocks", 1, 2, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Page size", 2, mtdx_attr_value_range_verify,
+	{"Page size", 1, 2, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Extra Data Area size", 1, mtdx_attr_value_range_verify,
+	{"Extra Data Area size", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Format unique value 2", 1, mtdx_attr_value_range_verify,
+	{"Format unique value 2", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Assembly date and time", 0, ms_block_attr_date_verify,
+	{"Assembly date and time", 1, 0, ms_block_attr_date_verify,
 	 ms_block_attr_date_print},
-	{"Format unique value 3", 1, mtdx_attr_value_range_verify,
+	{"Format unique value 3", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Manufacturer area", 3, mtdx_attr_value_range_verify,
+	{"Manufacturer area", 1, 3, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Assembly manufacturer code", 1, mtdx_attr_value_range_verify,
+	{"Assembly manufacturer code", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Assembly model code", 3, mtdx_attr_value_range_verify,
+	{"Assembly model code", 1, 3, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Memory manufacturer code", 2, mtdx_attr_value_range_verify,
+	{"Memory manufacturer code", 1, 2, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Memory device code", 2, mtdx_attr_value_range_verify,
+	{"Memory device code", 1, 2, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Implemented capacity", 2, mtdx_attr_value_range_verify,
+	{"Implemented capacity", 1, 2, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Format unique value 4", 1, mtdx_attr_value_range_verify,
+	{"Format unique value 4", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Format unique value 5", 1, mtdx_attr_value_range_verify,
+	{"Format unique value 5", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"VCC", 1, mtdx_attr_value_range_verify, mtdx_attr_value_be_num_print},
-	{"VPP", 1, mtdx_attr_value_range_verify, mtdx_attr_value_be_num_print},
-	{"Controller number", 2, mtdx_attr_value_range_verify,
+	{"VCC", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Controller function", 2, mtdx_attr_value_range_verify,
+	{"VPP", 1, 1, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Controller number", 1, 2, mtdx_attr_value_range_verify,
+	 mtdx_attr_value_be_num_print},
+	{"Controller function", 1, 2, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
 	{NULL, 9, mtdx_attr_value_range_verify, NULL},
-	{"Parallel-Transfer supporting", 1, mtdx_attr_value_range_verify,
+	{"Parallel-Transfer supporting", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Format unique value 6", 2, mtdx_attr_value_range_verify,
+	{"Format unique value 6", 1, 2, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Format type", 1, mtdx_attr_value_range_verify,
+	{"Format type", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Memory Stick application", 1, mtdx_attr_value_range_verify,
+	{"Memory Stick application", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Device type", 1, mtdx_attr_value_range_verify,
+	{"Device type", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
 	{NULL, 22, mtdx_attr_value_range_verify, NULL},
-	{"Format unique value 7", 1, mtdx_attr_value_range_verify,
+	{"Format unique value 7", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
-	{"Format unique value 8", 1, mtdx_attr_value_range_verify,
+	{"Format unique value 8", 1, 1, mtdx_attr_value_range_verify,
 	 mtdx_attr_value_be_num_print},
 	{NULL, 15, mtdx_attr_value_range_verify, NULL},
 	{NULL, 0, NULL, NULL}
@@ -281,14 +283,16 @@ struct ms_block_data {
 #define MS_BLOCK_FLG_COPY     0x10
 
 	struct {
-		unsigned int     phy_block;
-		struct mtdx_attr *attr;
+		unsigned int           phy_block;
+		struct mtdx_attr       *attr;
+		struct hd_geometry     hd_geo;
+		struct mtdx_attr_value bad_blocks_val[2];
+		unsigned int           *bad_blocks;
 	} boot_blocks[2];
 
 	unsigned int             *bad_blocks;
-	struct mtdx_attr_value   *bad_blocks_val;
+	struct hd_geometry       *hd_geo;
 	struct mtdx_dev_geo      geo;
-	struct hd_geometry       hd_geo;
 
 	struct ms_extra_data_register extra;
 
@@ -1318,15 +1322,21 @@ out:
 }
 
 static int ms_block_get_boot_values(struct ms_block_data *msb,
-				    struct mtdx_attr *attr,
+				    unsigned int idx,
 				    struct ms_block_boot_header *header)
 {
-	int off, cnt, rc;
+	int off, cnt, rc, last_pos;
 
 	if (sizeof(struct ms_block_boot_header)
-	    != mtdx_attr_get_byte_range(attr, header, 0,
+	    != mtdx_attr_get_byte_range(msb->boot_blocks[idx].attr, header, 0,
 					sizeof(struct ms_block_boot_header)))
 		return -E2BIG;
+
+	rc = mtdx_attr_add_entry(msb->boot_blocks[idx].attr,
+				 ms_block_boot_attr_values, "info",
+				 offsetof(info, struct ms_block_boot_header));
+	if (rc)
+		return rc;
 
 	for (rc = 0; rc < header->sys_entry_cnt; ++rc) {
 		off = be32_to_cpu(header->sys_entry[rc].start_addr);
@@ -1339,27 +1349,46 @@ static int ms_block_get_boot_values(struct ms_block_data *msb,
 
 			if (!cnt)
 				continue;
-			msb->bad_blocks = kmalloc((cnt / 2 + 1)
-						  * sizeof(unsigned int),
-						  GFP_KERNEL);
-			if (!msb->bad_blocks)
+
+			msb->boot_blocks[idx].bad_blocks
+				= kmalloc((cnt / 2 + 1) * sizeof(unsigned int),
+					  GFP_KERNEL);
+
+			if (!msb->boot_blocks[idx].bad_blocks)
 				return -ENOMEM;
 
 			bblk = kmalloc(cnt, GFP_KERNEL);
 			if (!bblk)
 				return -ENOMEM;
 
-			if (cnt != mtdx_attr_get_byte_range(attr, bblk, off,
-							    cnt))
+			if (cnt != mtdx_attr_get_byte_range(
+				msb->boot_blocks[idx].attr, bblk, off, cnt))
 				return -E2BIG;
 
 			cnt /= 2;
-			msb->bad_blocks[cnt] = MTDX_INVALID_BLOCK;
+			msb->boot_blocks[idx].bad_blocks[cnt]
+				= MTDX_INVALID_BLOCK;
 
 			for (cnt -= 1; cnt >= 0; --cnt)
-				msb->bad_blocks[cnt] = be16_to_cpu(bblk[cnt]);
+				msb->boot_blocks[idx].bad_blocks[cnt]
+					= be16_to_cpu(bblk[cnt]);
 
 			kfree(bblk);
+
+			msb->boot_blocks[idx].bad_blocks_val[0].name = NULL;
+			msb->boot_blocks[idx].bad_blocks_val[0].repeat
+				= cnt / 2;
+			msb->boot_blocks[idx].bad_blocks_val[0].param = 2;
+			msb->boot_blocks[idx].bad_blocks_val[0].verify
+				= mtdx_attr_value_range_verify;
+			msb->boot_blocks[idx].bad_blocks_val[0].print
+				= mtdx_attr_value_be_num_print;
+			rc = mtdx_attr_add_entry(msb->boot_blocks[idx].attr,
+						 msb->boot_blocks[idx]
+						 .bad_blocks_val,
+						 "bad_blocks", off);
+			if (rc)
+				return rc;
 		} else if (header->sys_entry[rc].data_type_id
 			   == MS_BLOCK_ENTRY_CIS_IDI) {
 			struct ms_block_idi *idi;
@@ -1372,14 +1401,28 @@ static int ms_block_get_boot_values(struct ms_block_data *msb,
 			cnt -= 256;
 			if (cnt != sizeof(struct ms_block_idi))
 				return -EINVAL;
-			if (cnt != mtdx_attr_get_byte_range(attr, idi, off,
-							    cnt))
+			if (cnt != mtdx_attr_get_byte_range(
+				msb->boot_blocks[idx].attr, idi, off, cnt))
 				return -E2BIG;
 
-			msb->hd_geo.heads = idi->current_logical_heads;
-			msb->hd_geo.sectors = idi->current_sectors_per_track;
-			msb->hd_geo.cylinders = idi->current_logical_cylinders;
+			msb->boot_blocks[idx].hd_geo.heads
+				= idi->current_logical_heads;
+			msb->boot_blocks[idx].hd_geo.sectors
+				= idi->current_sectors_per_track;
+			msb->boot_blocks[idx].hd_geo.cylinders
+				= idi->current_logical_cylinders;
 			kfree(idi);
+
+			rc = mtdx_attr_add_entry(msb->boot_blocks[idx].attr,
+						 ms_block_cis_values,
+						 "cis", off - 256);
+			if (rc)
+				return rc;
+			rc = mtdx_attr_add_entry(msb->boot_blocks[idx].attr,
+						 ms_block_idi_values,
+						 "idi", off);
+			if (rc)
+				return rc;
 		}
 	}
 	return 0;
@@ -1390,7 +1433,6 @@ static int ms_block_init_card(struct memstick_dev *card)
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct memstick_host *host = card->host;
 	struct ms_block_boot_header *header = NULL;
-	struct mtdx_attr *attr;
 	int rc;
 	enum memstick_command cmd = MS_CMD_RESET;
 
@@ -1479,15 +1521,23 @@ static int ms_block_init_card(struct memstick_dev *card)
 						"boot_block1");
 	}
 
-	attr = msb->boot_blocks[0].attr;
-	if (!attr)
-		attr = msb->boot_blocks[1].attr;
-	if (!attr) {
+	if (msb->boot_blocks[0].attr) {
+		rc = ms_block_get_boot_values(msb, 0, header);
+		if (!rc) {
+			msb->bad_blocks = msb->boot_blocks[0].bad_blocks;
+			msb->hd_geo = msb->boot_blocks[0].hd_geo;
+		}
+	} else
 		rc = -EFAULT;
-		goto out;
-	}
 
-	rc = ms_block_get_boot_values(msb, attr, header);
+	if (msb->boot_blocks[1].attr) {
+		int rcx = ms_block_get_boot_values(msb, 1, header);
+		if (rc && !rcx) {
+			msb->bad_blocks = msb->boot_blocks[1].bad_blocks;
+			msb->hd_geo = msb->boot_blocks[1].hd_geo;
+			rc = 0;
+		}
+	}
 
 out:
 	kfree(header);
@@ -1750,6 +1800,22 @@ static char* ms_block_get_oob_buf(struct mtdx_request *req)
 	return (char *)&msb->extra;
 }
 
+static void ms_block_data_free(struct ms_block_data *msb)
+{
+	int cnt;
+
+	if (!msb)
+		return;
+
+	for (cnt = 0; cnt < 2; ++cnt) {
+		mtdx_attr_free(msb->boot_blocks[cnt].attr);
+		kfree(msb->boot_blocks[cnt].bad_blocks);
+		kfree(msb->boot_blocks[cnt].bad_blocks_val);
+	}
+
+	kfree(msb);
+}
+
 static int ms_block_probe(struct memstick_dev *card)
 {
 	const struct mtdx_device_id c_id = {
@@ -1800,7 +1866,22 @@ static int ms_block_probe(struct memstick_dev *card)
 		goto err_out_free;
 	}
 
-	rc = ms_block_attr_register(card);
+	if (msb->boot_blocks[0].attr) {
+		rc = mtdx_attr_sysfs_register(msb->boot_blocks[0].attr,
+					      msb->mdev,
+					      msb->boot_blocks[0].phy_block,
+					      0);
+	}
+
+	if (msb->boot_blocks[1].attr) {
+		int rcx = mtdx_attr_sysfs_register(msb->boot_blocks[1].attr,
+						   msb->mdev,
+						   msb->boot_blocks[1]
+						   .phy_block,
+						   0);
+		if (rc)
+			rc = rcx;
+	}
 
 	if (!rc) {
 		msb->active = 1;
@@ -1810,10 +1891,7 @@ static int ms_block_probe(struct memstick_dev *card)
 	device_unregister(&msb->mdev->dev);	
 err_out_free:
 	memstick_set_drvdata(card, NULL);
-	mtdx_attr_free(msb->boot_blocks[0].attr);
-	mtdx_attr_free(msb->boot_blocks[1].attr);
-	kfree(msb->bad_blocks);
-	kfree(msb);
+	ms_block_data_free(msb);
 	return rc;
 }
 
@@ -1832,10 +1910,9 @@ static void ms_block_remove(struct memstick_dev *card)
 	while (waitqueue_active(&msb->req_wq))
 		msleep(1);
 
-	mtdx_attr_free(msb->boot_blocks[0].attr);
-	mtdx_attr_free(msb->boot_blocks[1].attr);
-	kfree(msb->bad_blocks);
 	device_unregister(&msb->mdev->dev);
+
+	ms_block_data_free(msb);
 
 	memstick_set_drvdata(card, NULL);
 }

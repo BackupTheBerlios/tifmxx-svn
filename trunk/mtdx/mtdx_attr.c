@@ -131,9 +131,9 @@ EXPORT_SYMBOL(mtdx_attr_set_byte_range);
 
 static int append_string(char *buf, unsigned int buf_off,
 			 int buf_size, char *str,
-			 unsigned int str_off, int str_size)
+			 unsigned int str_off, int str_size, char fill)
 {
-	if (!buf || (buf_size <= 0) || (str_size <= 0))
+	if ((buf_size <= 0) || (str_size <= 0))
 		return str_size;
 
 	if (str_off < buf_off) {
@@ -152,7 +152,11 @@ static int append_string(char *buf, unsigned int buf_off,
 			return 0;
 	}
 
-	memcpy(buf + buf_off, str + str_off, str_size);
+	if (buf)
+		memcpy(buf + buf_off, str + str_off, str_size);
+	else
+		memset(buf + buf_off, fill, str_size);
+
 	return str_size;
 }
 
@@ -161,7 +165,7 @@ static int mtdx_attr_verify_entry(struct mtdx_attr *attr,
 				  unsigned int attr_off)
 {
 	struct mtdx_attr_value *c_val;
-	unsigned int val_cnt = 0;
+	unsigned int val_cnt = 0, r_cnt = 1;
 	int rc = 0, c_size;
 
 	if (!entry->values) {
@@ -177,13 +181,19 @@ static int mtdx_attr_verify_entry(struct mtdx_attr *attr,
 		if (!c_val->verify)
 			break;
 
-		c_size = c_val->verify(attr, attr_off, c_val->param);
-		if (c_size < 0) {
-			rc = c_size;
-			break;
-		}
+		if (c_val->repeat > 1)
+			r_cnt = c_val->repeat;
 
-		rc += c_size;
+		for (r_cnt = 0; r_cnt < c_val->repeat; ++r_cnt) {
+			c_size = c_val->verify(attr, attr_off + rc,
+					       c_val->param);
+			if (c_size < 0) {
+				rc = c_size;
+				break;
+			}
+
+			rc += c_size;
+		}
 	}
 
 	if (rc >= 0) {
@@ -201,13 +211,13 @@ static int mtdx_attr_print_entry(struct mtdx_attr *attr,
 				 int out_size)
 {
 	struct mtdx_attr_value *c_val;
-	unsigned int val_cnt = 0, l_size;
-	unsigned int c_str_off = 0, c_str_size;
+	unsigned int val_cnt = 0, r_cnt = 0, l_size;
+	unsigned int c_str_off = 0, c_str_size = 0, name_size = 0;
 	unsigned int attr_off = entry->offset;
 	int rc = 0, c_size;
 	char *c_buf;
 
-	if (!entry->values) {
+	if (!entry->values || !entry->values[0].verify) {
 		if ((attr_off + entry->skip)
 		    <= (attr->page_cnt * attr->page_size))
 			return entry->skip;
@@ -215,13 +225,19 @@ static int mtdx_attr_print_entry(struct mtdx_attr *attr,
 			return -E2BIG;
 	}
 
+	c_val = &entry->values[0];
+
 	while (1) {
 		if (out_buf && (out_size <= 0))
 			break;
 
-		c_val = &entry->values[val_cnt++];
-		if (!c_val->verify)
-			break;
+		if (r_cnt >= c_val->repeat) {
+			r_cnt = 0;
+			name_size = 0;
+			c_val = &entry->values[val_cnt++];
+			if (!c_val->verify)
+				break;
+		}
 
 		c_size = c_val->verify(attr, attr_off, c_val->param);
 		if (c_size < 0) {
@@ -233,14 +249,21 @@ static int mtdx_attr_print_entry(struct mtdx_attr *attr,
 		l_size = 0;
 
 		if (c_val->name) {
-			c_str_size = strlen(c_val->name);
+			if (!r_cnt) {
+				name_size = strlen(c_val->name);
 
-			l_size = append_string(out_buf, *out_off,
-					       out_size, c_val->name,
-					       c_str_off, c_str_size);
+				l_size = append_string(out_buf, *out_off,
+						       out_size, c_val->name,
+						       c_str_off, name_size, 0);
+			} else
+				l_size = append_string(out_buf, *out_off,
+						       out_size, NULL,
+						       c_str_off, name_size,
+						       ' ');
+
 			*out_off += l_size;
 			out_size -= l_size;
-			c_str_off += c_str_size;
+			c_str_off += name_size;
 		}
 
 		if (c_val->print) {
@@ -254,9 +277,17 @@ static int mtdx_attr_print_entry(struct mtdx_attr *attr,
 			c_str_size = strlen(c_buf);
 
 			if (c_val->name) {
-				l_size = append_string(out_buf, *out_off,
-						       out_size, ": ",
-						       c_str_off, 2);
+				if (!r_cnt)
+					l_size = append_string(out_buf,
+							       *out_off,
+							       out_size, ": ",
+							       c_str_off, 2, 0);
+				else
+					l_size = append_string(out_buf,
+							       *out_off,
+							       out_size, NULL,
+							       c_str_off, 2,
+							       ' ');
 				*out_off += l_size;
 				out_size -= l_size;
 				c_str_off += 2;
@@ -264,25 +295,26 @@ static int mtdx_attr_print_entry(struct mtdx_attr *attr,
 
 			l_size = append_string(out_buf, *out_off,
 					       out_size, c_buf,
-					       c_str_off, c_str_size);
+					       c_str_off, c_str_size, 0);
 			*out_off += l_size;
 			out_size -= l_size;
 
 			l_size = append_string(out_buf, *out_off,
-					       out_size, "\n",
-					       c_str_off, 1);
+					       out_size, NULL,
+					       c_str_off, 1, '\n');
 			*out_off += l_size;
 			out_size -= l_size;
 			c_str_off += c_str_size + 1;
 			kfree(c_buf);
 		} else if (c_val->name) {
 			l_size = append_string(out_buf, *out_off, out_size,
-					       "\n", c_str_off, 1);
+					       NULL, c_str_off, 1, '\n');
 			*out_off += l_size;
 			out_size -= l_size;
 			c_str_off++;
 		}
 		attr_off += c_size;
+		r_cnt++;
 	}
 
 	if (rc >= 0) {
@@ -419,9 +451,10 @@ static ssize_t mtdx_attr_commit_store(struct device *dev,
 }
 
 int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values,
-			const char *name, unsigned int skip)
+			const char *name, unsigned int offset)
 {
-	struct mtdx_attr_entry *entry = NULL;
+	struct mtdx_attr_entry *entry = NULL, *p_entry, *n_entry;
+	struct list_head *p;
 	unsigned int p_off = 0;
 	int rc = 0;
 
@@ -431,7 +464,7 @@ int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values,
 		goto out;
 	}
 
-	if ((values && !name) || (!values && !skip)) {
+	if (!values) {
 		rc = -EINVAL;
 		goto out;
 	}
@@ -442,26 +475,12 @@ int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values,
 		goto out;
 	}
 
-	if (name) {
+	if (name)
 		attr_name(entry->sysfs_attr) = kstrdup(name, GFP_KERNEL);
-		if (!attr_name(entry->sysfs_attr)) {
-			rc = -ENOMEM;
-			goto out;
-		}
-	}
+	else
+		attr_name(entry->sysfs_attr) = kasprintf(GFP_KERNEL, "data@%x",
+							 offset);
 
-	entry->values = values;
-	entry->skip = skip;
-	entry->offset = 0;
-
-	if (!list_empty(&attr->entries)) {
-		struct mtdx_attr_entry *last_entry
-			= list_entry(attr->entries.prev, struct mtdx_attr_entry,
-				     node);
-
-		entry->offset = last_entry->offset + last_entry->c_size
-				+ last_entry->skip;
-	}
 
 	rc = mtdx_attr_print_entry(attr, entry, NULL, &p_off, 0);
 
@@ -469,7 +488,45 @@ int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values,
 		goto out;
 
 	entry->c_size = rc;
-	list_add_tail(&entry->node, &attr->entries);
+
+	if (list_empty(&attr->entries))
+		list_add_tail(&entry->node, &attr->entries);
+	else {
+		c_entry = list_entry(attr->entries->next,
+				     struct mtdx_attr_entry, node);
+
+		if (c_entry->offset > entry->offset) {
+			list_add(&entry->node, &attr->entries);
+			goto attached;
+		}
+
+		c_entry = list_entry(attr->entries->prev,
+				     struct mtdx_attr_entry, node);
+		if (c_entry->offset < entry->offset) {
+			list_add_tail(&entry->node, &attr->entries);
+			goto attached;
+		}
+
+		list_for_each(p, &attr->entries) {
+			p_entry = list_entry(p, struct mtdx_attr_entry, node);
+			n_entry = list_entry(p->next, struct mtdx_attr_entry,
+					     node);
+
+			if ((p_entry->offset = entry->offset)
+			    || (n_entry->offset = entry->offset)) {
+				rc = -EINVAL;
+				goto out;
+			}
+
+			if ((entry->offset > p_entry->offset)
+			    && (entry->offset < n_entry->offset)) {
+				list_add(&entry->node, &p_entry->node);
+				break;
+			}
+		}
+	}
+
+attached:
 	entry->sysfs_attr.attr.mode = 0444;
 	entry->sysfs_attr.size = p_off;
 	entry->sysfs_attr.private = attr;

@@ -19,6 +19,7 @@ struct mtdx_attr;
 
 struct mtdx_attr_value {
 	char             *name;
+	unsigned int     repeat;
 	long             param;
 	int              (*verify)(struct mtdx_attr *attr, unsigned int offset,
 				   long param);
@@ -32,7 +33,6 @@ struct mtdx_attr_entry {
 	struct mtdx_attr_value *values;
 	unsigned int           offset;
 	unsigned int           c_size;
-	unsigned int           skip;
 };
 
 struct mtdx_attr {
@@ -72,7 +72,7 @@ struct mtdx_attr *mtdx_attr_alloc(const char *name, unsigned int page_cnt,
 int mtdx_attr_sysfs_register(struct mtdx_attr *attr, struct mtdx_dev *mdev,
 			     unsigned int phy_block, unsigned int page_off);
 int mtdx_attr_add_entry(struct mtdx_attr *attr, struct mtdx_attr_value *values,
-			const char *name, unsigned int skip);
+			const char *name, unsigned int offset);
 
 
 /* Verification function is applied to attribute blob at certain offset and
