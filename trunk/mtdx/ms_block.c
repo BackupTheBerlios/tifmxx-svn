@@ -12,7 +12,6 @@
 
 #include "../driver/linux/memstick.h"
 #include "mtdx_common.h"
-#include "mtdx_attr.h"
 #include <linux/err.h>
 #include <linux/hdreg.h>
 #include <linux/sched.h>
@@ -79,160 +78,6 @@ struct ms_block_boot_header {
 
 #define MS_BLOCK_MAX_BOOT_ADDR 12
 
-static int ms_block_attr_date_verify(struct mtdx_attr *attr,
-				     unsigned int offset,
-				     long param)
-{
-	unsigned char val[8];
-	const char days[] = {31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-
-	if (__mtdx_attr_get_byte_range(attr, &val, offset, sizeof(val))
-	    != sizeof(val))
-		return -E2BIG;
-
-	if (val[0] != 0x80) {
-		if (((char)val[0] > 48) || ((char)val[0] < -48))
-			return -EINVAL;
-	}
-
-	if (val[3] != 0xff) {
-		if (!val[3] || (val[3] > 12))
-			return -EINVAL;
-	}
-
-	if (val[4] != 0xff) {
-		if (!val[4] || (val[4] > days[val[3] - 1]))
-			return -EINVAL;
-	}
-
-	if (val[5] != 0xff) {
-		if (val[5] > 23)
-			return -EINVAL;
-	}
-
-	if (val[6] != 0xff) {
-		if (val[6] > 59)
-			return -EINVAL;
-	}
-
-	if (val[7] != 0xff) {
-		if (val[7] > 59)
-			return -EINVAL;
-	}
-
-	return 8;
-}
-
-static char *ms_block_attr_date_print(struct mtdx_attr *attr,
-				      unsigned int offset,
-				      unsigned int size, long param)
-{
-	unsigned char val[8];
-	char tz_str[7]; /* +xx:xx */
-	char year_str[5], date_str[5][3];
-	int v1;
-
-	if (size != 8)
-		return NULL;
-
-	if (__mtdx_attr_get_byte_range(attr, &val, offset, size) != size)
-		return NULL;
-
-	if (val[0] == 0x80)
-		strcpy(tz_str, "+??");
-	else {
-		int v2;
-		v1 = v2 = val[0];
-		v1 /= 4;
-		if (v2 < 0)
-			v2 = -v2;
-		v2 = (v2 % 4) * 15;
-		snprintf(tz_str, sizeof(tz_str), "%+d:%d", v1, v2);
-	}
-
-	v1 = (val[1] << 8) + val[2];
-	if (v1 == 0xffff)
-		strcpy(year_str, "xxxx");
-	else
-		snprintf(year_str, sizeof(year_str), "%04d", v1);
-
-	for (v1 = 0; v1 < 5; ++v1) {
-		if (val[v1 + 3] == 0xff)
-			strcpy(date_str[v1], "xx");
-		else
-			snprintf(date_str[v1], 3, "%02d", val[v1 + 3]);
-	}
-
-	return kasprintf(GFP_KERNEL, "GMT%s %s-%s-%s %s:%s:%s", tz_str,
-			 year_str, date_str[0], date_str[1], date_str[2],
-			 date_str[3], date_str[4]);
-}
-
-struct mtdx_attr_value ms_block_boot_attr_values[] = {
-	{"Memory Stick class", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Format unique value 1", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Block size", 1, 2, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Number of blocks", 1, 2, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Number of effective blocks", 1, 2, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Page size", 1, 2, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Extra Data Area size", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Format unique value 2", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Assembly date and time", 1, 0, ms_block_attr_date_verify,
-	 ms_block_attr_date_print},
-	{"Format unique value 3", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Manufacturer area", 1, 3, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Assembly manufacturer code", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Assembly model code", 1, 3, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Memory manufacturer code", 1, 2, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Memory device code", 1, 2, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Implemented capacity", 1, 2, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Format unique value 4", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Format unique value 5", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"VCC", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"VPP", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Controller number", 1, 2, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Controller function", 1, 2, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{NULL, 9, mtdx_attr_value_range_verify, NULL},
-	{"Parallel-Transfer supporting", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Format unique value 6", 1, 2, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Format type", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Memory Stick application", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Device type", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{NULL, 22, mtdx_attr_value_range_verify, NULL},
-	{"Format unique value 7", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{"Format unique value 8", 1, 1, mtdx_attr_value_range_verify,
-	 mtdx_attr_value_be_num_print},
-	{NULL, 15, mtdx_attr_value_range_verify, NULL},
-	{NULL, 0, NULL, NULL}
-};
-
 struct ms_block_idi {
 	unsigned short general_config;
 	unsigned short logical_cylinders;
@@ -265,6 +110,15 @@ struct ms_block_idi {
 	unsigned char  reserved3[128];
 } __attribute__((packed));
 
+struct ms_block_boot_ref {
+	unsigned int           phy_block;
+	unsigned int           size;
+	char                   *data;
+	char                   *cis_idi;
+	struct hd_geometry     hd_geo;
+	unsigned int           *bad_blocks;
+};
+
 struct ms_block_data {
 	struct memstick_dev      *card;
 	unsigned int             caps; 
@@ -282,13 +136,7 @@ struct ms_block_data {
 #define MS_BLOCK_FLG_PAGE_INC 0x08
 #define MS_BLOCK_FLG_COPY     0x10
 
-	struct {
-		unsigned int           phy_block;
-		struct mtdx_attr       *attr;
-		struct hd_geometry     hd_geo;
-		struct mtdx_attr_value bad_blocks_val[2];
-		unsigned int           *bad_blocks;
-	} boot_blocks[2];
+	struct ms_block_boot_ref boot_blocks[2];
 
 	unsigned int             *bad_blocks;
 	struct hd_geometry       *hd_geo;
@@ -332,6 +180,243 @@ static const struct ms_register_addr ms_block_r_stat_w_extra = {
 	.w_offset = offsetof(struct ms_register, extra_data),
 	.w_length = sizeof(struct ms_extra_data_register)
 };
+
+static ssize_t ms_block_boot_address_show(struct device *dev,
+					  struct device_attribute *attr,
+					  char *buf);
+static ssize_t ms_block_boot_record_show(struct device *dev,
+					 struct device_attribute *attr,
+					 char *buf);
+static ssize_t ms_block_info_show(struct device *dev,
+				  struct device_attribute *attr,
+				  char *buf);
+static ssize_t ms_block_defects_show(struct device *dev,
+				     struct device_attribute *attr,
+				     char *buf);
+static ssize_t ms_block_cis_show(struct device *dev,
+				 struct device_attribute *attr,
+				 char *buf);
+static ssize_t ms_block_idi_show(struct device *dev,
+				 struct device_attribute *attr,
+				 char *buf);
+
+static struct device_attribute ms_block_boot_address[] = {
+	[0 ... 1] = {
+		.attr = {
+			.name = "address",
+			.mode = 0444
+		},
+		.show = ms_block_boot_address_show
+	}
+};
+
+static struct device_attribute ms_block_boot_record[] = {
+	[0 ... 1] = {
+		.attr = {
+			.name = "boot_record",
+			.mode = 0444
+		},
+		.show = ms_block_boot_record_show
+	}
+};
+
+static struct device_attribute ms_block_info[] = {
+	[0 ... 1] = {
+		.attr = {
+			.name = "info",
+			.mode = 0444
+		},
+		.show = ms_block_info_show
+	}
+};
+
+static struct device_attribute ms_block_defects[] = {
+	[0 ... 1] = {
+		.attr = {
+			.name = "defects",
+			.mode = 0444
+		},
+		.show = ms_block_defects_show
+	}
+};
+
+static struct device_attribute ms_block_cis[] = {
+	[0 ... 1] = {
+		.attr = {
+			.name = "cis",
+			.mode = 0444
+		},
+		.show = ms_block_cis_show
+	}
+};
+
+static struct device_attribute ms_block_idi[] = {
+	[0 ... 1] = {
+		.attr = {
+			.name = "idi",
+			.mode = 0444
+		},
+		.show = ms_block_idi_show
+	}
+};
+
+static struct attribute *ms_block_boot_attr[2][7] = {
+	{
+		&ms_block_boot_address[0].attr, &ms_block_boot_record[0].attr,
+		&ms_block_info[0].attr, &ms_block_defects[0].attr,
+		&ms_block_cis[0].attr, &ms_block_idi[0].attr, NULL
+	},
+	{
+		&ms_block_boot_address[1].attr, &ms_block_boot_record[1].attr,
+		&ms_block_info[1].attr, &ms_block_defects[1].attr,
+		&ms_block_cis[1].attr, &ms_block_idi[1].attr, NULL
+	}
+};
+
+static struct attribute_group ms_block_grp_boot0 = {
+	.name = "boot_block0",
+	.attrs = ms_block_boot_attr[0]
+};
+
+static struct attribute_group ms_block_grp_boot1 = {
+	.name = "boot_block1",
+	.attrs = ms_block_boot_attr[1]
+};
+
+
+static ssize_t ms_block_boot_address_show(struct device *dev,
+					  struct device_attribute *attr,
+					  char *buf)
+{
+	int idx = (attr == &ms_block_boot_address[1]) ? 1 : 0;
+	struct ms_block_data *msb
+		= memstick_get_drvdata(container_of(dev, struct memstick_dev,
+						    dev));
+	return scnprintf(buf, PAGE_SIZE, "%08x",
+			 msb->boot_blocks[idx].phy_block);
+}
+
+static ssize_t ms_block_boot_record_show(struct device *dev,
+					 struct device_attribute *attr,
+					 char *buf)
+{
+	int idx = (attr == &ms_block_boot_record[1]) ? 1 : 0;
+	struct ms_block_data *msb
+		= memstick_get_drvdata(container_of(dev, struct memstick_dev,
+						    dev));
+	ssize_t rc = min(msb->boot_blocks[idx].size, (unsigned int)PAGE_SIZE);
+
+	if (rc)
+		memcpy(buf, msb->boot_blocks[idx].data, rc);
+
+	return rc;
+}
+
+static ssize_t ms_block_info_show(struct device *dev,
+				  struct device_attribute *attr,
+				  char *buf)
+{
+	int idx = (attr == &ms_block_info[1]) ? 1 : 0;
+	struct ms_block_data *msb
+		= memstick_get_drvdata(container_of(dev, struct memstick_dev,
+						    dev));
+	ssize_t rc = 0;
+	struct ms_block_boot_attr_info *info;
+	unsigned short as_year;
+	int tz;
+
+	if (!msb->boot_blocks[idx].data
+	    || (msb->boot_blocks[idx].size
+		< sizeof(struct ms_block_boot_header)))
+		return 0;
+
+	info = &((struct ms_block_boot_header *)msb->boot_blocks[idx].data)
+	        ->info;
+
+	tz = info->assembly_time[0];
+	if (tz & 0x80)
+		tz |= (~0) << 8;
+
+	as_year = (info->assembly_time[1] << 8) | info->assembly_time[2];
+
+	rc += scnprintf(buf, PAGE_SIZE, "class: %x\n", info->memorystick_class);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "block_size: %x\n",
+			info->block_size);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "number_of_blocks: %x\n",
+			info->number_of_blocks);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
+			"number_of_effective_blocks: %x\n",
+			info->number_of_effective_blocks);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "page_size: %x\n",
+			info->page_size);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "extra_data_size: %x\n",
+			info->extra_data_size);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
+			"assembly_time: %+d %04d-%02d-%02d %02d:%02d:%02d\n",
+			tz, as_year, info->assembly_time[3],
+			info->assembly_time[4], info->assembly_time[5],
+			info->assembly_time[6], info->assembly_time[7]);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
+			"serial_number: %02x%02x%02x\n", info->serial_number[0],
+			info->serial_number[1], info->serial_number[2]);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
+			"assembly_manufacturer_code: %x\n",
+			info->assembly_manufacturer_code);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
+			"assembly_model_code: %02x%02x%02x\n",
+			info->assembly_model_code[0],
+			info->assembly_model_code[1],
+			info->assembly_model_code[2]);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
+			"memory_manufacturer_code: %x\n",
+			info->memory_mamufacturer_code);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "memory_device_code: %x\n",
+			info->memory_device_code);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "implemented_capacity: %x\n",
+			info->implemented_capacity);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "vcc: %x\n", info->vcc);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "vpp: %x\n", info->vpp);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "controller_number: %x\n",
+			info->controller_number);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "controller_function: %x\n",
+			info->controller_function);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "transfer_supporting: %x\n",
+			info->transfer_supporting);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "format_type: %x\n",
+			info->format_type);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
+			"memorystick_application: %x\n",
+			info->memorystick_application);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "device_type: %x\n",
+			info->device_type);
+	return rc;
+}
+
+static ssize_t ms_block_defects_show(struct device *dev,
+				     struct device_attribute *attr,
+				     char *buf)
+{
+	int idx = (attr == &ms_block_defects[1]) ? 1 : 0;
+	return 0;
+}
+
+static ssize_t ms_block_cis_show(struct device *dev,
+				 struct device_attribute *attr,
+				 char *buf)
+{
+	int idx = (attr == &ms_block_cis[1]) ? 1 : 0;
+	return 0;
+}
+
+static ssize_t ms_block_idi_show(struct device *dev,
+				 struct device_attribute *attr,
+				 char *buf)
+{
+	int idx = (attr == &ms_block_idi[1]) ? 1 : 0;
+
+
+	return 0;
+}
 
 #define MS_BLOCK_CORRECTABLE (MEMSTICK_STATUS1_FGER | MEMSTICK_STATUS1_EXER \
 			      | MEMSTICK_STATUS1_DTER)
