@@ -77,6 +77,7 @@ struct ms_block_boot_header {
 } __attribute__((packed));
 
 #define MS_BLOCK_MAX_BOOT_ADDR 12
+#define MS_BLOCK_CIS_SIZE 256
 
 struct ms_block_idi {
 	unsigned short general_config;
@@ -98,7 +99,7 @@ struct ms_block_idi {
 	unsigned short reserved2[5];
 	unsigned short pio_mode_number;
 	unsigned short dma_mode_number;
-	unsigned short field_validity;	
+	unsigned short field_validity;
 	unsigned short current_logical_cylinders;
 	unsigned short current_logical_heads;
 	unsigned short current_sectors_per_track;
@@ -121,7 +122,7 @@ struct ms_block_boot_ref {
 
 struct ms_block_data {
 	struct memstick_dev      *card;
-	unsigned int             caps; 
+	unsigned int             caps;
 	struct mtdx_dev          *mdev;
 	spinlock_t               lock;
 
@@ -325,9 +326,7 @@ static ssize_t ms_block_info_show(struct device *dev,
 	unsigned short as_year;
 	int tz;
 
-	if (!msb->boot_blocks[idx].data
-	    || (msb->boot_blocks[idx].size
-		< sizeof(struct ms_block_boot_header)))
+	if (!msb->boot_blocks[idx].data)
 		return 0;
 
 	info = &((struct ms_block_boot_header *)msb->boot_blocks[idx].data)
@@ -341,14 +340,14 @@ static ssize_t ms_block_info_show(struct device *dev,
 
 	rc += scnprintf(buf, PAGE_SIZE, "class: %x\n", info->memorystick_class);
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "block_size: %x\n",
-			info->block_size);
+			be16_to_cpu(info->block_size));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "number_of_blocks: %x\n",
-			info->number_of_blocks);
+			be16_to_cpu(info->number_of_blocks));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
 			"number_of_effective_blocks: %x\n",
-			info->number_of_effective_blocks);
+			be16_to_cpu(info->number_of_effective_blocks));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "page_size: %x\n",
-			info->page_size);
+			be16_to_cpu(info->page_size));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "extra_data_size: %x\n",
 			info->extra_data_size);
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
@@ -369,17 +368,17 @@ static ssize_t ms_block_info_show(struct device *dev,
 			info->assembly_model_code[2]);
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
 			"memory_manufacturer_code: %x\n",
-			info->memory_mamufacturer_code);
+			be16_to_cpu(info->memory_mamufacturer_code));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "memory_device_code: %x\n",
-			info->memory_device_code);
+			be16_to_cpu(info->memory_device_code));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "implemented_capacity: %x\n",
-			info->implemented_capacity);
+			be16_to_cpu(info->implemented_capacity));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "vcc: %x\n", info->vcc);
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "vpp: %x\n", info->vpp);
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "controller_number: %x\n",
-			info->controller_number);
+			be16_to_cpu(info->controller_number));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "controller_function: %x\n",
-			info->controller_function);
+			be16_to_cpu(info->controller_function));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "transfer_supporting: %x\n",
 			info->transfer_supporting);
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "format_type: %x\n",
@@ -397,7 +396,22 @@ static ssize_t ms_block_defects_show(struct device *dev,
 				     char *buf)
 {
 	int idx = (attr == &ms_block_defects[1]) ? 1 : 0;
-	return 0;
+	struct ms_block_data *msb
+		= memstick_get_drvdata(container_of(dev, struct memstick_dev,
+						    dev));
+	unsigned int cnt;
+	ssize_t rc = 0;
+
+	if (!msb->boot_blocks[idx].bad_blocks)
+		return 0;
+
+	for (cnt = 0;
+	     msb->boot_blocks[idx].bad_blocks[cnt] != MTDX_INVALID_BLOCK;
+	     ++cnt)
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%08x\n",
+				msb->boot_blocks[idx].bad_blocks[cnt]);
+
+	return rc;
 }
 
 static ssize_t ms_block_cis_show(struct device *dev,
@@ -405,7 +419,15 @@ static ssize_t ms_block_cis_show(struct device *dev,
 				 char *buf)
 {
 	int idx = (attr == &ms_block_cis[1]) ? 1 : 0;
-	return 0;
+	struct ms_block_data *msb
+		= memstick_get_drvdata(container_of(dev, struct memstick_dev,
+						    dev));
+
+	if (!msb->boot_blocks[idx].cis_idi)
+		return 0;
+
+	memcpy(buf, msb->boot_blocks[idx].cis_idi, MS_BLOCK_CIS_SIZE);
+	return MS_BLOCK_CIS_SIZE;
 }
 
 static ssize_t ms_block_idi_show(struct device *dev,
@@ -413,9 +435,88 @@ static ssize_t ms_block_idi_show(struct device *dev,
 				 char *buf)
 {
 	int idx = (attr == &ms_block_idi[1]) ? 1 : 0;
+	int cnt;
+	struct ms_block_data *msb
+		= memstick_get_drvdata(container_of(dev, struct memstick_dev,
+						    dev));
+	ssize_t rc = 0;
+	struct ms_block_idi *idi;
 
+	if (!msb->boot_blocks[idx].cis_idi)
+		return 0;
 
-	return 0;
+	idi = (struct ms_block_idi *)(msb->boot_blocks[idx].cis_idi
+				      + MS_BLOCK_CIS_SIZE);
+
+	rc += scnprintf(buf, PAGE_SIZE, "general_config: %x\n",
+			idi->general_config);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "logical_cylinders: %x\n",
+			idi->logical_cylinders);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "logical_heads: %x\n",
+			idi->logical_heads);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "track_size: %x\n",
+			idi->track_size);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "sector_size: %x\n",
+			idi->sector_size);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "sectors_per_track: %x\n",
+			idi->sectors_per_track);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "msw: %x\n", idi->msw);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "lsw: %x\n", idi->lsw);
+
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "serial_number: '");
+	for (cnt = 0; cnt < 20; ++cnt)
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%c",
+				idi->serial_number[cnt]);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "'\n");
+
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "buffer_type: %x\n",
+			idi->buffer_type);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
+			"buffer_size_increments: %x\n",
+			idi->buffer_size_increments);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "long_command_ecc: %x\n",
+			idi->long_command_ecc);
+
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "firmware_version: '");
+	for (cnt = 0; cnt < 28; ++cnt)
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%c",
+				idi->firmware_version[cnt]);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "'\n");
+
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "model_name: '");
+	for (cnt = 0; cnt < 18; ++cnt)
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%c",
+				idi->model_name[cnt]);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "'\n");
+
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "pio_mode_number: %x\n",
+			idi->pio_mode_number);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "dma_mode_number: %x\n",
+			idi->dma_mode_number);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "field_validity: %x\n",
+			idi->field_validity);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
+			"current_logical_cylinders: %x\n",
+			idi->current_logical_cylinders);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "current_logical_heads: %x\n",
+			idi->current_logical_heads);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
+			"current_sectors_per_track: %x\n",
+			idi->current_sectors_per_track);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
+			"current_sector_capacity: %x\n",
+			idi->current_sector_capacity);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
+			"mutiple_sector_setting: %x\n",
+			idi->mutiple_sector_setting);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "addressable_sectors: %x\n",
+			idi->addressable_sectors);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "single_word_dma: %x\n",
+			idi->single_word_dma);
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "multi_word_dma: %x\n",
+			idi->multi_word_dma);
+
+	return rc;
 }
 
 #define MS_BLOCK_CORRECTABLE (MEMSTICK_STATUS1_FGER | MEMSTICK_STATUS1_EXER \
@@ -540,7 +641,7 @@ static int h_ms_block_req_init(struct memstick_dev *card,
 
 	memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
 			  &ms_block_r_stat_w_param,
-			  sizeof(ms_block_r_stat_w_param));		
+			  sizeof(ms_block_r_stat_w_param));
 
 	if (ms_block_reg_addr_cmp(card, &ms_block_r_stat_w_param))
 		card->next_request = h_ms_block_set_param_addr_init;
@@ -788,7 +889,7 @@ static int h_ms_block_read_extra(struct memstick_dev *card,
 
 	if ((*mrq)->error)
 		return ms_block_complete_multi(card, mrq, (*mrq)->error);
-	
+
 	oob_buf = mtdx_get_oob_buf(msb->req_in);
 	if (!oob_buf)
 		return ms_block_complete_multi(card, mrq, -ENOMEM);
@@ -1012,7 +1113,7 @@ static int h_ms_block_write_extra_single(struct memstick_dev *card,
 			  &msb->cmd, 1);
 	card->next_request = h_ms_block_set_cmd;
 
-	return 0;	
+	return 0;
 }
 
 static int h_ms_block_set_extra_addr_w(struct memstick_dev *card,
@@ -1317,14 +1418,11 @@ unsigned int ms_block_find_boot_block(struct memstick_dev *card,
 	return MTDX_INVALID_BLOCK;
 }
 
-static struct mtdx_attr
-*ms_block_read_boot_block(struct memstick_dev *card,
-			  struct ms_block_boot_header *header,
-			  unsigned int phy_block, const char *name)
+static int ms_block_read_boot_block(struct memstick_dev *card,
+				    struct ms_block_boot_header *header,
+				    struct ms_block_boot_ref *b_ref)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
-	struct mtdx_attr *rv = NULL;
-	char *buf = NULL;
 	unsigned int page_size = be16_to_cpu(header->info.page_size);
 	unsigned int p1, p2, p_sum = 0;
 	int rc;
@@ -1332,7 +1430,7 @@ static struct mtdx_attr
 		.src_dev = msb->mdev,
 		.cmd = MTDX_CMD_READ,
 		.log_block = MTDX_INVALID_BLOCK,
-		.phy_block = phy_block,
+		.phy_block = b_ref->phy_block,
 		.offset = 0,
 		.length = 0
 	};
@@ -1354,14 +1452,17 @@ static struct mtdx_attr
 	if ((p_sum * page_size) < p1)
 		p_sum++;
 
-	buf = kmalloc(p_sum * page_size, GFP_KERNEL);
-	if (!buf)
-		return NULL;
+	b_ref->data = kmalloc(p_sum * page_size, GFP_KERNEL);
+	if (!b_ref->data) {
+		rc = -ENOMEM;
+		goto out;
+	}
 
-	m_req.length = p_sum * page_size;
+	b_ref->size = p_sum * page_size;
+	m_req.length = b_ref->size;
 
 	msb->req_in = &m_req;
-	sg_set_buf(&msb->req_sg, buf, m_req.length);
+	sg_set_buf(&msb->req_sg, b_ref->data, b_ref->size);
 	memset(&msb->extra, 0xff, sizeof(msb->extra));
 
 	card->next_request = h_ms_block_req_init;
@@ -1389,39 +1490,26 @@ static struct mtdx_attr
 		goto out;
 	}
 
-	rv = mtdx_attr_alloc(name, p_sum, page_size);
-	if (mtdx_attr_set_byte_range(rv, buf, 0, m_req.length)
-	    != m_req.length) {
-		mtdx_attr_free(rv);
-		rv = NULL;
-		rc = -ENOMEM;
+out:
+	if (rc) {
+		kfree(b_ref->data);
+		b_ref->size = 0;
 	}
 
-out:
-	if (rc)
-		dev_err(&card->dev, "Error %d reading boot block %x\n", rc,
-			phy_block);
-
-	kfree(buf);
-	return rv;
+	return rc;
 }
 
 static int ms_block_get_boot_values(struct ms_block_data *msb,
-				    unsigned int idx,
-				    struct ms_block_boot_header *header)
+				    struct ms_block_boot_ref *b_ref)
 {
-	int off, cnt, rc, last_pos;
+	int off, cnt, rc = 0;
+	struct ms_block_boot_header *header
+		= (struct ms_block_boot_header *)b_ref->data;
 
-	if (sizeof(struct ms_block_boot_header)
-	    != mtdx_attr_get_byte_range(msb->boot_blocks[idx].attr, header, 0,
-					sizeof(struct ms_block_boot_header)))
-		return -E2BIG;
-
-	rc = mtdx_attr_add_entry(msb->boot_blocks[idx].attr,
-				 ms_block_boot_attr_values, "info",
-				 offsetof(info, struct ms_block_boot_header));
-	if (rc)
-		return rc;
+	if (b_ref->size < sizeof(struct ms_block_boot_header)) {
+		rc = -E2BIG;
+		goto out;
+	}
 
 	for (rc = 0; rc < header->sys_entry_cnt; ++rc) {
 		off = be32_to_cpu(header->sys_entry[rc].start_addr);
@@ -1435,82 +1523,58 @@ static int ms_block_get_boot_values(struct ms_block_data *msb,
 			if (!cnt)
 				continue;
 
-			msb->boot_blocks[idx].bad_blocks
-				= kmalloc((cnt / 2 + 1) * sizeof(unsigned int),
-					  GFP_KERNEL);
+			if (off + cnt > b_ref->size) {
+				rc = -E2BIG;
+				break;
+			}
 
-			if (!msb->boot_blocks[idx].bad_blocks)
-				return -ENOMEM;
+			b_ref->bad_blocks = kmalloc((cnt / 2 + 1)
+						    * sizeof(unsigned int),
+						    GFP_KERNEL);
 
-			bblk = kmalloc(cnt, GFP_KERNEL);
-			if (!bblk)
-				return -ENOMEM;
+			if (!b_ref->bad_blocks)
+				continue;
 
-			if (cnt != mtdx_attr_get_byte_range(
-				msb->boot_blocks[idx].attr, bblk, off, cnt))
-				return -E2BIG;
+			bblk = (unsigned short *)(b_ref->data + off);
 
 			cnt /= 2;
-			msb->boot_blocks[idx].bad_blocks[cnt]
-				= MTDX_INVALID_BLOCK;
+			b_ref->bad_blocks[cnt] = MTDX_INVALID_BLOCK;
 
 			for (cnt -= 1; cnt >= 0; --cnt)
-				msb->boot_blocks[idx].bad_blocks[cnt]
-					= be16_to_cpu(bblk[cnt]);
-
-			kfree(bblk);
-
-			msb->boot_blocks[idx].bad_blocks_val[0].name = NULL;
-			msb->boot_blocks[idx].bad_blocks_val[0].repeat
-				= cnt / 2;
-			msb->boot_blocks[idx].bad_blocks_val[0].param = 2;
-			msb->boot_blocks[idx].bad_blocks_val[0].verify
-				= mtdx_attr_value_range_verify;
-			msb->boot_blocks[idx].bad_blocks_val[0].print
-				= mtdx_attr_value_be_num_print;
-			rc = mtdx_attr_add_entry(msb->boot_blocks[idx].attr,
-						 msb->boot_blocks[idx]
-						 .bad_blocks_val,
-						 "bad_blocks", off);
-			if (rc)
-				return rc;
+				b_ref->bad_blocks[cnt] = be16_to_cpu(bblk[cnt]);
 		} else if (header->sys_entry[rc].data_type_id
 			   == MS_BLOCK_ENTRY_CIS_IDI) {
 			struct ms_block_idi *idi;
 
-			idi = kmalloc(sizeof(struct ms_block_idi), GFP_KERNEL);
-			if (!idi)
-				return -ENOMEM;
+			if (!cnt)
+				continue;
 
-			off += 256;
-			cnt -= 256;
-			if (cnt != sizeof(struct ms_block_idi))
-				return -EINVAL;
-			if (cnt != mtdx_attr_get_byte_range(
-				msb->boot_blocks[idx].attr, idi, off, cnt))
-				return -E2BIG;
+			if ((off + cnt > b_ref->size)
+			    || (cnt < (MS_BLOCK_CIS_SIZE
+				       + sizeof(struct ms_block_idi)))) {
+				rc = -E2BIG;
+				break;
+			}
 
-			msb->boot_blocks[idx].hd_geo.heads
-				= idi->current_logical_heads;
-			msb->boot_blocks[idx].hd_geo.sectors
-				= idi->current_sectors_per_track;
-			msb->boot_blocks[idx].hd_geo.cylinders
+			b_ref->cis_idi = b_ref->data + off;
+			idi = (struct ms_block_idi *)(b_ref->cis_idi
+						      + MS_BLOCK_CIS_SIZE);
+			b_ref->hd_geo.heads = idi->current_logical_heads;
+			b_ref->hd_geo.sectors = idi->current_sectors_per_track;
+			b_ref->hd_geo.cylinders
 				= idi->current_logical_cylinders;
-			kfree(idi);
-
-			rc = mtdx_attr_add_entry(msb->boot_blocks[idx].attr,
-						 ms_block_cis_values,
-						 "cis", off - 256);
-			if (rc)
-				return rc;
-			rc = mtdx_attr_add_entry(msb->boot_blocks[idx].attr,
-						 ms_block_idi_values,
-						 "idi", off);
-			if (rc)
-				return rc;
 		}
 	}
-	return 0;
+
+out:
+	if (rc) {
+		kfree(b_ref->data);
+		kfree(b_ref->bad_blocks);
+		b_ref->data = NULL;
+		b_ref->size = 0;
+	}
+
+	return rc;
 }
 
 static int ms_block_init_card(struct memstick_dev *card)
@@ -1518,7 +1582,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct memstick_host *host = card->host;
 	struct ms_block_boot_header *header = NULL;
-	int rc;
+	int rc, rcx;
 	enum memstick_command cmd = MS_CMD_RESET;
 
 	msb->boot_blocks[0].phy_block = MTDX_INVALID_BLOCK;
@@ -1573,7 +1637,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 	header = kzalloc(sizeof(struct ms_block_boot_header), GFP_KERNEL);
 	if (!header)
 		return -ENOMEM;
- 
+
 	msb->boot_blocks[0].phy_block = ms_block_find_boot_block(card, header,
 								 0);
 
@@ -1591,38 +1655,36 @@ static int ms_block_init_card(struct memstick_dev *card)
 			    / msb->geo.page_size;
 	msb->geo.oob_size = sizeof(struct ms_extra_data_register);
 
-	msb->boot_blocks[0].attr = ms_block_read_boot_block(card, header,
-					msb->boot_blocks[0].phy_block,
-					"boot_block0");
+	rc = ms_block_read_boot_block(card, header, &msb->boot_blocks[0]);
 
 	msb->boot_blocks[1].phy_block
 		= ms_block_find_boot_block(card, header,
 					   msb->boot_blocks[0].phy_block + 1);
 
-	if (msb->boot_blocks[1].phy_block != MTDX_INVALID_BLOCK) {
-		msb->boot_blocks[1].attr = ms_block_read_boot_block(card,
-						header,
-						msb->boot_blocks[1].phy_block,
-						"boot_block1");
-	}
+	if (msb->boot_blocks[1].phy_block != MTDX_INVALID_BLOCK)
+		rcx = ms_block_read_boot_block(card, header,
+					       &msb->boot_blocks[1]);
+	else
+		rcx = -EIO;
 
-	if (msb->boot_blocks[0].attr) {
-		rc = ms_block_get_boot_values(msb, 0, header);
+	if (!rc) {
+		rc = ms_block_get_boot_values(msb, &msb->boot_blocks[0]);
 		if (!rc) {
 			msb->bad_blocks = msb->boot_blocks[0].bad_blocks;
-			msb->hd_geo = msb->boot_blocks[0].hd_geo;
-		}
-	} else
-		rc = -EFAULT;
-
-	if (msb->boot_blocks[1].attr) {
-		int rcx = ms_block_get_boot_values(msb, 1, header);
-		if (rc && !rcx) {
-			msb->bad_blocks = msb->boot_blocks[1].bad_blocks;
-			msb->hd_geo = msb->boot_blocks[1].hd_geo;
-			rc = 0;
+			msb->hd_geo = &msb->boot_blocks[0].hd_geo;
 		}
 	}
+
+	if (!rcx) {
+		rcx = ms_block_get_boot_values(msb, &msb->boot_blocks[1]);
+		if (rc && !rcx) {
+			msb->bad_blocks = msb->boot_blocks[1].bad_blocks;
+			msb->hd_geo = &msb->boot_blocks[1].hd_geo;
+		}
+	}
+
+	if (!rc || !rcx)
+		rc = 0;
 
 out:
 	kfree(header);
@@ -1681,7 +1743,7 @@ static void ms_block_start(struct memstick_dev *card)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	unsigned long flags;
-	
+
 	spin_lock_irqsave(&msb->lock, flags);
 	if (!msb->stopped)
 		goto out;
@@ -1740,8 +1802,17 @@ static int ms_block_mtdx_new_request(struct mtdx_dev *this_dev,
 
 static int ms_block_sysfs_register(struct memstick_dev *card)
 {
-#warning Implement!!!
-	return 0;
+	int rc;
+
+	rc = sysfs_create_group(&card->dev.kobj, &ms_block_grp_boot0);
+	if (rc)
+		return rc;
+
+	rc = sysfs_create_group(&card->dev.kobj, &ms_block_grp_boot1);
+	if (rc)
+		sysfs_remove_group(&card->dev.kobj, &ms_block_grp_boot0);
+
+	return rc;
 }
 
 static int ms_block_mtdx_oob_to_info(struct mtdx_dev *this_dev,
@@ -1893,9 +1964,8 @@ static void ms_block_data_free(struct ms_block_data *msb)
 		return;
 
 	for (cnt = 0; cnt < 2; ++cnt) {
-		mtdx_attr_free(msb->boot_blocks[cnt].attr);
+		kfree(msb->boot_blocks[cnt].data);
 		kfree(msb->boot_blocks[cnt].bad_blocks);
-		kfree(msb->boot_blocks[cnt].bad_blocks_val);
 	}
 
 	kfree(msb);
@@ -1951,29 +2021,14 @@ static int ms_block_probe(struct memstick_dev *card)
 		goto err_out_free;
 	}
 
-	if (msb->boot_blocks[0].attr) {
-		rc = mtdx_attr_sysfs_register(msb->boot_blocks[0].attr,
-					      msb->mdev,
-					      msb->boot_blocks[0].phy_block,
-					      0);
-	}
-
-	if (msb->boot_blocks[1].attr) {
-		int rcx = mtdx_attr_sysfs_register(msb->boot_blocks[1].attr,
-						   msb->mdev,
-						   msb->boot_blocks[1]
-						   .phy_block,
-						   0);
-		if (rc)
-			rc = rcx;
-	}
+	rc = ms_block_sysfs_register(card);
 
 	if (!rc) {
 		msb->active = 1;
 		return 0;
 	}
 
-	device_unregister(&msb->mdev->dev);	
+	device_unregister(&msb->mdev->dev);
 err_out_free:
 	memstick_set_drvdata(card, NULL);
 	ms_block_data_free(msb);
@@ -2006,20 +2061,76 @@ static void ms_block_remove(struct memstick_dev *card)
 
 static int ms_block_suspend(struct memstick_dev *card, pm_message_t state)
 {
-//	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	unsigned long flags;
 
-#warning Implement!!!
+	spin_lock_irqsave(&msb->lock, flags);
+	while (1) {
+		if (msb->stopped) {
+			msb->active = 0;
+			break;
+		}
+		spin_unlock_irqrestore(&msb->lock, flags);
+		ms_block_stop(card);
+		spin_lock_irqsave(&msb->lock, flags);
+	}
+	spin_unlock_irqrestore(&msb->lock, flags);
 	return 0;
 }
 
 static int ms_block_resume(struct memstick_dev *card)
 {
-//	struct ms_block_data *msb = memstick_get_drvdata(card);
 	int rc = 0;
-
-#warning Implement!!!
 #ifdef CONFIG_MEMSTICK_UNSAFE_RESUME
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct ms_block_data *new_msb = kzalloc(sizeof(struct ms_block_data),
+						GFP_KERNEL);
+	struct memstick_host *host = card->host;
 
+	new_msb->card = card;
+	spin_lock_init(&new_msb->lock);
+	init_waitqueue_head(&new_msb->req_wq);
+
+	mutex_lock(&host->lock);
+	memstick_set_drvdata(card, new_msb);
+
+	rc = ms_block_init_card(card);
+	if (rc)
+		goto out;
+
+	if (msb->boot_blocks[0].data) {
+		if (!new_msb->boot_blocks[0].data
+		    || (new_msb->boot_blocks[0].size
+			!= msb->boot_blocks[0].size)
+		    || memcmp(new_msb->boot_blocks[0].data,
+			      msb->boot_blocks[0].data,
+			      msb->boot_blocks[0].size)) {
+			rc = -EFAULT;
+			goto out;
+		}
+	} else if (msb->boot_blocks[1].data) {
+		if (!new_msb->boot_blocks[1].data
+		    || (new_msb->boot_blocks[1].size
+			!= msb->boot_blocks[1].size)
+		    || memcmp(new_msb->boot_blocks[1].data,
+			      msb->boot_blocks[1].data,
+			      msb->boot_blocks[1].size)) {
+			rc = -EFAULT;
+			goto out;
+		}
+	} else {
+		rc = -EFAULT;
+		goto out;
+	}
+
+out:
+	memstick_set_drvdata(card, msb);
+	if (!rc) {
+		msb->active = 1;
+		ms_block_start(card);
+	}
+	ms_block_data_free(new_msb);
+	mutex_unlock(&host->lock);
 
 #endif /* CONFIG_MEMSTICK_UNSAFE_RESUME */
 	return rc;
