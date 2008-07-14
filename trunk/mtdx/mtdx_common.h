@@ -20,18 +20,32 @@
 struct mtdx_device_id {
 	unsigned char inp_wmode;
 	unsigned char out_wmode;
-#define MTDX_WMODE_NONE       0x00
-#define MTDX_WMODE_PEB        0x01
-#define MTDX_WMODE_PAGE_INC   0x02
-#define MTDX_WMODE_PAGE       0x03
-#define MTDX_WMODE_RAM        0x04
+#define MTDX_WMODE_NONE          0x00
+/* Single page per request. */
+#define MTDX_WMODE_PAGE          0x01
+/* Single whole PEB per request.  */
+#define MTDX_WMODE_PEB           0x02
+/* Several pages per request, as long as same PEB address is referenced and
+ * all pages at a lower offset in the PEB are already filled.
+ */
+#define MTDX_WMODE_MPAGE_PEB_INC 0x03
+/* Several pages per request in the same PEB. */
+#define MTDX_WMODE_MPAGE_PEB     0x04
+/* Arbitrary number of pages per request. */
+#define MTDX_WMODE_MPAGE         0x05
+/* No limitations on request contents. */
+#define MTDX_WMODE_RAM           0x06
 
 	unsigned char inp_rmode;
 	unsigned char out_rmode;
 #define MTDX_RMODE_NONE       0x00
+/* Single page per request. */
 #define MTDX_RMODE_PAGE       0x01
-#define MTDX_RMODE_MPAGE_BLK  0x02
+/* Several pages per request in the same PEB. */
+#define MTDX_RMODE_MPAGE_PEB  0x02
+/* Arbitrary number of pages per request. */
 #define MTDX_RMODE_MPAGE      0x03
+/* No limitations on request contents. */
 #define MTDX_RMODE_RAM        0x04
 
 	unsigned short type;
@@ -96,8 +110,9 @@ struct mtdx_page_info {
 
 enum mtdx_param {
 	MTDX_PARAM_NONE = 0,
-	MTDX_PARAM_GEO,        /* Get device geometry | struct mtdx_geo      */
-	MTDX_PARAM_HD_GEO      /* Get device geometry | struct hd_geometry   */
+	MTDX_PARAM_GEO,           /* struct mtdx_geo                */
+	MTDX_PARAM_HD_GEO,        /* struct hd_geometry             */
+	MTDX_PARAM_SPECIAL_BLOCKS /* array of struct mtdx_page_info */
 };
 
 struct mtdx_request {
@@ -120,10 +135,10 @@ struct mtdx_dev {
 	/* notify device of pending requests                          */
 	int                  (*new_request)(struct mtdx_dev *this_dev,
 					    struct mtdx_dev *req_dev);
-	
+
 	/* get any available requests from device                     */
 	struct mtdx_request  *(*get_request)(struct mtdx_dev *this_dev);
-	
+
 	/* complete an active request                                 */
 	void                 (*end_request)(struct mtdx_request *req,
 					    int error, unsigned int count);
@@ -188,12 +203,22 @@ static inline void mtdx_complete_request(struct mtdx_request *req, int error,
 static inline int mtdx_get_data_buf_sg(struct mtdx_request *req,
 				       struct scatterlist *sg)
 {
-	return req->src_dev->get_data_buf_sg(req, sg);	
+	return req->src_dev->get_data_buf_sg(req, sg);
 }
 
 static inline char *mtdx_get_oob_buf(struct mtdx_request *req)
 {
-	return req->src_dev->get_oob_buf(req);	
+	return req->src_dev->get_oob_buf(req);
+}
+
+static inline void *mtdx_get_drvdata(struct mtdx_dev *mdev)
+{
+	return dev_get_drvdata(&mdev->dev);
+}
+
+static inline void mtdx_set_drvdata(struct mtdx_dev *mdev, void *data)
+{
+	dev_set_drvdata(&mdev->dev, data);
 }
 
 #endif

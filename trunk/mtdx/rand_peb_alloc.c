@@ -16,10 +16,11 @@
 #include <linux/bitmap.h>
 
 struct rand_peb_alloc {
-	unsigned long *map_a;
-	unsigned long *map_b;
-	unsigned long *erase_map; /* erase status of block, 1 - needs erase */
-	unsigned long *zone_map;  /* 0 - use map A, 1 - use map B           */
+	unsigned long         *map_a;
+	unsigned long         *map_b;
+	unsigned long         *erase_map; /* erase status of block        */
+	unsigned long         *zone_map;  /* 0 - use map A, 1 - use map B */
+	struct mtdx_peb_alloc mpa;
 };
 
 /*
@@ -29,12 +30,6 @@ struct rand_peb_alloc {
  * are no more free blocks in the selected map, selection is reversed and
  * search is retried.
  */
-
-static inline
-struct rand_peb_alloc *rand_peb_alloc_priv(struct mtdx_peb_alloc *bal)
-{
-	return (struct rand_peb_alloc *)bal->private;
-}
 
 static unsigned int rand_peb_alloc_find_circ(unsigned long *map,
 					     unsigned int min_pos,
@@ -57,7 +52,8 @@ static unsigned int rand_peb_alloc_find_circ(unsigned long *map,
 static unsigned int rand_peb_alloc_get(struct mtdx_peb_alloc *bal,
 				       unsigned int zone, int *dirty)
 {
-	struct rand_peb_alloc *rb = rand_peb_alloc_priv(bal);
+	struct rand_peb_alloc *rb = container_of(bal, struct rand_peb_alloc,
+						 mpa);
 	unsigned long *c_map;
 	unsigned int f_pos, c_pos;
 	int c_stat;
@@ -87,17 +83,19 @@ static unsigned int rand_peb_alloc_get(struct mtdx_peb_alloc *bal,
 	c_stat = test_bit(f_pos, rb->erase_map);
 	c_pos = f_pos;
 
-	if (c_stat != *dirty) {
+	while (c_stat != *dirty) {
 		c_pos++;
 		if (c_pos == zone_max)
 			c_pos = zone_min;
 
-		while ((c_stat != (*dirty)) && (c_pos != f_pos)) {
-			c_pos = rand_peb_alloc_find_circ(c_map, zone_min,
-							 zone_max, c_pos);
-			c_stat = test_bit(f_pos, rb->erase_map);
-		}
+		if (c_pos == f_pos)
+			break;
+
+		c_pos = rand_peb_alloc_find_circ(c_map, zone_min, zone_max,
+						 c_pos);
+		c_stat = test_bit(f_pos, rb->erase_map);
 	}
+
 
 	*dirty = c_stat;
 	set_bit(c_pos, rb->map_a);
@@ -109,7 +107,8 @@ static unsigned int rand_peb_alloc_get(struct mtdx_peb_alloc *bal,
 static void rand_peb_alloc_put(struct mtdx_peb_alloc *bal, unsigned int peb,
 			       int dirty)
 {
-	struct rand_peb_alloc *rb = rand_peb_alloc_priv(bal);
+	struct rand_peb_alloc *rb = container_of(bal, struct rand_peb_alloc,
+						 mpa);
 	unsigned int zone = peb >> bal->block_addr_bits;
 
 	if (test_bit(zone, rb->zone_map)) {
@@ -126,31 +125,29 @@ static void rand_peb_alloc_put(struct mtdx_peb_alloc *bal, unsigned int peb,
 
 static void rand_peb_alloc_free(struct mtdx_peb_alloc *bal)
 {
-	struct rand_peb_alloc *rb = rand_peb_alloc_priv(bal);
+	struct rand_peb_alloc *rb = container_of(bal, struct rand_peb_alloc,
+						 mpa);
 	kfree(rb->map_a);
 	kfree(rb->map_b);
 	kfree(rb->erase_map);
 	kfree(rb->zone_map);
+	kfree(rb);
 }
 
 struct mtdx_peb_alloc *mtdx_random_alloc_init(unsigned int zone_cnt,
 					      unsigned int block_addr_bits)
 {
-	struct mtdx_peb_alloc *bal = kzalloc(sizeof(struct mtdx_peb_alloc)
-					     + sizeof(struct rand_peb_alloc),
-					     GFP_KERNEL);
-	struct rand_peb_alloc *rb;
+	struct rand_peb_alloc *rb = kzalloc(sizeof(struct rand_peb_alloc),
+					    GFP_KERNEL);
 
-	if (!bal)
+	if (!rb)
 		return NULL;
 
-	bal->zone_cnt = zone_cnt;
-	bal->block_addr_bits = block_addr_bits;
-	bal->get_peb = rand_peb_alloc_get;
-	bal->put_peb = rand_peb_alloc_put;
-	bal->free = rand_peb_alloc_free;
-
-	rb = rand_peb_alloc_priv(bal);
+	rb->mpa.zone_cnt = zone_cnt;
+	rb->mpa.block_addr_bits = block_addr_bits;
+	rb->mpa.get_peb = rand_peb_alloc_get;
+	rb->mpa.put_peb = rand_peb_alloc_put;
+	rb->mpa.free = rand_peb_alloc_free;
 
 	rb->map_a = kmalloc(BITS_TO_LONGS(zone_cnt << block_addr_bits)
 			    * sizeof(unsigned long), GFP_KERNEL);
@@ -164,14 +161,13 @@ struct mtdx_peb_alloc *mtdx_random_alloc_init(unsigned int zone_cnt,
 	if (!rb->map_a || !rb->map_b || !rb->erase_map || !rb->zone_map)
 		goto err_out;
 
-	bitmap_fill(rb->map_a, bal->zone_cnt << block_addr_bits);
-	bitmap_fill(rb->map_b, bal->zone_cnt << block_addr_bits);
-	bitmap_fill(rb->erase_map, bal->zone_cnt << block_addr_bits);
+	bitmap_fill(rb->map_a, rb->mpa.zone_cnt << block_addr_bits);
+	bitmap_fill(rb->map_b, rb->mpa.zone_cnt << block_addr_bits);
+	bitmap_fill(rb->erase_map, rb->mpa.zone_cnt << block_addr_bits);
 
-	return bal;
+	return &rb->mpa;
 err_out:
-	rand_peb_alloc_free(bal);
-	kfree(bal);
+	rand_peb_alloc_free(&rb->mpa);
 	return NULL;
 }
 EXPORT_SYMBOL(mtdx_random_alloc_init);
