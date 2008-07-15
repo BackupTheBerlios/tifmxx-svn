@@ -12,7 +12,6 @@
 #include "mtdx_common.h"
 #include <linux/module.h>
 #include <linux/idr.h>
-#include <linux/err.h>
 
 static DEFINE_IDA(mtdx_dev_ida);
 static DEFINE_SPINLOCK(mtdx_dev_lock);
@@ -319,6 +318,59 @@ void __mtdx_free_dev(struct mtdx_dev *mdev)
 	}
 }
 EXPORT_SYMBOL(__mtdx_free_dev);
+
+int mtdx_page_list_append(struct list_head *head, struct mtdx_page_info *info)
+{
+	struct list_head *p = head;
+	struct mtdx_page_info *c_info;
+
+	if (!list_empty(head)) {
+		list_for_each (p, head) {
+			c_info = list_entry(p, struct mtdx_page_info, node);
+			if (c_info->phy_block < info->phy_block)
+				continue;
+			else if (c_info->phy_block > info->phy_block)
+				break;
+			else {
+				if (c_info->page_offset < info->page_offset)
+					continue;
+				else if (c_info->page_offset
+					 > info->page_offset)
+					break;
+				else {
+					c_info->status = info->status;
+					c_info->log_block = info->log_block;
+					return 0;
+				}
+			}
+		}
+	}
+
+	c_info = kmalloc(sizeof(struct mtdx_page_info), GFP_KERNEL);
+	if (!c_info)
+		return -ENOMEM;
+
+	INIT_LIST_HEAD(&c_info->node);
+	c_info->status = info->status;
+	c_info->phy_block = info->phy_block;
+	c_info->log_block = info->log_block;
+	c_info->page_offset = info->page_offset;
+	list_add_tail(&c_info->node, p);
+	return 0;
+}
+EXPORT_SYMBOL(mtdx_page_list_append);
+
+void mtdx_page_list_free(struct list_head *head)
+{
+	struct mtdx_page_info *c_info;
+
+	while (!list_empty(head)) {
+		c_info = list_first_entry(head, struct mtdx_page_info, node);
+		list_del(&c_info->node);
+		kfree(c_info);
+	}
+}
+EXPORT_SYMBOL(mtdx_page_list_free);
 
 static int __init mtdx_init(void)
 {

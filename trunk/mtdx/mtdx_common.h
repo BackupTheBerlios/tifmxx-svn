@@ -20,33 +20,27 @@
 struct mtdx_device_id {
 	unsigned char inp_wmode;
 	unsigned char out_wmode;
-#define MTDX_WMODE_NONE          0x00
-/* Single page per request. */
-#define MTDX_WMODE_PAGE          0x01
-/* Single whole PEB per request.  */
-#define MTDX_WMODE_PEB           0x02
-/* Several pages per request, as long as same PEB address is referenced and
- * all pages at a lower offset in the PEB are already filled.
- */
-#define MTDX_WMODE_MPAGE_PEB_INC 0x03
-/* Several pages per request in the same PEB. */
-#define MTDX_WMODE_MPAGE_PEB     0x04
-/* Arbitrary number of pages per request. */
-#define MTDX_WMODE_MPAGE         0x05
+#define MTDX_WMODE_NONE         0x00
+/* Write only full eraseblocks */
+#define MTDX_WMODE_PEB          0x01
+/* Write only pages higher in offset than anything already written */
+#define MTDX_WMODE_PAGE_PEB_INC 0x02
+/* Write arbitrary pages in the eraseblock */
+#define MTDX_WMODE_PAGE_PEB     0x03
+/* Write integral number of pages elsewhere */
+#define MTDX_WMODE_PAGE         0x04
 /* No limitations on request contents. */
-#define MTDX_WMODE_RAM           0x06
+#define MTDX_WMODE_RAM          0x05
 
 	unsigned char inp_rmode;
 	unsigned char out_rmode;
-#define MTDX_RMODE_NONE       0x00
-/* Single page per request. */
-#define MTDX_RMODE_PAGE       0x01
-/* Several pages per request in the same PEB. */
-#define MTDX_RMODE_MPAGE_PEB  0x02
-/* Arbitrary number of pages per request. */
-#define MTDX_RMODE_MPAGE      0x03
+#define MTDX_RMODE_NONE     0x00
+/* Read pages from single eraseblock */
+#define MTDX_RMODE_PAGE_PEB 0x01
+/* Read integral number of pages from elsewhere */
+#define MTDX_RMODE_PAGE     0x02
 /* No limitations on request contents. */
-#define MTDX_RMODE_RAM        0x04
+#define MTDX_RMODE_RAM      0x03
 
 	unsigned short type;
 #define MTDX_TYPE_NONE       0x00
@@ -102,6 +96,7 @@ enum mtdx_page_status {
  * oob blob.
  */
 struct mtdx_page_info {
+	struct list_head      node;
 	enum mtdx_page_status status;
 	unsigned int          log_block;
 	unsigned int          phy_block;
@@ -112,7 +107,7 @@ enum mtdx_param {
 	MTDX_PARAM_NONE = 0,
 	MTDX_PARAM_GEO,           /* struct mtdx_geo                */
 	MTDX_PARAM_HD_GEO,        /* struct hd_geometry             */
-	MTDX_PARAM_SPECIAL_BLOCKS /* array of struct mtdx_page_info */
+	MTDX_PARAM_SPECIAL_BLOCKS /* list of struct mtdx_page_info  */
 };
 
 struct mtdx_request {
@@ -193,6 +188,8 @@ void mtdx_unregister_driver(struct mtdx_driver *drv);
 struct mtdx_dev *mtdx_alloc_dev(struct device *parent,
 				const struct mtdx_device_id *id);
 void __mtdx_free_dev(struct mtdx_dev *mdev);
+int mtdx_page_list_append(struct list_head *head, struct mtdx_page_info *info);
+void mtdx_page_list_free(struct list_head *head);
 
 static inline void mtdx_complete_request(struct mtdx_request *req, int error,
 					 unsigned int count)

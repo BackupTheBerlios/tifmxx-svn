@@ -1893,116 +1893,48 @@ static int ms_block_mtdx_get_param(struct mtdx_dev *this_dev,
 		return 0;
 	}
 	case MTDX_PARAM_SPECIAL_BLOCKS: {
-		unsigned int b_cnt = 0, cnt1, cnt2;
-		struct mtdx_page_info *info;
-		unsigned long *bb_map = NULL;
-		unsigned int bb_sz = 0;
+		struct list_head *p_list = val;
+		struct mtdx_page_info info;
+		unsigned int cnt;
+		int rc;
 
-		if (msb->boot_blocks[0].phy_block != MTDX_INVALID_BLOCK)
-			b_cnt = 1 + msb->boot_blocks[0].bad_blocks_cnt;
-
-		if (msb->boot_blocks[1].phy_block != MTDX_INVALID_BLOCK)
-			b_cnt++;
-
-		if (!msb->boot_blocks[0].bad_blocks_cnt)
-			b_cnt += msb->boot_blocks[1].bad_blocks_cnt;
-		else if (msb->boot_blocks[1].bad_blocks_cnt) {
-			int cnt1;
-			if (msb->boot_blocks[1].bad_blocks_cnt
-			    == msb->boot_blocks[0].bad_blocks_cnt) {
-				if (!memcmp(msb->boot_blocks[0].bad_blocks,
-					    msb->boot_blocks[1].bad_blocks,
-					    msb->boot_blocks[0].bad_blocks_cnt
-					    * sizeof(unsigned int)))
-					goto proceed;
-			}
-
-			bb_sz = BITS_TO_LONGS(msb->boot_blocks[1]
-						   .bad_blocks_cnt);
-
-			bb_map = kzalloc(bb_sz * sizeof(unsigned long),
-					 GFP_KERNEL);
-			if (!bb_map)
-				goto proceed;
-
-			bb_sz = msb->boot_blocks[1].bad_blocks_cnt;
-
-			for (cnt1 = 0; cnt1 < bb_sz; ++cnt1) {
-				set_bit(cnt1, bb_map);
-				for (cnt2 = 0;
-				     cnt2 < msb->boot_blocks[0].bad_blocks_cnt;
-				     ++cnt2) {
-					if (msb->boot_blocks[0]
-					    .bad_blocks[cnt2]
-					    == msb->boot_blocks[1]
-					       .bad_blocks[cnt1]) {
-						clear_bit(cnt1, bb_map);
-						break;
-					}
-				}
-			}
-			cnt1 = bitmap_weight(bb_map, bb_sz);
-			if (!cnt1) {
-				kfree(bb_map);
-				bb_map = NULL;
-			} else
-				b_cnt += cnt1;
-		}
-proceed:
-		if (!b_cnt) {
-			*(struct mtdx_page_info **)val = NULL;
-			return 0;
-		}
-
-		info = kzalloc(sizeof(struct mtdx_page_info) * (b_cnt + 1),
-			       GFP_KERNEL);
-		if (!info)
-			return -ENOMEM;
-
-		info[b_cnt].log_block = MTDX_INVALID_BLOCK;
-		info[b_cnt].phy_block = MTDX_INVALID_BLOCK;
-		cnt1 = 0;
+		info.log_block = MTDX_INVALID_BLOCK;
+		info.page_offset = 0;
 
 		if (msb->boot_blocks[0].phy_block != MTDX_INVALID_BLOCK) {
-			info[cnt1].status = MTDX_PAGE_RESERVED;
-			info[cnt1].log_block = MTDX_INVALID_BLOCK;
-			info[cnt1].phy_block = msb->boot_blocks[0].phy_block;
-			++cnt1;
+			info.status = MTDX_PAGE_RESERVED;
+			info.phy_block = msb->boot_blocks[0].phy_block;
+			rc = mtdx_page_list_append(p_list, &info);
+			if (rc)
+				return rc;
 		}
 
 		if (msb->boot_blocks[1].phy_block != MTDX_INVALID_BLOCK) {
-			info[cnt1].status = MTDX_PAGE_RESERVED;
-			info[cnt1].log_block = MTDX_INVALID_BLOCK;
-			info[cnt1].phy_block = msb->boot_blocks[1].phy_block;
-			++cnt1;
+			info.status = MTDX_PAGE_RESERVED;
+			info.phy_block = msb->boot_blocks[1].phy_block;
+			rc = mtdx_page_list_append(p_list, &info);
+			if (rc)
+				return rc;
 		}
 
-		if (msb->boot_blocks[0].bad_blocks_cnt) {
-			for (cnt2 = 0;
-			     cnt2 < msb->boot_blocks[0].bad_blocks_cnt;
-			     ++cnt2) {
-				info[cnt1].status = MTDX_PAGE_INVALID;
-				info[cnt1].log_block = MTDX_INVALID_BLOCK;
-				info[cnt1].phy_block = msb->boot_blocks[0]
-							    .bad_blocks[cnt2];
-				++cnt1;
-			}
+		for (cnt = 0; cnt < msb->boot_blocks[0].bad_blocks_cnt;
+		     ++cnt) {
+			info.status = MTDX_PAGE_INVALID;
+			info.phy_block = msb->boot_blocks[0].bad_blocks[cnt];
+			rc = mtdx_page_list_append(p_list, &info);
+			if (rc)
+				return rc;
 		}
 
-		if (bb_map) {
-			cnt2 = find_first_bit(bb_map, bb_sz);
-			while (cnt2 < bb_sz) {
-				info[cnt1].status = MTDX_PAGE_INVALID;
-				info[cnt1].log_block = MTDX_INVALID_BLOCK;
-				info[cnt1].phy_block = msb->boot_blocks[1]
-							    .bad_blocks[cnt2];
-				++cnt1;
-				++cnt2;
-				cnt2 = find_next_bit(bb_map, bb_sz, cnt2);
-			};
-
-			kfree(bb_map);
+		for (cnt = 0; cnt < msb->boot_blocks[1].bad_blocks_cnt;
+		     ++cnt) {
+			info.status = MTDX_PAGE_INVALID;
+			info.phy_block = msb->boot_blocks[1].bad_blocks[cnt];
+			rc = mtdx_page_list_append(p_list, &info);
+			if (rc)
+				return rc;
 		}
+
 		return 0;
 	}
 	default:
@@ -2061,9 +1993,9 @@ static void ms_block_data_free(struct ms_block_data *msb)
 static int ms_block_probe(struct memstick_dev *card)
 {
 	const struct mtdx_device_id c_id = {
-		MTDX_WMODE_MPAGE_PEB_INC,
+		MTDX_WMODE_PAGE_PEB_INC,
 		MTDX_WMODE_NONE,
-		MTDX_RMODE_MPAGE_PEB,
+		MTDX_RMODE_PAGE_PEB,
 		MTDX_RMODE_NONE,
 		MTDX_TYPE_MEDIA,
 		MTDX_ID_MEDIA_MEMORYSTICK
