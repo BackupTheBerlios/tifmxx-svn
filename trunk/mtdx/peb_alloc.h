@@ -49,9 +49,10 @@ static inline void mtdx_put_peb(struct mtdx_peb_alloc *bal, unsigned int peb,
 	bal->put_peb(bal, peb, dirty);
 }
 
-static inline void mtdx_free_peb_alloc(struct mtdx_peb_alloc *bal)
+static inline void mtdx_peb_alloc_free(struct mtdx_peb_alloc *bal)
 {
-	bal->free(bal);
+	if (bal)
+		bal->free(bal);
 }
 
 struct mtdx_peb_alloc *mtdx_rand_peb_alloc(unsigned int zone_cnt,
