@@ -16,6 +16,11 @@
 static DEFINE_IDA(mtdx_dev_ida);
 static DEFINE_SPINLOCK(mtdx_dev_lock);
 
+static struct device_type mtdx_type = {
+	.name = "mtdx"
+};
+
+
 static void mtdx_free_dev(struct device *dev)
 {
 	struct mtdx_dev *mdev = container_of(dev, struct mtdx_dev, dev);
@@ -148,6 +153,10 @@ static int mtdx_print_child_id(struct device *dev, void *data)
 
 	if (pb->offset >= pb->size)
 		return -EAGAIN;
+
+	/* Skip non-mtdx children */
+	if (dev->type != &mtdx_type)
+		return 0;
 
 	rc = scnprintf(pb->buf + pb->offset, pb->size - pb->offset,
 		       "mtdx%d: iw%02xow%02xir%02xor%02xt%04xi%04x\n",
@@ -296,6 +305,7 @@ struct mtdx_dev *mtdx_alloc_dev(struct device *parent,
 	mdev->dev.parent = parent;
 	mdev->dev.bus = &mtdx_bus_type;
 	mdev->dev.release = mtdx_free_dev;
+	mdev->dev.type = &mtdx_type;
 
 	snprintf(mdev->dev.bus_id, sizeof(mdev->dev.bus_id),
 		 "mtdx%d", mdev->ord);

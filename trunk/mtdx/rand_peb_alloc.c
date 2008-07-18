@@ -58,11 +58,16 @@ static unsigned int rand_peb_alloc_get(struct mtdx_peb_alloc *bal,
 	unsigned int f_pos, c_pos;
 	int c_stat;
 
-	unsigned int zone_min = zone << bal->block_addr_bits;
-	unsigned int zone_max = (zone + 1) << bal->block_addr_bits;
+	unsigned int zone_min = zone << bal->zone_size_log;
+	unsigned int zone_max = (zone + 1) << bal->zone_size_log;
 	/* Is random of any help here? */
-	unsigned int rand_pos = (((1 << bal->block_addr_bits) - 1)
+	unsigned int rand_pos = (((1 << bal->zone_size_log) - 1)
 				 & random32()) + zone_min;
+
+	if (zone_max > bal->block_cnt)
+		zone_max = bal->block_cnt;
+	if (rand_pos > bal->block_cnt)
+		rand_pos = bal->block_cnt - 1;
 
 	c_map = test_bit(zone, rb->zone_map) ? rb->map_b : rb->map_a;
 
@@ -109,7 +114,7 @@ static void rand_peb_alloc_put(struct mtdx_peb_alloc *bal, unsigned int peb,
 {
 	struct rand_peb_alloc *rb = container_of(bal, struct rand_peb_alloc,
 						 mpa);
-	unsigned int zone = peb >> bal->block_addr_bits;
+	unsigned int zone = peb >> bal->zone_size_log;
 
 	if (test_bit(zone, rb->zone_map)) {
 		set_bit(peb, rb->map_b);
@@ -123,6 +128,17 @@ static void rand_peb_alloc_put(struct mtdx_peb_alloc *bal, unsigned int peb,
 		clear_bit(peb, rb->erase_map);
 }
 
+static void rand_peb_alloc_reset(struct mtdx_peb_alloc *bal)
+{
+	struct rand_peb_alloc *rb = container_of(bal, struct rand_peb_alloc,
+						 mpa);
+
+	bitmap_fill(rb->map_a, bal->block_cnt);
+	bitmap_fill(rb->map_b, bal->block_cnt);
+	bitmap_fill(rb->erase_map, bal->block_cnt);
+	bitmap_zero(rb->zone_map, bal->block_cnt);
+}
+
 static void rand_peb_alloc_free(struct mtdx_peb_alloc *bal)
 {
 	struct rand_peb_alloc *rb = container_of(bal, struct rand_peb_alloc,
@@ -134,36 +150,39 @@ static void rand_peb_alloc_free(struct mtdx_peb_alloc *bal)
 	kfree(rb);
 }
 
-struct mtdx_peb_alloc *mtdx_random_alloc_init(unsigned int zone_cnt,
-					      unsigned int block_addr_bits)
+struct mtdx_peb_alloc *mtdx_random_alloc_init(unsigned int zone_size_log,
+					      unsigned int block_cnt)
 {
 	struct rand_peb_alloc *rb = kzalloc(sizeof(struct rand_peb_alloc),
 					    GFP_KERNEL);
+	unsigned int zone_cnt = block_cnt >> zone_size_log;
 
 	if (!rb)
 		return NULL;
 
-	rb->mpa.zone_cnt = zone_cnt;
-	rb->mpa.block_addr_bits = block_addr_bits;
+	if (!zone_cnt)
+		zone_cnt = 1;
+
+	rb->mpa.zone_size_log = zone_size_log;
+	rb->mpa.block_cnt = block_cnt;
 	rb->mpa.get_peb = rand_peb_alloc_get;
 	rb->mpa.put_peb = rand_peb_alloc_put;
+	rb->mpa.reset = rand_peb_alloc_reset;
 	rb->mpa.free = rand_peb_alloc_free;
 
-	rb->map_a = kmalloc(BITS_TO_LONGS(zone_cnt << block_addr_bits)
+	rb->map_a = kmalloc(BITS_TO_LONGS(block_cnt)
 			    * sizeof(unsigned long), GFP_KERNEL);
-	rb->map_b = kmalloc(BITS_TO_LONGS(zone_cnt << block_addr_bits)
+	rb->map_b = kmalloc(BITS_TO_LONGS(block_cnt)
 			    * sizeof(unsigned long), GFP_KERNEL);
-	rb->erase_map = kmalloc(BITS_TO_LONGS(zone_cnt << block_addr_bits)
+	rb->erase_map = kmalloc(BITS_TO_LONGS(block_cnt)
 				* sizeof(unsigned long), GFP_KERNEL);
-	rb->zone_map = kzalloc(BITS_TO_LONGS(zone_cnt) * sizeof(unsigned long),
+	rb->zone_map = kmalloc(BITS_TO_LONGS(zone_cnt) * sizeof(unsigned long),
 			       GFP_KERNEL);
 
 	if (!rb->map_a || !rb->map_b || !rb->erase_map || !rb->zone_map)
 		goto err_out;
 
-	bitmap_fill(rb->map_a, rb->mpa.zone_cnt << block_addr_bits);
-	bitmap_fill(rb->map_b, rb->mpa.zone_cnt << block_addr_bits);
-	bitmap_fill(rb->erase_map, rb->mpa.zone_cnt << block_addr_bits);
+	rand_peb_alloc_reset(&rb->mpa);
 
 	return &rb->mpa;
 err_out:

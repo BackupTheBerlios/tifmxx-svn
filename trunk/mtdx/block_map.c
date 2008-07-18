@@ -137,7 +137,7 @@ static void mtdx_block_map_put_node(struct mtdx_block_map *map,
 		schedule_work(&map->allocator_work);
 }
 
-static void mtdx_block_map_free_tree(struct mtdx_block_map *map)
+static void mtdx_block_map_put_tree(struct mtdx_block_map *map)
 {
 	struct rb_node *p, *q;
 	struct block_node *b;
@@ -146,7 +146,10 @@ static void mtdx_block_map_free_tree(struct mtdx_block_map *map)
 		if (!p->rb_left) {
 			q = p->rb_right;
 			b = rb_entry(p, struct block_node, node);
-			map->block_free(b);
+			b->node.rb_left = NULL;
+			b->node.rb_right = map->retired_nodes;
+			map->retired_nodes = &b->node;
+			map->rnode_count++;
 		} else {
 			q = p->rb_left;
 			p->rb_left = q->rb_right;
@@ -414,7 +417,7 @@ void mtdx_block_map_free(struct mtdx_block_map *map)
 	if (!map)
 		return;
 
-	mtdx_block_map_free_tree(map);
+	mtdx_block_map_put_tree(map);
 
 	while (map->retired_nodes) {
 		b = rb_entry(map->retired_nodes, struct block_node, node);
@@ -450,6 +453,20 @@ int mtdx_block_map_check_range(struct mtdx_block_map *map, unsigned int address,
 	return rc;
 }
 EXPORT_SYMBOL(mtdx_block_map_check_range);
+
+void mtdx_block_map_reset(struct mtdx_block_map *map)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&map->lock, flags);
+	mtdx_block_map_put_tree(map);
+
+	if (map->rnode_count > (2 * map->target_count))
+		schedule_work(&map->allocator_work);
+
+	spin_unlock_irqrestore(&map->lock, flags);
+}
+EXPORT_SYMBOL(mtdx_block_map_reset);
 
 MODULE_AUTHOR("Alex Dubov");
 MODULE_DESCRIPTION("Simple dual-mode free page map");

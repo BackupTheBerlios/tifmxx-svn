@@ -17,4 +17,5 @@ int mtdx_block_map_set_range(struct mtdx_block_map *map, unsigned int address,
 			     unsigned int offset, unsigned int count);
 int mtdx_block_map_check_range(struct mtdx_block_map *map, unsigned int address,
 			       unsigned int offset, unsigned int count);
+void mtdx_block_map_reset(struct mtdx_block_map *map);
 #endif

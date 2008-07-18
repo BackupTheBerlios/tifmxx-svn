@@ -1645,7 +1645,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 		goto out;
 	}
 
-	msb->geo.zone_cnt_log = 9;
+	msb->geo.zone_size_log = 9;
 	msb->geo.log_block_cnt
 		= be16_to_cpu(header->info.number_of_effective_blocks);
 	msb->geo.phy_block_cnt = be16_to_cpu(header->info.number_of_blocks);

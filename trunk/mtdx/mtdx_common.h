@@ -57,7 +57,7 @@ struct mtdx_device_id {
 };
 
 struct mtdx_dev_geo {
-	unsigned int zone_cnt_log;  /* Number of bits set aside for zoning */
+	unsigned int zone_size_log; /* Number of bits set aside for zoning */
 	unsigned int log_block_cnt; /* Number of logical eraseblocks       */
 	unsigned int phy_block_cnt; /* Number of physical eraseblocks      */
 	unsigned int page_cnt;      /* Number of pages per eraseblock      */

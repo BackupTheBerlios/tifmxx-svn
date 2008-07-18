@@ -27,13 +27,14 @@
  */
 
 struct mtdx_peb_alloc {
-	unsigned int zone_cnt;
-	unsigned int block_addr_bits;
+	unsigned int zone_size_log;
+	unsigned int block_cnt;
 
 	unsigned int (*get_peb)(struct mtdx_peb_alloc *bal,
 				unsigned int zone, int *dirty);
 	void         (*put_peb)(struct mtdx_peb_alloc *bal, unsigned int peb,
 				int dirty);
+	void         (*reset)(struct mtdx_peb_alloc *bal);
 	void         (*free)(struct mtdx_peb_alloc *bal);
 };
 
@@ -49,13 +50,19 @@ static inline void mtdx_put_peb(struct mtdx_peb_alloc *bal, unsigned int peb,
 	bal->put_peb(bal, peb, dirty);
 }
 
+static inline void mtdx_peb_alloc_reset(struct mtdx_peb_alloc *bal)
+{
+	if (bal->reset)
+		bal->reset(bal);
+}
+
 static inline void mtdx_peb_alloc_free(struct mtdx_peb_alloc *bal)
 {
 	if (bal)
 		bal->free(bal);
 }
 
-struct mtdx_peb_alloc *mtdx_rand_peb_alloc(unsigned int zone_cnt,
-					   unsigned int block_addr_bits);
+struct mtdx_peb_alloc *mtdx_rand_peb_alloc(unsigned int zone_size_log,
+					   unsigned int block_cnt);
 
 #endif
