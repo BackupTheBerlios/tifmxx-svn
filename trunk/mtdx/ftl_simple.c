@@ -12,7 +12,7 @@
 #include <linux/module.h>
 #include "mtdx_common.h"
 #include "peb_alloc.h"
-#include "block_map.h"
+#include "long_map.h"
 
 #define DRIVER_NAME "ftl_simple"
 
@@ -24,7 +24,7 @@ struct zone_data {
 struct ftl_simple_data {
 	spinlock_t            lock;
 	atomic_long_t         usage_count;
-	struct mtdx_block_map *b_map;
+	struct long_map       *b_map;
 	struct mtdx_peb_alloc *b_alloc;
 	struct mtdx_dev_geo   geo;
 	struct mtdx_dev       *req_dev;
@@ -36,6 +36,12 @@ struct ftl_simple_data {
 	unsigned char         *block_buf;
 	struct zone_data      *zones[];
 };
+
+static void *ftl_simple_alloc_pmap(unsigned long num_bits)
+{
+	return kmalloc(BITS_TO_LONGS(num_bits) * sizeof(unsigned long),
+		       GFP_KERNEL);
+}
 
 static int ftl_simple_zone_valid(struct ftl_simple_data *fsd, unsigned int zone)
 {
@@ -129,7 +135,7 @@ static void ftl_simple_free(struct ftl_simple_data *fsd)
 	kfree(fsd->block_buf);
 
 	mtdx_page_list_free(&fsd->special_blocks);
-	mtdx_block_map_free(fsd->b_map);
+	long_map_destroy(fsd->b_map);
 	mtdx_peb_alloc_free(fsd->b_alloc);
 	kfree(fsd);
 }
@@ -168,26 +174,17 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 
 	spin_lock_init(&fsd->lock);
 
-	switch (parent->id.inp_wmode) {
-	case MTDX_WMODE_PAGE_PEB:
-		fsd->b_map = mtdx_block_map_alloc(fsd->geo.page_cnt,
-						  min(fsd->geo.phy_block_cnt
-						      - fsd->geo.log_block_cnt,
-						      8U),
-						  MTDX_BLOCK_MAP_RANDOM);
-		break;
-	case MTDX_WMODE_PAGE_PEB_INC:
-		fsd->b_map = mtdx_block_map_alloc(fsd->geo.page_cnt,
-						  min(fsd->geo.phy_block_cnt
-						      - fsd->geo.log_block_cnt,
-						      8U),
-						  MTDX_BLOCK_MAP_INCREMENTAL);
-		break;
-	case MTDX_WMODE_PEB:
-		break;
-	default:
-		rc = -EINVAL;
-		goto err_out;
+	if (((parent->id.inp_wmode == MTDX_WMODE_PAGE_PEB)
+	      && (fsd->geo.page_cnt <= BITS_PER_LONG))
+	     || (parent->id.inp_wmode == MTDX_WMODE_PAGE_PEB_INC)) {
+		fsd->b_map = long_map_create(min(fsd->geo.phy_block_cnt
+						 - fsd->geo.log_block_cnt, 8U),
+					     NULL, NULL, 0);
+	} else if (parent->id.inp_wmode == MTDX_WMODE_PAGE_PEB) {
+		fsd->b_map = long_map_create(min(fsd->geo.phy_block_cnt
+						 - fsd->geo.log_block_cnt, 8U),
+					     ftl_simple_alloc_pmap, NULL,
+					     fsd->geo.page_cnt);
 	}
 
 	fsd->b_alloc = mtdx_rand_peb_alloc(fsd->geo.zone_size_log,
