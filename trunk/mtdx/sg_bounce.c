@@ -1,5 +1,5 @@
 /*
- *  MTDX copy to/from sg entry
+ *  Copy to/from sg entry, taking highmem into consideration
  *
  *  Copyright (C) 2008 Alex Dubov <oakad@yahoo.com>
  *
@@ -49,6 +49,46 @@ unsigned int bounce_to_sg(struct scatterlist *sg, unsigned int *sg_off,
 		rc -= p_cnt;
 		*sg_off += p_cnt;
 		*buf_off += p_cnt;
+	}
+#endif
+	return count;
+}
+
+unsigned int fill_sg(struct scatterlist *sg, unsigned int *sg_off,
+		     unsigned int val, unsigned int count)
+{
+	char *dst;
+#ifdef CONFIG_HIGHMEM
+	unsigned long flags;
+	unsigned int s_off, p_off, p_cnt, rc;
+	struct page *pg;
+#endif
+
+	if (*sg_off >= sg->length)
+		return 0;
+
+	count = min(sg->length - *sg_off, count);
+
+#ifndef CONFIG_HIGHMEM
+	dst = sg_virt(sg);
+	memset(dst + *sg_off, val, count);
+	*sg_off += count;
+#else
+	rc = count;
+	while (rc) {
+		s_off = sg->offset + *sg_off;
+		pg = nth_page(sg_page(sg), s_off >> PAGE_SHIFT);
+		p_off = offset_in_page(s_off);
+		p_cnt = min(PAGE_SIZE - p_off, rc);
+
+		local_irq_save(flags);
+		dst = kmap_atomic(pg, KM_BOUNCE_READ) + p_off;
+		memset(dst, val, p_cnt);
+		kunmap_atomic(dst - p_off, KM_BOUNCE_READ);
+		local_irq_restore(flags);
+
+		rc -= p_cnt;
+		*sg_off += p_cnt;
 	}
 #endif
 	return count;
