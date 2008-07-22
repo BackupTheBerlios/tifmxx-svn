@@ -105,9 +105,11 @@ struct mtdx_page_info {
 
 enum mtdx_param {
 	MTDX_PARAM_NONE = 0,
-	MTDX_PARAM_GEO,           /* struct mtdx_geo                */
-	MTDX_PARAM_HD_GEO,        /* struct hd_geometry             */
-	MTDX_PARAM_SPECIAL_BLOCKS /* list of struct mtdx_page_info  */
+	MTDX_PARAM_GEO,            /* struct mtdx_geo                */
+	MTDX_PARAM_HD_GEO,         /* struct hd_geometry             */
+	MTDX_PARAM_SPECIAL_BLOCKS, /* list of struct mtdx_page_info  */
+	MTDX_PARAM_READ_ONLY,      /* boolean int                    */
+	MTDX_PARAM_MEM_FILL_VALUE  /* int                            */
 };
 
 struct mtdx_request {

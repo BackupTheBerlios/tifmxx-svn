@@ -19,7 +19,7 @@
 
 struct zone_data {
 	unsigned long *useful_blocks;
-	unsigned int  b_table[];
+	unsigned int  b_tabl e[];
 };
 
 struct ftl_simple_data {
@@ -39,11 +39,17 @@ struct ftl_simple_data {
 	unsigned int          zone_scan_pos;
 	unsigned int          t_count;
 
+	unsigned int          fill_value;
+	unsigned int          dumb_copy;
+
 	union {
 		unsigned long         valid_zones;
 		unsigned long         *valid_zones_ptr;
 	};
 	struct list_head      special_blocks;
+	void                  (*end_req_fn)(struct ftl_simple_data *fsd,
+					    int error, unsigned int count);
+	unsigned char         *oob_buf;
 	unsigned char         *block_buf;
 	struct zone_data      *zones[];
 };
@@ -69,11 +75,28 @@ static int ftl_simple_setup_zone_scan(struct ftl_simple_data *fsd,
 
 static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 {
-
+	if (!fsd->b_alloc)
+		return -EROFS;
 }
 
 static int ftl_simple_fill_data(struct ftl_simple_data *fsd)
 {
+	unsigned int length = fsd->req_out.length;
+	int rc = 0;
+
+	while (length) {
+		if (fsd->req_sg.length <= fsd->sg_off) {
+			fsd->sg_off = 0;
+			rc = mtdx_get_data_buf_sg(fsd->req_in, &fsd->req_sg);
+			if (rc)
+				return rc;
+		}
+		length -= fill_sg(&fsd->req_sg, &fsd->sg_off, fsd->fill_value,
+				  length);
+	}
+
+	fsd->t_count += fsd->req_out.length - length;
+	return rc;
 }
 
 static int ftl_simple_setup_read(struct ftl_simple_data *fsd)
@@ -116,6 +139,24 @@ try_again:
 static void ftl_simple_end_request(struct mtdx_request *req, int error,
 				   unsigned int count)
 {
+	struct ftl_simple_data *fsd = mtdx_get_drvdata(req->src_dev);
+	unsigned long flags;
+
+	spin_lock_irqsave(&fsd->lock, flags);
+	if (!fsd->end_req_fn) {
+		fsd->t_count += count;
+
+		if (!error && (fsd->t_count >= fsd->req_in->length))
+			error = -EAGAIN;
+
+		if (error) {
+			mtdx_complete_request(fsd->req_in, error, fsd->t_count);
+			fsd->req_in = NULL;
+		}
+	} else
+		fsd->end_req_fn(fsd, error, count);
+
+	spin_unlock_irqrestore(&fsd->lock, flags);
 }
 
 static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
@@ -244,6 +285,7 @@ static void ftl_simple_free(struct ftl_simple_data *fsd)
 	if (fsd->zone_cnt > BITS_PER_LONG)
 		kfree(fsd->valid_zones_ptr);
 
+	kfree(fsd->oob_buf);
 	kfree(fsd->block_buf);
 
 	mtdx_page_list_free(&fsd->special_blocks);
@@ -287,33 +329,6 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 
 	spin_lock_init(&fsd->lock);
 
-	if (((parent->id.inp_wmode == MTDX_WMODE_PAGE_PEB)
-	      && (fsd->geo.page_cnt <= BITS_PER_LONG))
-	     || (parent->id.inp_wmode == MTDX_WMODE_PAGE_PEB_INC)) {
-		fsd->b_map = long_map_create(min(fsd->geo.phy_block_cnt
-						 - fsd->geo.log_block_cnt, 8U),
-					     NULL, NULL, 0);
-	} else if (parent->id.inp_wmode == MTDX_WMODE_PAGE_PEB) {
-		fsd->b_map = long_map_create(min(fsd->geo.phy_block_cnt
-						 - fsd->geo.log_block_cnt, 8U),
-					     ftl_simple_alloc_pmap, NULL,
-					     fsd->geo.page_cnt);
-	}
-
-	fsd->b_alloc = mtdx_rand_peb_alloc(fsd->geo.zone_size_log,
-					   fsd->geo.phy_block_cnt);
-	if (!fsd->b_alloc) {
-		rc = -ENOMEM;
-		goto err_out;
-	}
-
-	fsd->block_buf = kmalloc(fsd->geo.page_cnt * fsd->geo.page_size,
-				 GFP_KERNEL);
-	if (!fsd->block_buf) {
-		rc = -ENOMEM;
-		goto err_out;
-	}
-
 	if (fsd->zone_cnt > BITS_PER_LONG) {
 		fsd->valid_zones_ptr = kzalloc(BITS_TO_LONGS(fsd->zone_cnt)
 					       * sizeof(unsigned long),
@@ -324,6 +339,45 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 		}
 	} else
 		fsd->valid_zones = 0;
+
+	fsd->oob_buf = kmalloc(fsd->geo.oob_size, GFP_KERNEL);
+	if (!fsd->oob_buf) {
+		rc = -ENOMEM;
+		goto err_out;
+	}
+
+	parent->get_param(parent, MTDX_PARAM_MEM_FILL_VALUE, &fsd->fill_value);
+	parent->get_param(parent, MTDX_PARAM_READ_ONLY, &rc);
+
+	if (!rc) {
+		unsigned int r_cnt = min(fsd->geo.phy_block_cnt
+					 - fsd->geo.log_block_cnt, 8U);
+
+		if (((parent->id.inp_wmode == MTDX_WMODE_PAGE_PEB)
+		      && (fsd->geo.page_cnt <= BITS_PER_LONG))
+		     || (parent->id.inp_wmode == MTDX_WMODE_PAGE_PEB_INC)) {
+			fsd->b_map = long_map_create(r_cnt, NULL, NULL, 0);
+		} else if (parent->id.inp_wmode == MTDX_WMODE_PAGE_PEB) {
+			fsd->b_map = long_map_create(r_cnt,
+						     ftl_simple_alloc_pmap,
+						     NULL, fsd->geo.page_cnt);
+		}
+
+		fsd->b_alloc = mtdx_rand_peb_alloc(fsd->geo.zone_size_log,
+						   fsd->geo.phy_block_cnt);
+		if (!fsd->b_alloc) {
+			rc = -ENOMEM;
+			goto err_out;
+		}
+
+		fsd->block_buf = kmalloc(fsd->geo.page_cnt * fsd->geo.page_size,
+					 GFP_KERNEL);
+		if (!fsd->block_buf) {
+			rc = -ENOMEM;
+			goto err_out;
+		}
+
+	}
 
 	for (rc = 0; rc < fsd->zone_cnt; ++rc) {
 		fsd->zones[rc] = kzalloc(sizeof(struct zone_data)

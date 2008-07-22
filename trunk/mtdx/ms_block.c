@@ -1937,6 +1937,16 @@ static int ms_block_mtdx_get_param(struct mtdx_dev *this_dev,
 
 		return 0;
 	}
+	case MTDX_PARAM_READ_ONLY: {
+		int *rv = val;
+		*rv = msb->read_only ? 1 : 0;
+		return 0;
+	}
+	case MTDX_PARAM_MEM_FILL_VALUE: {
+		int *rv = val;
+		*rv = 0xffffffff;
+		return 0;
+	}
 	default:
 		return -EINVAL;
 	}
