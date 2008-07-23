@@ -41,9 +41,9 @@ unsigned int bounce_to_sg(struct scatterlist *sg, unsigned int *sg_off,
 		p_cnt = min(PAGE_SIZE - p_off, rc);
 
 		local_irq_save(flags);
-		dst = kmap_atomic(pg, KM_BOUNCE_READ) + p_off;
+		dst = kmap_atomic(pg, KM_BIO_SRC_IRQ) + p_off;
 		memcpy(dst, buf + *buf_off, p_cnt);
-		kunmap_atomic(dst - p_off, KM_BOUNCE_READ);
+		kunmap_atomic(dst - p_off, KM_BIO_SRC_IRQ);
 		local_irq_restore(flags);
 
 		rc -= p_cnt;
@@ -82,9 +82,9 @@ unsigned int fill_sg(struct scatterlist *sg, unsigned int *sg_off,
 		p_cnt = min(PAGE_SIZE - p_off, rc);
 
 		local_irq_save(flags);
-		dst = kmap_atomic(pg, KM_BOUNCE_READ) + p_off;
+		dst = kmap_atomic(pg, KM_BIO_SRC_IRQ) + p_off;
 		memset(dst, val, p_cnt);
-		kunmap_atomic(dst - p_off, KM_BOUNCE_READ);
+		kunmap_atomic(dst - p_off, KM_BIO_SRC_IRQ);
 		local_irq_restore(flags);
 
 		rc -= p_cnt;
@@ -124,9 +124,9 @@ unsigned int bounce_from_sg(char *buf, unsigned int *buf_off,
 		p_cnt = min(PAGE_SIZE - p_off, rc);
 
 		local_irq_save(flags);
-		src = kmap_atomic(pg, KM_BOUNCE_READ) + p_off;
+		src = kmap_atomic(pg, KM_BIO_SRC_IRQ) + p_off;
 		memcpy(buf + *buf_off, src, p_cnt);
-		kunmap_atomic(src - p_off, KM_BOUNCE_READ);
+		kunmap_atomic(src - p_off, KM_BIO_SRC_IRQ);
 		local_irq_restore(flags);
 
 		rc -= p_cnt;
