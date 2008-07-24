@@ -153,6 +153,7 @@ struct ms_block_data {
 	struct scatterlist       req_sg;
 	unsigned int             sg_offset;
 	unsigned int             dst_page;
+	unsigned int             src_block;
 	unsigned int             src_page;
 	unsigned int             page_count;
 	unsigned int             t_count;
@@ -782,10 +783,8 @@ static int ms_block_setup_write(struct memstick_dev *card,
 	if (msb->cmd_flags & MS_BLOCK_FLG_COPY) {
 		struct ms_param_register param = {
 			.system = msb->system,
-			.block_address_msb = (msb->req_in->src.phy_block >> 16)
-					      & 0xff,
-			.block_address = cpu_to_be16(msb->req_in->src.phy_block
-						     & 0xffff),
+			.block_address_msb = (msb->src_block >> 16) & 0xff,
+			.block_address = cpu_to_be16(msb->src_block & 0xffff),
 			.cp = MEMSTICK_CP_PAGE | MEMSTICK_CP_EXTRA,
 			.page_address = msb->src_page + 1
 		};
@@ -824,6 +823,10 @@ static int h_ms_block_read_status(struct memstick_dev *card,
 			msb->req_in->phy_block, msb->dst_page,
 			status->reserved, status->interrupt, status->status0,
 			status->status1);
+
+		if (msb->cmd_flags & MS_BLOCK_FLG_COPY)
+			mtdx_put_copy_source(msb->req_in, -EFAULT);
+
 		return ms_block_complete_multi(card, mrq, -EFAULT);
 	}
 
@@ -857,9 +860,8 @@ static int h_ms_block_set_param_addr(struct memstick_dev *card,
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct ms_param_register param = {
 		.system = msb->system,
-		.block_address_msb = (msb->req_in->src.phy_block >> 16) & 0xff,
-		.block_address = cpu_to_be16(msb->req_in->src.phy_block
-					     & 0xffff),
+		.block_address_msb = (msb->src_block >> 16) & 0xff,
+		.block_address = cpu_to_be16(msb->src_block & 0xffff),
 		.cp = MEMSTICK_CP_PAGE | MEMSTICK_CP_EXTRA,
 		.page_address = msb->dst_page
 	};
@@ -1270,14 +1272,18 @@ static int h_ms_block_set_param_addr_init(struct memstick_dev *card,
 	case MTDX_CMD_COPY:
 		msb->cmd_flags = MS_BLOCK_FLG_COPY;
 		msb->cmd = MS_CMD_BLOCK_READ;
-		param.block_address_msb = (msb->req_in->src.phy_block >> 16)
-					   & 0xff;
-		param.block_address = cpu_to_be16(msb->req_in->src.phy_block
-						  & 0xffff);
+		(*mrq)->error = mtdx_get_copy_source(msb->req_in,
+						     &msb->src_block,
+						     &msb->src_page);
+		if ((*mrq)->error)
+			break;
+
+		msb->src_page /= msb->geo.page_size;
+
+		param.block_address_msb = (msb->src_block >> 16) & 0xff;
+		param.block_address = cpu_to_be16(msb->src_block & 0xffff);
 		param.cp = MEMSTICK_CP_PAGE | MEMSTICK_CP_EXTRA;
-		param.page_address = msb->req_in->src.offset
-				     / msb->geo.page_size;
-		msb->src_page = param.page_address;
+		param.page_address = msb->src_page;
 		break;
 	default:
 		(*mrq)->error = -EINVAL;
@@ -1653,6 +1659,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 	msb->geo.page_cnt = be16_to_cpu(header->info.block_size)
 			    / msb->geo.page_size;
 	msb->geo.oob_size = sizeof(struct ms_extra_data_register);
+	msb->geo.fill_value = 0xff;
 
 	rc = ms_block_read_boot_block(card, header, &msb->boot_blocks[0]);
 
@@ -1940,11 +1947,6 @@ static int ms_block_mtdx_get_param(struct mtdx_dev *this_dev,
 	case MTDX_PARAM_READ_ONLY: {
 		int *rv = val;
 		*rv = msb->read_only ? 1 : 0;
-		return 0;
-	}
-	case MTDX_PARAM_MEM_FILL_VALUE: {
-		unsigned char *rv = val;
-		*rv = 0xff;
 		return 0;
 	}
 	default:

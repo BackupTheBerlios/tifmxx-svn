@@ -63,6 +63,7 @@ struct mtdx_dev_geo {
 	unsigned int page_cnt;      /* Number of pages per eraseblock      */
 	unsigned int page_size;     /* Size of page in bytes               */
 	unsigned int oob_size;      /* Size of oob in bytes                */
+	unsigned int fill_value;    /* default value in memory cells       */
 };
 
 struct mtdx_dev;
@@ -108,8 +109,7 @@ enum mtdx_param {
 	MTDX_PARAM_GEO,            /* struct mtdx_geo                */
 	MTDX_PARAM_HD_GEO,         /* struct hd_geometry             */
 	MTDX_PARAM_SPECIAL_BLOCKS, /* list of struct mtdx_page_info  */
-	MTDX_PARAM_READ_ONLY,      /* boolean int                    */
-	MTDX_PARAM_MEM_FILL_VALUE  /* unsigned char                  */
+	MTDX_PARAM_READ_ONLY       /* boolean int                    */
 };
 
 struct mtdx_request {
@@ -119,10 +119,6 @@ struct mtdx_request {
 	unsigned int         phy_block;
 	unsigned int         offset;
 	unsigned int         length;
-	struct {
-		unsigned int phy_block;
-		unsigned int offset;
-	} src;
 };
 
 struct mtdx_dev {
@@ -148,6 +144,17 @@ struct mtdx_dev {
 					      unsigned int *count);
 	int                  (*get_data_buf_sg)(struct mtdx_request *req,
 					        struct scatterlist *sg);
+
+	/* Get and put source address associated with copy command.
+	 * Put_copy_source can be optionally called to inform the child that
+	 * there's problem with source block (destination block problems are
+	 * reported through end_request.
+	 */
+	int                  (*get_copy_source)(struct mtdx_request *req,
+						unsigned int *phy_block,
+						unsigned int *offset);
+	void                 (*put_copy_source)(struct mtdx_request *req,
+						int src_error);
 
 	/* Get oob buffer (size is agreed upon in advance). Should be called
 	 * once for each page accessed.
@@ -203,6 +210,19 @@ static inline int mtdx_get_data_buf_sg(struct mtdx_request *req,
 				       struct scatterlist *sg)
 {
 	return req->src_dev->get_data_buf_sg(req, sg);
+}
+
+static inline int mtdx_get_copy_source(struct mtdx_request *req,
+				       unsigned int *phy_block,
+				       unsigned int *offset)
+{
+	return req->src_dev->get_copy_source(req, phy_block, offset);
+}
+
+static inline void mtdx_put_copy_source(struct mtdx_request *req,
+					int src_error)
+{
+	req->src_dev->put_copy_source(req, src_error);
 }
 
 static inline char *mtdx_get_oob_buf(struct mtdx_request *req)

@@ -41,7 +41,6 @@ struct ftl_simple_data {
 	unsigned int          zone_scan_pos;
 	unsigned int          t_count;
 
-	unsigned char         fill_value;
 	unsigned char         dumb_copy:1,
 			      track_inc:1;
 
@@ -51,6 +50,8 @@ struct ftl_simple_data {
 	unsigned int          b_off;
 	unsigned int          b_len;
 
+	int                   src_error;
+
 	union {
 		unsigned long         valid_zones;
 		unsigned long         *valid_zones_ptr;
@@ -59,7 +60,8 @@ struct ftl_simple_data {
 	struct mtdx_page_info *sp_block_pos;
 	struct list_head      special_blocks;
 
-	int                   (*setup_req_fn)(struct ftl_simple_data *fsd);
+	unsigned int          req_fn_pos;
+	int                   (*req_fn[10])(struct ftl_simple_data *fsd);
 	void                  (*end_req_fn)(struct ftl_simple_data *fsd,
 					    int error, unsigned int count);
 	unsigned char         *oob_buf;
@@ -67,6 +69,27 @@ struct ftl_simple_data {
 	struct zone_data      *zones[];
 };
 
+/*
+ * 01. erase dst
+ * 02. select src
+ *
+ * 03. copy first
+ * 04. write data
+ * 05. copy last
+ *
+ * 06. read first
+ * 07. write first
+ * 08. write data
+ * 09. read last
+ * 10. write last
+ *
+ * 11. bounce
+ * 13. write tmp
+ *
+ * 14. erase src
+ * 15. invalidate dst
+ *
+ */
 static void *ftl_simple_alloc_pmap(unsigned long num_bits)
 {
 	return kmalloc(BITS_TO_LONGS(num_bits) * sizeof(unsigned long),
@@ -279,7 +302,7 @@ static int ftl_simple_do_copy_write(struct ftl_simple_data *fsd)
 
 	if (fsd->src_block == MTDX_INVALID_BLOCK) {
 		if (!fsd->b_map) {
-			memset(fsd->block_buf, fsd->fill_value,
+			memset(fsd->block_buf, fsd->geo.fill_value,
 			       fsd->block_size);
 			if (rc = ftl_simple_bounce_data(fsd))
 				return rc;
@@ -307,80 +330,93 @@ static int ftl_simple_do_copy_write(struct ftl_simple_data *fsd)
 		return ftl_simple_copy_first(fsd);
 }
 
-static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
+static void ftl_simple_setup_write(struct ftl_simple_data *fsd)
 {
 	unsigned int pos;
 	unsigned int z_log_block;
 	int rc = 0;
 
-	if (fsd->setup_req_fn)
-		return fsd->setup_req_fn(fsd);
-
 	pos = fsd->req_in->offset + fsd->t_count;
 
-	if (fsd->dst_block == MTDX_INVALID_BLOCK) {
-		fsd->req_out.log_block = fsd->req_in->log_block;
-		fsd->req_out.log_block += pos / fsd->block_size;
-		fsd->zone = fsd->req_out.log_block >> fsd->geo.zone_size_log;
-		fsd->b_off = pos % fsd->block_size;
-		fsd->b_len = min(fsd->req_in->length - fsd->t_count,
-				 fsd->block_size - fsd->req_out.offset);
+	fsd->req_out.log_block = fsd->req_in->log_block;
+	fsd->req_out.log_block += pos / fsd->block_size;
+	fsd->zone = fsd->req_out.log_block >> fsd->geo.zone_size_log;
+	fsd->req_fn_pos = 0;
 
-		if (!test_bit(fsd->zone, ftl_simple_zone_map(fsd)))
-			return ftl_simple_setup_zone_scan(fsd);
-
-		z_log_block = fsd->req_out.log_block
-			      & ((1U << fsd->geo.zone_size_log) - 1U);
-
-		fsd->src_block = fsd->zones[fsd->zone]->b_table[z_log_block];
-
-		if (ftl_simple_can_merge(fsd, fsd->src_block)) {
-			struct mtdx_page_info p_info = {};
-
-			p_info.status = MTDX_PAGE_MAPPED;
-			p_info.log_block = fsd->req_out.log_block;
-			p_info.phy_block = fsd->src_block;
-
-			rc = fsd->req_dev->info_to_oob(fsd->req_dev,
-						       fsd->oob_buf, &p_info);
-			if (rc)
-				return rc;
-
-			fsd->end_req_fn = ftl_simple_write_merge_end;
-			fsd->req_out.cmd = MTDX_CMD_WRITE;
-			fsd->req_out.phy_block = fsd->src_block;
-			fsd->req_out.offset = fsd->b_off;
-			fsd->req_out.length = fsd->b_len;
-			return 0;
-		} else
-			fsd->dst_block = mtdx_get_peb(fsd->b_alloc, fsd->zone,
-						      &rc);
-
-		if (fsd->dst_block == MTDX_INVALID_BLOCK) {
-			if (fsd->src_block == MTDX_INVALID_BLOCK)
-				return -EIO;
-
-			fsd->dst_block = fsd->src_block;
-		} else if (rc) {
-			fsd->end_req_fn = ftl_simple_erase_dst_end;
-			fsd->req_out.cmd = MTDX_CMD_ERASE;
-			fsd->req_out.phy_block = fsd->dst_block;
-			fsd->req_out.offset = 0;
-			fsd->req_out.length = 0;
-			return 0;
-		}
+	if (!test_bit(fsd->zone, ftl_simple_zone_map(fsd))) {
+		fsd->req_fn[0] = ftl_simple_lookup_block;
+		fsd->req_fn[1] = NULL;
+		return;
 	}
 
-	if ((fsd->src_block != MTDX_INVALID_BLOCK)
-	    && (fsd->src_block != fsd->dst_block)) {
-		fsd->end_req_fn = ftl_simple_select_src_end;
-		fsd->req_out.cmd = MTDX_CMD_SELECT;
-		fsd->req_out.phy_block = fsd->src_block;
-		fsd->req_out.offset = 0;
-		fsd->req_out.length = 0;
-		return 0;
+	fsd->b_off = pos % fsd->block_size;
+	fsd->b_len = min(fsd->req_in->length - fsd->t_count,
+			 fsd->block_size - fsd->req_out.offset);
+
+	z_log_block = fsd->req_out.log_block
+		      & ((1U << fsd->geo.zone_size_log) - 1U);
+
+	fsd->src_block = fsd->zones[fsd->zone]->b_table[z_log_block];
+
+	if (ftl_simple_can_merge(fsd, fsd->src_block)) {
+		fsd->dst_block = fsd->src_block;
+		fsd->req_fn[0] = ftl_simple_write_data;
+		fsd->req_fn[1] = NULL;
 	} else
-		return ftl_simple_do_copy_write(fsd);
+		fsd->dst_block = mtdx_get_peb(fsd->b_alloc, fsd->zone, &rc);
+
+		if (fsd->dst_block == MTDX_INVALID_BLOCK) {
+			fsd->dst_block = fsd->src_block;
+			fsd->req_fn[0] = ftl_simple_read_first;
+			fsd->req_fn[1] = ftl_simple_bounce;
+			fsd->req_fn[2] = ftl_simple_read_last;
+			fsd->req_fn[3] = ftl_simple_erase_dst;
+			fsd->req_fn[4] = ftl_simple_write_tmp;
+			fsd->req_fn[5] = NULL;
+			return;
+		}
+
+		pos = 0;
+		if (rc)
+			fsd->req_fn[pos++] = ftl_simple_erase_dst;
+
+		fsd->req_fn[pos++] = ftl_simple_select_src;
+
+		if (!fsd->b_map || fsd->dumb_copy) {
+			fsd->req_fn[pos++] = ftl_simple_read_first;
+			fsd->req_fn[pos++] = ftl_simple_read_last;
+			fsd->req_fn[pos++] = ftl_simple_write_first;
+			fsd->req_fn[pos++] = ftl_simple_write_data;
+			fsd->req_fn[pos++] = ftl_simple_write_last;
+			fsd->req_fn[pos++] = ftl_simple_erase_src;
+		} else {
+			fsd->req_fn[pos++] = ftl_simple_copy_first;
+			fsd->req_fn[pos++] = ftl_simple_write_data;
+			fsd->req_fn[pos++] = ftl_simple_copy_last;
+		}
+		fsd->req_fn[pos++] = NULL;
+	}
+}
+
+static int ftl_simple_get_copy_source(struct mtdx_request *req,
+				      unsigned int *phy_block,
+				      unsigned int *offset)
+{
+	struct ftl_simple_data *fsd = mtdx_get_drvdata(req->src_dev);
+
+	if (fsd->req_out.cmd == MTDX_CMD_COPY) {
+		*phy_block = fsd->src_block;
+		*offset = fsd->b_off;
+	} else
+		return -EINVAL;
+}
+
+static void ftl_simple_put_copy_source(struct mtdx_request *req, int src_error)
+{
+	struct ftl_simple_data *fsd = mtdx_get_drvdata(req->src_dev);
+
+	if (fsd->req_out.cmd == MTDX_CMD_COPY)
+		fsd->src_error = src_error;
 }
 
 static int ftl_simple_fill_data(struct ftl_simple_data *fsd)
@@ -395,8 +431,8 @@ static int ftl_simple_fill_data(struct ftl_simple_data *fsd)
 			if (rc)
 				return rc;
 		}
-		length -= fill_sg(&fsd->req_sg, &fsd->sg_off, fsd->fill_value,
-				  length);
+		length -= fill_sg(&fsd->req_sg, &fsd->sg_off,
+				  fsd->geo.fill_value, length);
 	}
 
 	fsd->t_count += fsd->req_out.length - length;
@@ -470,7 +506,7 @@ static void ftl_simple_end_request(struct mtdx_request *req, int error,
 static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 {
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(this_dev);
-	int rc = -EAGAIN;
+	int rc;
 	unsigned long flags;
 
 	spin_lock_irqsave(&fsd->lock, flags);
@@ -480,35 +516,49 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 	}
 
 	while (1) {
-		if (fsd->req_in) {
+		rc = 0;
+
+		while (fsd->req_in) {
 			if (fsd->req_in->cmd == MTDX_CMD_READ_DATA)
 				rc = ftl_simple_setup_read(fsd);
-			else if (fsd->req_in->cmd == MTDX_CMD_WRITE_DATA)
-				rc = fsd->b_alloc ? ftl_simple_setup_write(fsd)
-						  : -EROFS;
-			else
+			else if (fsd->req_in->cmd == MTDX_CMD_WRITE_DATA) {
+				if (fsd->b_alloc)
+					rc = ftl_simple_setup_write(fsd);
+				else
+					rc = -EROFS;
+			} else
 				rc = -EINVAL;
 
-			if (!rc)
-				goto out;
-			else {
+			if (!rc) {
+				while (fsd->req_fn[fsd->req_fn_pos]) {
+					rc = fsd->req_fn[fsd->req_fn_pos](fsd);
+					if (!rc)
+						goto out;
+					else if (rc == -EAGAIN)
+						fsd->req_fn_pos++;
+					else
+						break;
+				}
+
+				if (rc == -EAGAIN)
+					rc = 0;
+			}
+
+			if (rc) {
 				mtdx_complete_request(fsd->req_in, rc,
 						      fsd->t_count);
 				fsd->req_in = NULL;
 			}
-		} else {
-			rc = -EAGAIN;
-			break;
 		}
 
 		fsd->req_sg.length = 0;
 		fsd->sg_off = 0;
-		fsd->req_in = fsd->req_dev->get_request(fsd->req_dev);
+		if (!(fsd->req_in = fsd->req_dev->get_request(fsd->req_dev))) {
+			fsd->req_dev = NULL;
+			atomic_long_dec(&fsd->usage_count);
+			break;
+		}
 	}
-
-	fsd->req_dev = NULL;
-	atomic_long_dec(&fsd->usage_count);
-
 out:
 	spin_unlock_irqrestore(&fsd->lock, flags);
 
@@ -657,7 +707,6 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 		goto err_out;
 	}
 
-	parent->get_param(parent, MTDX_PARAM_MEM_FILL_VALUE, &fsd->fill_value);
 	parent->get_param(parent, MTDX_PARAM_READ_ONLY, &rc);
 
 	if (!rc) {
@@ -725,6 +774,8 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 	mdev->get_request = ftl_simple_get_request;
 	mdev->end_request = ftl_simple_end_request;
 	mdev->get_data_buf_sg = ftl_simple_get_data_buf_sg;
+	mdev->get_copy_source = ftl_simple_get_copy_source;
+	mdev->put_copy_source = ftl_simple_put_copy_source;
 	mdev->get_oob_buf = ftl_simple_get_oob_buf;
 	mdev->get_param = ftl_simple_get_param;
 
