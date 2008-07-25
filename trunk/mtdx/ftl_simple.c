@@ -22,74 +22,72 @@ struct zone_data {
 	unsigned int  b_table[];
 };
 
+struct ftl_simple_data;
+
+typedef int (req_fn_t)(struct ftl_simple_data *fsd);
+
+#define FTL_SIMPLE_MAX_REQ_FN 10
+
 struct ftl_simple_data {
 	spinlock_t            lock;
 	atomic_long_t         usage_count;
-	struct long_map       *b_map;
-	struct mtdx_peb_alloc *b_alloc;
+
+	/* Device geometry */
 	struct mtdx_dev_geo   geo;
-	struct mtdx_dev       *req_dev;
-	struct mtdx_request   *req_in;
-	struct mtdx_request   req_out;
-	struct scatterlist    req_sg;
-	unsigned int          sg_off;
-	unsigned int          tmp_off;
-	unsigned int          sg_length;
 	unsigned int          zone_cnt;
 	unsigned int          zone_block_cnt;
 	unsigned int          block_size;
-	unsigned int          zone_scan_pos;
-	unsigned int          t_count;
 
-	unsigned char         dumb_copy:1,
+	/* Incoming request */
+	struct mtdx_dev       *req_dev;
+	struct mtdx_request   *req_in;
+	struct scatterlist    req_sg;
+
+	/* Outgoing request */
+	struct mtdx_request   req_out;
+	unsigned int          tmp_off;
+	unsigned int          sg_off;
+	unsigned int          sg_length;
+	unsigned int          t_count;
+	int                   src_error;
+
+	/* Processing modifiers */
+	unsigned int          dumb_copy:1,
 			      track_inc:1;
 
+	/* Current request address */
 	unsigned int          zone;
 	unsigned int          src_block;
 	unsigned int          dst_block;
 	unsigned int          b_off;
 	unsigned int          b_len;
 
-	int                   src_error;
-
+	/* Block address translation */
 	union {
 		unsigned long         valid_zones;
 		unsigned long         *valid_zones_ptr;
 	};
 
-	struct mtdx_page_info *sp_block_pos;
+	struct long_map       *b_map;
+	struct mtdx_peb_alloc *b_alloc;
+
+	unsigned int          zone_scan_pos;
+	unsigned int          conflict_pos;
+	struct list_head      *sp_block_pos;
 	struct list_head      special_blocks;
 
+	/* Request processing */
 	unsigned int          req_fn_pos;
+	req_fn_t              *req_fn[FTL_SIMPLE_MAX_REQ_FN];
 	int                   (*req_fn[10])(struct ftl_simple_data *fsd);
 	void                  (*end_req_fn)(struct ftl_simple_data *fsd,
 					    int error, unsigned int count);
+
 	unsigned char         *oob_buf;
 	unsigned char         *block_buf;
 	struct zone_data      *zones[];
 };
 
-/*
- * 01. erase dst
- * 02. select src
- *
- * 03. copy first
- * 04. write data
- * 05. copy last
- *
- * 06. read first
- * 07. write first
- * 08. write data
- * 09. read last
- * 10. write last
- *
- * 11. bounce
- * 13. write tmp
- *
- * 14. erase src
- * 15. invalidate dst
- *
- */
 static void *ftl_simple_alloc_pmap(unsigned long num_bits)
 {
 	return kmalloc(BITS_TO_LONGS(num_bits) * sizeof(unsigned long),
@@ -102,6 +100,32 @@ static unsigned long *ftl_simple_zone_map(struct ftl_simple_data *fsd)
 		return fsd->valid_zones_ptr;
 	else
 		return &fsd->valid_zones;
+}
+
+static void ftl_simple_pop_all_req_fn(struct ftl_simple_data *fsd)
+{
+	fsd->req_fn_pos = 0;
+}
+
+static req_fn_t *ftl_simple_pop_req_fn(struct ftl_simple_data *fsd)
+{
+	req_fn_t *rv = NULL;
+
+	if (fsd->req_fn_t) {
+		fsd->req_fn_pos--;
+		rv = fsd->req_fn[fsd->req_fn_pos];
+		fsd->req_fn[fsd->req_fn_pos] = NULL;
+	}
+
+	return rv;
+}
+
+static void ftl_simple_push_req_fn(struct ftl_simple_data *fsd,
+				   req_fn_t *req_fn)
+{
+	BUG_ON(fsd->req_fn_t >= FTL_SIMPLE_MAX_REQ_FN);
+
+	fsd->req_fn[fsd->req_fn_pos++] = req_fn;
 }
 
 static int bitmap_region_empty(unsigned long *bitmap, unsigned int offset,
@@ -182,6 +206,25 @@ static void bitmap_set_region(unsigned long *bitmap, unsigned int offset,
 
 static int ftl_simple_setup_zone_scan(struct ftl_simple_data *fsd)
 {
+	unsigned int max_block = (fsd->zone + 1) << fsd->zone_size_log;
+	struct mtdx_page_info *p_info;
+
+	fsd->zone_scan_pos = fsd->zone << fsd->zone_size_log;
+	fsd->conflict_pos = MTDX_INVALID_BLOCK;
+
+	__list_for_each(fsd->sp_block_pos, fsd->special_blocks) {
+		p_info = list_entry(fsd->sp_block_pos, struct mtdx_page_info,
+				    node);
+		if ((p_info->phy_block >= fsd->zone_scan_pos)
+		    && (p_info->phy_block < max_block))
+			break;
+	}
+
+	if (fsd->sp_block_pos == fsd->special_blocks)
+		fsd->sp_block_pos = NULL;
+
+	ftl_simple_push_req_fn(fsd, ftl_simple_lookup_block);
+	return 0;
 }
 
 static int ftl_simple_get_data_buf_sg(struct mtdx_request *req,
@@ -444,7 +487,6 @@ static int ftl_simple_setup_read(struct ftl_simple_data *fsd)
 	unsigned int pos;
 	unsigned int z_log_block;
 
-try_again:
 	pos = fsd->req_in->offset + fsd->t_count;
 	fsd->req_out.log_block = fsd->req_in->log_block;
 	fsd->req_out.log_block += pos / fsd->block_size;
@@ -495,6 +537,7 @@ static void ftl_simple_end_request(struct mtdx_request *req, int error,
 
 		if (error) {
 			mtdx_complete_request(fsd->req_in, error, fsd->t_count);
+			ftl_simple_pop_all_req_fn(fsd);
 			fsd->req_in = NULL;
 		}
 	} else
@@ -506,6 +549,7 @@ static void ftl_simple_end_request(struct mtdx_request *req, int error,
 static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 {
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(this_dev);
+	req_fn_t *req_fn;
 	int rc;
 	unsigned long flags;
 
@@ -518,7 +562,23 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 	while (1) {
 		rc = 0;
 
-		while (fsd->req_in) {
+		while ((req_fn = ftl_simple_pop_req_fn(fsd))) {
+			rc = (*req_fn)(fsd);
+			if (!rc)
+				goto out;
+			else if (rc != -EAGAIN)
+				break;
+		}
+
+		ftl_simple_pop_all_req_fn(fsd);
+
+		if (rc) {
+			mtdx_complete_request(fsd->req_in, rc,
+					      fsd->t_count);
+			fsd->req_in = NULL;
+		}
+
+		if (fsd->req_in) {
 			if (fsd->req_in->cmd == MTDX_CMD_READ_DATA)
 				rc = ftl_simple_setup_read(fsd);
 			else if (fsd->req_in->cmd == MTDX_CMD_WRITE_DATA) {
@@ -529,34 +589,25 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 			} else
 				rc = -EINVAL;
 
-			if (!rc) {
-				while (fsd->req_fn[fsd->req_fn_pos]) {
-					rc = fsd->req_fn[fsd->req_fn_pos](fsd);
-					if (!rc)
-						goto out;
-					else if (rc == -EAGAIN)
-						fsd->req_fn_pos++;
-					else
-						break;
-				}
-
-				if (rc == -EAGAIN)
-					rc = 0;
-			}
-
-			if (rc) {
+			if (!rc)
+				continue;
+			else {
 				mtdx_complete_request(fsd->req_in, rc,
 						      fsd->t_count);
+				ftl_simple_pop_all_req_fn(fsd);
 				fsd->req_in = NULL;
 			}
 		}
 
-		fsd->req_sg.length = 0;
-		fsd->sg_off = 0;
-		if (!(fsd->req_in = fsd->req_dev->get_request(fsd->req_dev))) {
-			fsd->req_dev = NULL;
-			atomic_long_dec(&fsd->usage_count);
-			break;
+		if (!fsd->req_in) {
+			fsd->req_sg.length = 0;
+			fsd->sg_off = 0;
+			fsd->req_in = fsd->req_dev->get_request(fsd->req_dev);
+			if (!fsd->req_in) {
+				fsd->req_dev = NULL;
+				atomic_long_dec(&fsd->usage_count);
+				break;
+			}
 		}
 	}
 out:
