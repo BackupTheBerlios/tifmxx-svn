@@ -280,7 +280,7 @@ static int ftl_simple_get_tmp_buf_sg(struct mtdx_request *req,
 static int ftl_simple_can_merge(struct ftl_simple_data *fsd,
 				unsigned int offset, unsigned int count)
 {
-	if (!fsd->src_bmap_ref)
+	if (!fsd->src_bmap_ref || !count)
 		return 0;
 
 	if (fsd->track_inc)
@@ -305,6 +305,79 @@ static void ftl_simple_drop_useful(struct ftl_simple_data *fsd,
 			    ->useful_blocks);
 }
 
+static void ftl_simple_advance(struct ftl_simple_data *fsd)
+{
+	unsigned int z_log_block = fsd->req_out.log_block
+				   & ((1U << fsd->geo.zone_size_log) - 1U);
+	unsigned int z_dst_block = fsd->dst_block
+				   & ((1U << fsd->geo.zone_size_log) - 1U);
+	unsigned long *dst_bmap_ref;
+
+	fsd->t_count += fsd->b_len;
+	if (fsd->dst_block != fsd->src_block)
+		fsd->zones[fsd->zone]->b_table[z_log_block] = fsd->dst_block;
+
+	if (!fsd->src_bmap_ref)
+		return;
+		
+
+	fsd->tmp_off = fsd->b_off + fsd->b_len;
+
+	if (fsd->track_inc) {
+		fsd->tmp_off /= fsd->geo.page_size;
+
+		if (*fsd->src_bmap_ref < fsd->tmp_off)
+			*fsd->src_bmap_ref = fsd->tmp_off;
+
+		if (*fsd->src_bmap_ref < fsd->block_size) {
+			dst_bmap_ref = long_map_insert(fsd->b_map,
+						       fsd->dst_block);
+			if (dst_bmap_ref) {
+				*dst_bmap_ref = *fsd->src_bmap_ref;
+				set_bit(z_dst_block, fsd->zones[fsd->zone]
+							->useful_blocks);
+			}
+		}
+	} else {
+		unsigned int p_off = fsd->b_off / fsd->geo.page_size;
+		unsigned int p_len = fsd->b_len / fsd->geo.page_size;
+
+		if (fsd->b_off) {
+			if (ftl_simple_can_merge(fsd, 0, fsd->b_off))
+				set_bit(0, fsd->src_bmap_ref);
+			else
+				bitmap_set_region(fsd->src_bmap_ref, 0, p_off);
+		}
+
+		if (fsd->tmp_off < fsd->block_size) {
+			if (!ftl_simple_can_merge(fsd, fsd->tmp_off,
+						  fsd->block_size
+						  - fsd->tmp_off))
+				bitmap_set_region(fsd->src_bmap_ref,
+						  p_off + p_len,
+						  fsd->geo.page_cnt - p_off
+						  - p_len);
+		}
+
+		bitmap_set_region(fsd->src_bmap_ref, p_off, p_len);
+
+		if (!bitmap_full(fsd->src_bmap_ref, fsd->geo.page_cnt)) {
+			dst_bmap_ref = long_map_insert(fsd->b_map,
+						       fsd->dst_block);
+			if (dst_bmap_ref) {
+				memcpy(dst_bmap_ref, fsd->src_bmap_ref,
+				       BITS_TO_LONGS(fsd->geo.page_cnt)
+				       * sizeof(unsigned long));
+
+				set_bit(z_dst_block, fsd->zones[fsd->zone]
+							->useful_blocks);
+			}
+		}
+	}
+
+	ftl_simple_drop_useful(fsd, fsd->src_block);
+}
+
 static void ftl_simple_end_abort(struct ftl_simple_data *fsd, int error,
 				 int free_dst)
 {
@@ -319,11 +392,28 @@ static void ftl_simple_end_abort(struct ftl_simple_data *fsd, int error,
 	fsd->req_in = NULL;
 }
 
+static void ftl_simple_end_invalidate_dst(struct ftl_simple_data *fsd,
+					  int error, unsigned int count)
+{
+	ftl_simple_end_abort(fsd, fsd->src_error, 0);
+}
+
+static int ftl_simple_invalidate_dst(struct ftl_simple_data *fsd)
+{
+	fsd->req_out.cmd = MTDX_CMD_INVALIDATE;
+	fsd->req_out.phy_block = fsd->dst_block;
+	fsd->req_out.offset = 0;
+	fsd->req_out.length = 0;
+	fsd->sg_length = 0;
+	fsd->end_req_fn = ftl_simple_end_invalidate_dst;
+	return 0;
+}
+
 static void ftl_simple_end_erase_src(struct ftl_simple_data *fsd, int error,
 				     unsigned int count)
 {
 	if (!error)
-		fsd->b_alloc->put_peb(fsd->b_alloc, fsd->dst_block, 1);
+		fsd->b_alloc->put_peb(fsd->b_alloc, fsd->src_block, 1);
 }
 
 static int ftl_simple_erase_src(struct ftl_simple_data *fsd)
@@ -340,9 +430,11 @@ static int ftl_simple_erase_src(struct ftl_simple_data *fsd)
 static void ftl_simple_end_erase_dst(struct ftl_simple_data *fsd, int error,
 				     unsigned int count)
 {
-	if (error)
-		ftl_simple_end_abort(fsd, error, 0);
-	else
+	if (error) {
+		ftl_simple_pop_all_req_fn(fsd);
+		ftl_simple_push_req_fn(fsd, ftl_simple_invalidate_dst);
+		fsd->src_error = error;
+	} else
 		fsd->clean_dst = 1;
 }
 
@@ -374,10 +466,8 @@ static void ftl_simple_end_merge_data(struct ftl_simple_data *fsd, int error,
 	if ((count != fsd->b_len) && !error)
 		error = -EIO;
 
-	if (fsd->src_bmap_ref) {
-		if (error)
-			ftl_simple_drop_useful(fsd, fsd->dst_block);
-		else if (fsd->track_inc) {
+	if (!error && fsd->src_bmap_ref) {
+		if (fsd->track_inc) {
 			*(fsd->src_bmap_ref) = (fsd->b_off + count)
 					       / fsd->geo.page_size;
 			if (*(fsd->src_bmap_ref) >= fsd->geo.page_cnt)
@@ -391,13 +481,17 @@ static void ftl_simple_end_merge_data(struct ftl_simple_data *fsd, int error,
 		}
 	}
 
-	if (!error)
+	if (!error) {
 		fsd->t_count += fsd->b_len;
-
-	if (error || (fsd->t_count >= fsd->req_in->length)) {
-		mtdx_complete_request(fsd->req_in, error, fsd->t_count);
+		if (fsd->t_count >= fsd->req_in->length) {
+			mtdx_complete_request(fsd->req_in, 0, fsd->t_count);
+			ftl_simple_pop_all_req_fn(fsd);
+			fsd->req_in = NULL;
+		}
+	} else {
 		ftl_simple_pop_all_req_fn(fsd);
-		fsd->req_in = NULL;
+		ftl_simple_push_req_fn(fsd, ftl_simple_invalidate_dst);
+		fsd->src_error = error;
 	}
 }
 
@@ -434,6 +528,7 @@ static int ftl_simple_write_data(struct ftl_simple_data *fsd)
 	fsd->sg_length = fsd->b_len;
 	fsd->req_out.src_dev->get_data_buf_sg = ftl_simple_get_data_buf_sg;
 	fsd->end_req_fn = ftl_simple_end_write_data;
+	return 0;
 }
 
 static void ftl_simple_end_copy_last(struct ftl_simple_data *fsd, int error,
@@ -449,6 +544,11 @@ static void ftl_simple_end_copy_last(struct ftl_simple_data *fsd, int error,
 			ftl_simple_drop_useful(fsd, fsd->src_block);
 			fsd->src_bmap_ref = NULL;
 		}
+	} else if (error) {
+		ftl_simple_pop_all_req_fn(fsd);
+		ftl_simple_push_req_fn(fsd, ftl_simple_invalidate_dst);
+		fsd->src_error = error;
+		return;
 	}
 
 	if (!error)
@@ -462,18 +562,36 @@ static void ftl_simple_end_copy_last(struct ftl_simple_data *fsd, int error,
 		ftl_simple_advance(fsd);
 }
 
+static int ftl_simple_write_last(struct ftl_simple_data *fsd)
+{
+	fsd->tmp_off = fsd->b_off + fsd->b_len;
+	fsd->sg_length = fsd->block_size - fsd->tmp_off;
+
+	if (!fsd->sg_length
+	    || ftl_simple_can_merge(fsd, fsd->tmp_off, fsd->sg_length)) {
+		ftl_simple_advance(fsd);
+		return -EAGAIN;
+	}
+
+	fsd->req_out.cmd = MTDX_CMD_WRITE;
+	fsd->req_out.phy_block = fsd->dst_block;
+	fsd->req_out.offset = fsd->tmp_off;
+	fsd->req_out.length = fsd->sg_length;
+	fsd->req_out.src_dev->get_data_buf_sg = ftl_simple_get_tmp_buf_sg;
+	fsd->end_req_fn = ftl_simple_end_copy_last;
+	return 0;
+}
+
 static int ftl_simple_copy_last(struct ftl_simple_data *fsd)
 {
 	fsd->tmp_off = fsd->b_off + fsd->b_len;
 	fsd->sg_length = fsd->block_size - fsd->tmp_off;
 
-	if (!fsd->sg_length) {
+	if (!fsd->sg_length
+	    || ftl_simple_can_merge(fsd, fsd->tmp_off, fsd->sg_length)) {
 		ftl_simple_advance(fsd);
 		return -EAGAIN;
 	}
-
-	if (ftl_simple_can_merge(fsd, fsd->tmp_off, fsd->sg_length))
-		return -EAGAIN;
 
 	fsd->req_out.cmd = MTDX_CMD_COPY;
 	fsd->req_out.phy_block = fsd->dst_block;
@@ -487,7 +605,12 @@ static int ftl_simple_copy_last(struct ftl_simple_data *fsd)
 static void ftl_simple_end_copy_first(struct ftl_simple_data *fsd, int error,
 				      unsigned int count)
 {
-	if ((count != fsd->b_off) && !error)
+	unsigned int e_count = fsd->b_off;
+
+	if (ftl_simple_can_merge(fsd, 0, fsd->b_off))
+		e_count = fsd->geo.page_size;
+
+	if ((count != e_count) && !error)
 		error = -EIO;
 
 	if (fsd->src_error) {
@@ -495,6 +618,11 @@ static void ftl_simple_end_copy_first(struct ftl_simple_data *fsd, int error,
 			ftl_simple_drop_useful(fsd, fsd->src_block);
 			fsd->src_bmap_ref = NULL;
 		}
+	} else if (error) {
+		ftl_simple_pop_all_req_fn(fsd);
+		ftl_simple_push_req_fn(fsd, ftl_simple_invalidate_dst);
+		fsd->src_error = error;
+		return;
 	}
 
 	if (!error)
@@ -504,6 +632,31 @@ static void ftl_simple_end_copy_first(struct ftl_simple_data *fsd, int error,
 
 	if (error)
 		ftl_simple_end_abort(fsd, error, fsd->src_error);
+}
+
+static int ftl_simple_write_first(struct ftl_simple_data *fsd)
+{
+	if (!fsd->b_off)
+		return -EAGAIN;
+
+	fsd->req_out.cmd = MTDX_CMD_WRITE;
+	fsd->req_out.phy_block = fsd->dst_block;
+	fsd->req_out.offset = 0;
+	fsd->req_out.length = fsd->b_off;
+	fsd->tmp_off = 0;
+
+	if (ftl_simple_can_merge(fsd, 0, fsd->b_off))
+		fsd->sg_length = fsd->geo.page_size;
+	else
+		fsd->sg_length = fsd->b_off;
+
+
+	fsd->req_out.length = fsd->sg_length;
+	memset(fsd->block_buf, fsd->geo.fill_value, fsd->sg_length);
+
+	fsd->req_out.src_dev->get_data_buf_sg = ftl_simple_get_tmp_buf_sg;
+	fsd->end_req_fn = ftl_simple_end_copy_first;
+	return 0;
 }
 
 static int ftl_simple_copy_first(struct ftl_simple_data *fsd)
@@ -516,16 +669,10 @@ static int ftl_simple_copy_first(struct ftl_simple_data *fsd)
 	fsd->req_out.offset = 0;
 	fsd->req_out.length = fsd->b_off;
 	fsd->tmp_off = 0;
-	fsd->sg_length = 0;
+	fsd->sg_length = fsd->b_off;
 
-	if (ftl_simple_can_merge(fsd, 0, fsd->b_off)) {
-		/* This should not happen, as first page in block is always
-		 * assumed to be dirty, for block mapping purposes.
-		 */
-		fsd->sg_length = fsd->geo.page_size;
-		fsd->req_out.length = fsd->sg_length;
-		memset(fsd->block_buf, fsd->geo.fill_value, fsd->sg_length);
-	}
+	if (ftl_simple_can_merge(fsd, 0, fsd->b_off))
+		return ftl_simple_write_first(fsd);
 
 	fsd->req_out.src_dev->get_data_buf_sg = ftl_simple_get_tmp_buf_sg;
 	fsd->end_req_fn = ftl_simple_end_copy_first;
@@ -634,6 +781,7 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 	fsd->src_block = fsd->zones[fsd->zone]->b_table[z_log_block];
 	z_src_block = fsd->src_block & ((1U << fsd->geo.zone_size_log) - 1U);
 	fsd->clean_dst = 0;
+	fsd->src_error = 0;
 
 	if ((fsd->src_block != MTDX_INVALID_BLOCK)
 	    && fsd->b_map
@@ -696,6 +844,17 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 				ftl_simple_push_req_fn(fsd,
 						       ftl_simple_merge_data);
 			else {
+				if (fsd->b_off)
+					memset(fsd->block_buf,
+					       fsd->geo.fill_value,
+					       fsd->b_off);
+
+				fsd->tmp_off = fsd->b_off + fsd->b_len;
+				if (fsd->tmp_off < fsd->block_size)
+					memset(fsd->block_buf + fsd->tmp_off,
+					       fsd->geo.fill_value,
+					       fsd->block_size - fsd->tmp_off);
+
 				ftl_simple_push_req_fn(fsd,
 						       ftl_simple_write_last);
 				ftl_simple_push_req_fn(fsd,
