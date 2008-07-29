@@ -235,7 +235,7 @@ struct long_map *long_map_create(unsigned int nr, long_map_alloc_t *alloc_fn,
 }
 EXPORT_SYMBOL(long_map_create);
 
-void long_map_free(struct long_map *map)
+void long_map_destroy(struct long_map *map)
 {
 	struct map_node *b;
 

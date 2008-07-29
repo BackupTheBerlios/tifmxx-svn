@@ -382,6 +382,85 @@ void mtdx_page_list_free(struct list_head *head)
 }
 EXPORT_SYMBOL(mtdx_page_list_free);
 
+int bitmap_region_empty(unsigned long *bitmap, unsigned int offset,
+			unsigned int length)
+{
+	unsigned long w_b, w_e, m_b, m_e, cnt;
+
+	w_b = offset / BITS_PER_LONG;
+	w_e = (offset + length) / BITS_PER_LONG;
+
+	m_b = ~((1UL << (offset % BITS_PER_LONG)) - 1UL);
+	m_e = (1UL << ((offset + length) % BITS_PER_LONG)) - 1UL;
+
+	if (w_b == w_e) {
+		return bitmap[w_b] & (m_b ^ m_e) ? 0 : 1;
+	} else {
+		if (bitmap[w_b] & m_b)
+			return 0;
+
+		if (m_e && (bitmap[w_e] & m_e))
+			return 0;
+
+		for (cnt = w_b + 1; cnt < w_e; ++cnt)
+			if (bitmap[cnt])
+				return 0;
+
+		return 1;
+	}
+}
+EXPORT_SYMBOL(bitmap_region_empty);
+
+void bitmap_clear_region(unsigned long *bitmap, unsigned int offset,
+			 unsigned int length)
+{
+	unsigned long w_b, w_e, m_b, m_e, cnt;
+
+	w_b = offset / BITS_PER_LONG;
+	w_e = (offset + length) / BITS_PER_LONG;
+
+	m_b = ~((1UL << (offset % BITS_PER_LONG)) - 1UL);
+	m_e = (1UL << ((offset + length) % BITS_PER_LONG)) - 1UL;
+
+	if (w_b == w_e) {
+		bitmap[w_b] &= ~(m_b & m_e);
+	} else {
+		bitmap[w_b] &= ~m_b;
+
+		if (m_e)
+			bitmap[w_e] &= ~m_e;
+
+		for (cnt = w_b + 1; cnt < w_e; ++cnt)
+			bitmap[cnt] = 0UL;
+	}
+}
+EXPORT_SYMBOL(bitmap_clear_region);
+
+void bitmap_set_region(unsigned long *bitmap, unsigned int offset,
+		       unsigned int length)
+{
+	unsigned long w_b, w_e, m_b, m_e, cnt;
+
+	w_b = offset / BITS_PER_LONG;
+	w_e = (offset + length) / BITS_PER_LONG;
+
+	m_b = ~((1UL << (offset % BITS_PER_LONG)) - 1UL);
+	m_e = (1UL << ((offset + length) % BITS_PER_LONG)) - 1UL;
+
+	if (w_b == w_e) {
+		bitmap[w_b] |= m_b & m_e;
+	} else {
+		bitmap[w_b] |= m_b;
+
+		if (m_e)
+			bitmap[w_e] |= m_e;
+
+		for (cnt = w_b + 1; cnt < w_e; ++cnt)
+			bitmap[cnt] = ~0UL;
+	}
+}
+EXPORT_SYMBOL(bitmap_set_region);
+
 static int __init mtdx_init(void)
 {
 	int rc;

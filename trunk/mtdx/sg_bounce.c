@@ -53,6 +53,7 @@ unsigned int bounce_to_sg(struct scatterlist *sg, unsigned int *sg_off,
 #endif
 	return count;
 }
+EXPORT_SYMBOL(bounce_to_sg);
 
 unsigned int fill_sg(struct scatterlist *sg, unsigned int *sg_off,
 		     unsigned int val, unsigned int count)
@@ -93,6 +94,7 @@ unsigned int fill_sg(struct scatterlist *sg, unsigned int *sg_off,
 #endif
 	return count;
 }
+EXPORT_SYMBOL(fill_sg);
 
 unsigned int bounce_from_sg(char *buf, unsigned int *buf_off,
 			    struct scatterlist *sg, unsigned int *sg_off,
@@ -136,3 +138,4 @@ unsigned int bounce_from_sg(char *buf, unsigned int *buf_off,
 #endif
 	return count;
 }
+EXPORT_SYMBOL(bounce_from_sg);

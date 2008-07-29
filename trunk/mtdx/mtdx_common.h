@@ -240,4 +240,12 @@ static inline void mtdx_set_drvdata(struct mtdx_dev *mdev, void *data)
 	dev_set_drvdata(&mdev->dev, data);
 }
 
+/* Some bitmap helpers */
+int bitmap_region_empty(unsigned long *bitmap, unsigned int offset,
+			unsigned int length);
+void bitmap_clear_region(unsigned long *bitmap, unsigned int offset,
+			 unsigned int length);
+void bitmap_set_region(unsigned long *bitmap, unsigned int offset,
+		       unsigned int length);
+
 #endif

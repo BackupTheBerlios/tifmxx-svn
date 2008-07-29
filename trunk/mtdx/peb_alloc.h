@@ -26,6 +26,8 @@
  *
  */
 
+#define MTDX_PEB_ALLOC_ALL 0xffffffff
+
 struct mtdx_peb_alloc {
 	unsigned int zone_size_log;
 	unsigned int block_cnt;
@@ -34,7 +36,7 @@ struct mtdx_peb_alloc {
 				unsigned int zone, int *dirty);
 	void         (*put_peb)(struct mtdx_peb_alloc *bal, unsigned int peb,
 				int dirty);
-	void         (*reset)(struct mtdx_peb_alloc *bal);
+	void         (*reset)(struct mtdx_peb_alloc *bal, unsigned int zone);
 	void         (*free)(struct mtdx_peb_alloc *bal);
 };
 
@@ -50,10 +52,11 @@ static inline void mtdx_put_peb(struct mtdx_peb_alloc *bal, unsigned int peb,
 	bal->put_peb(bal, peb, dirty);
 }
 
-static inline void mtdx_peb_alloc_reset(struct mtdx_peb_alloc *bal)
+static inline void mtdx_peb_alloc_reset(struct mtdx_peb_alloc *bal,
+					unsigned int zone)
 {
 	if (bal->reset)
-		bal->reset(bal);
+		bal->reset(bal, zone);
 }
 
 static inline void mtdx_peb_alloc_free(struct mtdx_peb_alloc *bal)
