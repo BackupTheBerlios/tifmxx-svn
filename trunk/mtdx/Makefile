@@ -1,4 +1,5 @@
-obj-m += rand_peb_alloc.o sg_bounce.o mtdx_core.o ms_block.o long_map.o ftl_simple.o
+obj-m += rand_peb_alloc.o sg_bounce.o mtdx_core.o ms_block.o
+obj-m += long_map.o ftl_simple.o mtdx_block.o
 
 KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 #KERNELDIR ?= ~/linux-2.6

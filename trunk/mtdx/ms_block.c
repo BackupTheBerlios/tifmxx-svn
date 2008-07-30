@@ -12,7 +12,7 @@
 
 #include "../driver/linux/memstick.h"
 #include "mtdx_common.h"
-#include <linux/err.h>
+#include <linux/blkdev.h>
 #include <linux/hdreg.h>
 #include <linux/sched.h>
 #include <linux/wait.h>
@@ -1947,6 +1947,22 @@ static int ms_block_mtdx_get_param(struct mtdx_dev *this_dev,
 	case MTDX_PARAM_READ_ONLY: {
 		int *rv = val;
 		*rv = msb->read_only ? 1 : 0;
+		return 0;
+	}
+	case MTDX_PARAM_DEV_SUFFIX: {
+		char *rv = val;
+		sprintf(rv, "%d", this_dev->ord);
+		return 0;
+	}
+	case MTDX_PARAM_DMA_MASK: {
+		u64 *rv = val;
+		struct memstick_host *host = card->host;
+
+		*rv = BLK_BOUNCE_HIGH;
+
+		if (host->cdev.dev->dma_mask && *(host->cdev.dev->dma_mask))
+			*rv = *(host->cdev.dev->dma_mask);
+
 		return 0;
 	}
 	default:

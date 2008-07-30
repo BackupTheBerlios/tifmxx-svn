@@ -109,7 +109,9 @@ enum mtdx_param {
 	MTDX_PARAM_GEO,            /* struct mtdx_geo                */
 	MTDX_PARAM_HD_GEO,         /* struct hd_geometry             */
 	MTDX_PARAM_SPECIAL_BLOCKS, /* list of struct mtdx_page_info  */
-	MTDX_PARAM_READ_ONLY       /* boolean int                    */
+	MTDX_PARAM_READ_ONLY,      /* boolean int                    */
+	MTDX_PARAM_DEV_SUFFIX,     /* char[DEVICE_ID_SIZE]           */
+	MTDX_PARAM_DMA_MASK        /* u64*                           */
 };
 
 struct mtdx_request {
