@@ -2113,8 +2113,8 @@ static int ms_block_mtdx_get_param(struct mtdx_dev *this_dev,
 
 		*rv = BLK_BOUNCE_HIGH;
 
-		if (host->cdev.dev->dma_mask && *(host->cdev.dev->dma_mask))
-			*rv = *(host->cdev.dev->dma_mask);
+		if (host->dev.dma_mask && *(host->dev.dma_mask))
+			*rv = *(host->dev.dma_mask);
 
 		return 0;
 	}

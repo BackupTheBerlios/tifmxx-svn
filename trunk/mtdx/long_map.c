@@ -11,6 +11,7 @@
 
 #include <linux/module.h>
 #include <linux/rbtree.h>
+#include <linux/workqueue.h>
 #include "long_map.h"
 
 struct map_node {

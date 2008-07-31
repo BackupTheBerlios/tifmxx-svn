@@ -12,6 +12,10 @@
 #include <linux/module.h>
 #include <linux/scatterlist.h>
 
+#ifdef CONFIG_HIGHMEM
+#include <linux/highmem.h>
+#endif
+
 unsigned int bounce_to_sg(struct scatterlist *sg, unsigned int *sg_off,
 			  char *buf, unsigned int *buf_off, unsigned int count)
 {
@@ -38,7 +42,8 @@ unsigned int bounce_to_sg(struct scatterlist *sg, unsigned int *sg_off,
 		s_off = sg->offset + *sg_off;
 		pg = nth_page(sg_page(sg), s_off >> PAGE_SHIFT);
 		p_off = offset_in_page(s_off);
-		p_cnt = min(PAGE_SIZE - p_off, rc);
+		p_cnt = PAGE_SIZE - p_off;
+		p_cnt = min(p_cnt, rc);
 
 		local_irq_save(flags);
 		dst = kmap_atomic(pg, KM_BIO_SRC_IRQ) + p_off;
@@ -80,7 +85,8 @@ unsigned int fill_sg(struct scatterlist *sg, unsigned int *sg_off,
 		s_off = sg->offset + *sg_off;
 		pg = nth_page(sg_page(sg), s_off >> PAGE_SHIFT);
 		p_off = offset_in_page(s_off);
-		p_cnt = min(PAGE_SIZE - p_off, rc);
+		p_cnt = PAGE_SIZE - p_off;
+		p_cnt = min(p_cnt, rc);
 
 		local_irq_save(flags);
 		dst = kmap_atomic(pg, KM_BIO_SRC_IRQ) + p_off;
@@ -123,7 +129,8 @@ unsigned int bounce_from_sg(char *buf, unsigned int *buf_off,
 		s_off = sg->offset + *sg_off;
 		pg = nth_page(sg_page(sg), s_off >> PAGE_SHIFT);
 		p_off = offset_in_page(s_off);
-		p_cnt = min(PAGE_SIZE - p_off, rc);
+		p_cnt = PAGE_SIZE - p_off;
+		p_cnt = min(p_cnt, rc);
 
 		local_irq_save(flags);
 		src = kmap_atomic(pg, KM_BIO_SRC_IRQ) + p_off;
