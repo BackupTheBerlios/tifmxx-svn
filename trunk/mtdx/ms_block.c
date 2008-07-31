@@ -14,7 +14,7 @@
 #include "mtdx_common.h"
 #include <linux/blkdev.h>
 #include <linux/hdreg.h>
-#include <linux/sched.h>
+#include <linux/kthread.h>
 #include <linux/wait.h>
 
 #define DRIVER_NAME "ms_block"
@@ -130,7 +130,8 @@ struct ms_block_data {
 	unsigned char            system;
 	unsigned char            read_only:1,
 				 active:1,
-				 stopped:1;
+				 stopped:1,
+				 format:1;
 	unsigned char            cmd_flags;
 #define MS_BLOCK_FLG_DATA     0x01
 #define MS_BLOCK_FLG_EXTRA    0x02
@@ -140,6 +141,7 @@ struct ms_block_data {
 
 	struct ms_block_boot_ref boot_blocks[2];
 	struct mtdx_dev_geo      geo;
+	struct task_struct       *f_thread;
 
 	struct ms_extra_data_register extra;
 
@@ -551,6 +553,158 @@ static void ms_block_reg_addr_set(struct memstick_dev *card,
 {
 	memcpy(&card->reg_addr, addr, sizeof(struct ms_register_addr));
 }
+
+static int ms_block_wake_next(struct ms_block_data *msb)
+{
+	int rc = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(&msb->lock, flags);
+	if (!msb->format && (!msb->active || !(msb->stopped || msb->req_dev)))
+		rc = 1;
+	spin_unlock_irqrestore(&msb->lock, flags);
+	return rc;
+}
+
+static int ms_block_format(void *data)
+{
+	struct memstick_dev *card = data;
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	LIST_HEAD(s_blocks);
+	struct list_head *s_block_pos;
+	struct ms_param_register param;
+	unsigned long flags;
+	int rc;
+
+	msb->mdev->get_param(msb->mdev, MTDX_PARAM_SPECIAL_BLOCKS, &s_blocks);
+	s_block_pos = s_blocks.next;
+	msb->src_block = 0;
+
+	if (ms_block_reg_addr_cmp(card, &ms_block_r_stat_w_param)) {
+		ms_block_reg_addr_set(card, &ms_block_r_stat_w_param);
+		rc = memstick_set_rw_addr(card);
+		if (rc) {
+			/* invalidate the address to avoid mistakes */
+			memset(&card->reg_addr, 0, sizeof(card->reg_addr));
+			goto out;
+		}
+	}
+
+	while (!kthread_should_stop()
+	       && (msb->src_block < msb->geo.phy_block_cnt)) {
+		if (s_block_pos != &s_blocks) {
+			if (list_entry(s_block_pos, struct mtdx_page_info,
+				       node)->phy_block == msb->src_block) {
+				msb->src_block++;
+				s_block_pos = s_block_pos->next;
+				continue;
+			}
+		}
+
+		msb->cmd = MS_CMD_BLOCK_ERASE;
+		param.system = msb->system;
+		param.block_address_msb = (msb->src_block >> 16) & 0xff,
+		param.block_address = cpu_to_be16(msb->src_block & 0xffff),
+		param.cp = MEMSTICK_CP_BLOCK;
+		param.page_address = 0;
+
+		memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, &param,
+				  sizeof(param));
+		card->next_request = h_ms_block_write_param;
+		memstick_new_req(card->host);
+		wait_for_completion(&card->mrq_complete);
+		if (card->current_mrq.error)
+			dev_warn(&card->dev, "format: error %d erasing block "
+				 "%x\n", card->current_mrq.error,
+				 msb->src_block);
+
+		msb->src_block++;
+	}
+
+out:
+	spin_lock_irqsave(&msb->lock, flags);
+	msb->format = 0;
+	spin_unlock_irqrestore(&msb->lock, flags);
+	return 0;
+}
+
+static ssize_t ms_block_format_show(struct device *dev,
+				    struct device_attribute *attr,
+				    char *buf)
+{
+	struct ms_block_data *msb
+		= memstick_get_drvdata(container_of(dev, struct memstick_dev,
+						    dev));
+	struct task_struct *f_thread = NULL;
+	unsigned int f_pos = MTDX_INVALID_BLOCK;
+	unsigned long flags;
+
+	spin_lock_irqsave(&msb->lock, flags);
+	if (msb->format)
+		f_pos = msb->src_block;
+	else {
+		f_thread = msb->f_thread;
+		msb->f_thread = NULL;
+	}
+	spin_unlock_irqrestore(&msb->lock, flags);
+
+	if (f_thread)
+		kthread_stop(f_thread);
+
+	if (f_pos != MTDX_INVALID_BLOCK)
+		return scnprintf(buf, PAGE_SIZE, "Erasing block %x of %x.\n",
+				 f_pos, msb->geo.phy_block_cnt);
+	else
+		return scnprintf(buf, PAGE_SIZE, "Not running.\n");
+}
+
+static ssize_t ms_block_format_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct memstick_dev *card = container_of(dev, struct memstick_dev, dev);
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct task_struct *f_thread = NULL;
+	unsigned long flags;
+
+	if ((count < 6) || strncmp(buf, "format", 6))
+		return count;
+
+	spin_lock_irqsave(&msb->lock, flags);
+	while (1) {
+		if (!msb->active || msb->format) {
+			spin_unlock_irqrestore(&msb->lock, flags);
+			return count;
+		}
+
+		if (!(msb->stopped || msb->req_dev)) {
+			msb->format = 1;
+			f_thread = msb->f_thread;
+			msb->f_thread = NULL;
+			spin_unlock_irqrestore(&msb->lock, flags);
+			break;
+		}
+
+		spin_unlock_irqrestore(&msb->lock, flags);
+		wait_event(msb->req_wq, ms_block_wake_next(msb));
+		spin_lock_irqsave(&msb->lock, flags);
+	}
+
+	if (f_thread)
+		kthread_stop(f_thread);
+
+	msb->f_thread = kthread_run(ms_block_format, card, "msb_format%d",
+				    card->host->id);
+	if (IS_ERR(msb->f_thread)) {
+		spin_lock_irqsave(&msb->lock, flags);
+		msb->f_thread = NULL;
+		msb->format = 0;
+		spin_unlock_irqrestore(&msb->lock, flags);
+	}
+	return count;
+}
+
+static DEVICE_ATTR(format, 0644, ms_block_format_show, ms_block_format_store);
 
 /* Expected callback activation sequence for reading:
  * 1. set_param_addr_init
@@ -1701,18 +1855,6 @@ static int ms_block_check_card(struct memstick_dev *card)
 	return rc;
 }
 
-static int ms_block_wake_next(struct ms_block_data *msb)
-{
-	int rc = 0;
-	unsigned long flags;
-
-	spin_lock_irqsave(&msb->lock, flags);
-	if (!msb->active || !(msb->stopped || msb->req_dev))
-		rc = 1;
-	spin_unlock_irqrestore(&msb->lock, flags);
-	return rc;
-}
-
 static void ms_block_stop(struct memstick_dev *card)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
@@ -1720,14 +1862,15 @@ static void ms_block_stop(struct memstick_dev *card)
 
 	spin_lock_irqsave(&msb->lock, flags);
 	while (1) {
-		if (!msb->active || msb->stopped)
-			break;
+		if (!msb->format) {
+			if (!msb->active || msb->stopped)
+				break;
 
-		if (!msb->req_dev) {
-			msb->stopped = 1;
-			break;
+			if (!msb->req_dev) {
+				msb->stopped = 1;
+				break;
+			}
 		}
-
 		spin_unlock_irqrestore(&msb->lock, flags);
 		wait_event(msb->req_wq, ms_block_wake_next(msb));
 		spin_lock_irqsave(&msb->lock, flags);
@@ -1776,7 +1919,7 @@ static int ms_block_mtdx_new_request(struct mtdx_dev *this_dev,
 			break;
 		}
 
-		if (!(msb->stopped || msb->req_dev)) {
+		if (!(msb->format || msb->stopped || msb->req_dev)) {
 			msb->req_dev = req_dev;
 			break;
 		} else {
@@ -1798,6 +1941,7 @@ static int ms_block_mtdx_new_request(struct mtdx_dev *this_dev,
 
 static int ms_block_sysfs_register(struct memstick_dev *card)
 {
+	struct ms_block_data *msb = memstick_get_drvdata(card);
 	int rc;
 
 	rc = sysfs_create_group(&card->dev.kobj, &ms_block_grp_boot0);
@@ -1806,8 +1950,17 @@ static int ms_block_sysfs_register(struct memstick_dev *card)
 
 	rc = sysfs_create_group(&card->dev.kobj, &ms_block_grp_boot1);
 	if (rc)
-		sysfs_remove_group(&card->dev.kobj, &ms_block_grp_boot0);
+		goto err_out_boot0;
 
+	if (!msb->read_only)
+		rc = device_create_file(&card->dev, &dev_attr_format);
+
+	if (!rc)
+		return 0;
+
+	sysfs_remove_group(&card->dev.kobj, &ms_block_grp_boot1);
+err_out_boot0:
+	sysfs_remove_group(&card->dev.kobj, &ms_block_grp_boot0);
 	return rc;
 }
 
@@ -2093,6 +2246,11 @@ static void ms_block_remove(struct memstick_dev *card)
 	msb->active = 0;
 	wake_up_all(&msb->req_wq);
 	spin_unlock_irqrestore(&msb->lock, flags);
+
+	if (msb->f_thread) {
+		kthread_stop(msb->f_thread);
+		msb->f_thread = NULL;
+	}
 
 	while (waitqueue_active(&msb->req_wq))
 		msleep(1);

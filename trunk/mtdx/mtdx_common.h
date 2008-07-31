@@ -199,6 +199,7 @@ void mtdx_unregister_driver(struct mtdx_driver *drv);
 struct mtdx_dev *mtdx_alloc_dev(struct device *parent,
 				const struct mtdx_device_id *id);
 void __mtdx_free_dev(struct mtdx_dev *mdev);
+void mtdx_drop_children(struct mtdx_dev *mdev);
 int mtdx_page_list_append(struct list_head *head, struct mtdx_page_info *info);
 void mtdx_page_list_free(struct list_head *head);
 

@@ -50,7 +50,6 @@ static int mtdx_bus_match(struct device *dev, struct device_driver *drv)
 	return 0;
 }
 
-
 static int mtdx_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
 	struct mtdx_dev *mdev = container_of(dev, struct mtdx_dev, dev);
@@ -328,6 +327,20 @@ void __mtdx_free_dev(struct mtdx_dev *mdev)
 	}
 }
 EXPORT_SYMBOL(__mtdx_free_dev);
+
+static int mtdx_child_unregister(struct device *dev, void *data)
+{
+	if (dev->type == &mtdx_type)
+		device_unregister(dev);
+
+	return 0;
+}
+
+void mtdx_drop_children(struct mtdx_dev *mdev)
+{
+	device_for_each_child(&mdev->dev, NULL, mtdx_child_unregister);
+}
+EXPORT_SYMBOL(mtdx_drop_children);
 
 int mtdx_page_list_append(struct list_head *head, struct mtdx_page_info *info)
 {
