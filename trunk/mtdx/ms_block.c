@@ -2224,7 +2224,22 @@ static int ms_block_probe(struct memstick_dev *card)
 	rc = ms_block_sysfs_register(card);
 
 	if (!rc) {
+		struct mtdx_dev *cdev;
+		struct mtdx_device_id c_id = {
+			MTDX_WMODE_PAGE, MTDX_WMODE_PAGE_PEB_INC,
+			MTDX_RMODE_PAGE, MTDX_RMODE_PAGE_PEB,
+			MTDX_TYPE_FTL, MTDX_ID_FTL_SIMPLE
+		};
+
 		msb->active = 1;
+
+		/* Temporary hack to insert ftl */
+		cdev = mtdx_alloc_dev(&msb->mdev->dev, &c_id);
+		if (cdev) {
+			rc = device_register(&cdev->dev);
+			if (rc)
+				__mtdx_free_dev(cdev);
+		}
 		return 0;
 	}
 

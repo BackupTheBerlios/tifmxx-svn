@@ -1363,6 +1363,23 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 	mdev->get_oob_buf = ftl_simple_get_oob_buf;
 	mdev->get_param = ftl_simple_get_param;
 
+	{
+		struct mtdx_dev *cdev;
+		struct mtdx_device_id c_id = {
+			MTDX_WMODE_NONE, MTDX_WMODE_PAGE, MTDX_RMODE_NONE,
+	  		MTDX_RMODE_PAGE, MTDX_TYPE_ADAPTER,
+			MTDX_ID_ADAPTER_BLKDEV
+		};
+
+		/* Temporary hack to insert block device */
+		cdev = mtdx_alloc_dev(&mdev->dev, &c_id);
+		if (cdev) {
+			rc = device_register(&cdev->dev);
+			if (rc)
+				__mtdx_free_dev(cdev);
+		}
+	}
+
 	return 0;
 err_out:
 	ftl_simple_free(fsd);
