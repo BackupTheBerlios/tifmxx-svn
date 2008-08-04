@@ -15,7 +15,8 @@ struct device_driver {
 
 struct device {
 	struct device *parent;
-	void *driver_data;
+	char          bus_id[32];
+	void          *driver_data;
 };
 
 

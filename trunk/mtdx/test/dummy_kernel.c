@@ -1,9 +1,11 @@
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/list.h>
+#include <linux/workqueue.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include "mtdx_common.h"
 
 void spin_lock_irqsave(spinlock_t *lock, unsigned long flags)
@@ -180,15 +182,76 @@ void __mtdx_free_dev(struct mtdx_dev *mdev)
 	free(mdev);
 }
 
-unsigned int random32(void)
+struct mtdx_dev *mtdx_alloc_dev(struct device *parent,
+				const struct mtdx_device_id *id)
 {
-	unsigned int rv = random();
+	struct mtdx_dev *mdev = kzalloc(sizeof(struct mtdx_dev), GFP_KERNEL);
+	int rc;
 
-	int fd = open("/dev/urandom", O_RDONLY);
+	if (!mdev)
+		return NULL;
 
-	if (fd >= 0) {
-		read(fd, &rv, 4);
-		close(fd);
+	memcpy(&mdev->id, id, sizeof(struct mtdx_device_id));
+	mdev->dev.parent = parent;
+//	mdev->dev.bus = &mtdx_bus_type;
+//	mdev->dev.release = mtdx_free_dev;
+//	mdev->dev.type = &mtdx_type;
+
+	snprintf(mdev->dev.bus_id, sizeof(mdev->dev.bus_id),
+		 "mtdx%d", mdev->ord);
+
+	return mdev;
+
+err_out_free:
+	kfree(mdev);
+	return NULL;
+}
+
+static void *work_thread(void *data)
+{
+	struct work_struct *work = data;
+	pthread_mutex_lock(&work->lock);
+	work->state = 2;
+	pthread_cond_broadcast(&work->cond);
+	pthread_mutex_unlock(&work->lock);
+	work->func(work);
+	return NULL;
+}
+
+int cancel_work_sync(struct work_struct *work)
+{
+	pthread_mutex_lock(&work->lock);
+	while (work->state == 1)
+		pthread_cond_wait(&work->cond, &work->lock);
+
+	if (work->thread)
+		pthread_join(work->thread, NULL);
+
+	work->thread = 0;
+	work->state = 0;
+	pthread_mutex_unlock(&work->lock);
+	return 0;
+}
+
+int schedule_work(struct work_struct *work)
+{
+	int rc = 0;
+
+	pthread_mutex_lock(&work->lock);
+	if (work->state == 1)
+		goto out;
+	else if (work->state == 2) {
+		if (work->thread)
+			pthread_join(work->thread, NULL);
+
+		work->thread = 0;
+		work->state = 0;
 	}
-	return rv;
+
+	rc = pthread_create(&work->thread, NULL, work_thread, &work);
+	if (!rc)
+		work->state = 1;
+out:
+	pthread_mutex_unlock(&work->lock);
+	return rc;
 }

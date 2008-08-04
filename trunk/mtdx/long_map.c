@@ -150,7 +150,7 @@ static void long_map_put_tree(struct long_map *map)
 static void long_map_async_alloc(struct work_struct *work)
 {
 	struct long_map *map = container_of(work, struct long_map,
-						  allocator_work);
+					    allocator_work);
 	struct map_node *b;
 	struct rb_node *h = NULL;
 	unsigned int cnt = 0;
@@ -243,6 +243,7 @@ void long_map_destroy(struct long_map *map)
 	if (!map)
 		return;
 
+	cancel_work_sync(&map->allocator_work);
 	long_map_put_tree(map);
 
 	while (map->retired_nodes) {

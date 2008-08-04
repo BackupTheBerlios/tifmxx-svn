@@ -1,9 +1,9 @@
 CC = gcc
-CFLAGS = -I../ -I.
+CFLAGS = -I../ -I. -g
 
-ftl_test: ftl_simple.o rand_peb_alloc.o long_map.o dummy_kernel.o rbtree.o \
-	  bitmap.o find_next_bit.o sg_bounce.o hweight.o
-	gcc -o $@ $^
+test_ftl: test_ftl.o ftl_simple.o rand_peb_alloc.o long_map.o dummy_kernel.o \
+	  rbtree.o bitmap.o find_next_bit.o sg_bounce.o hweight.o vsprintf.o
+	gcc -lcrypto -lrt -o $@ $^
 
 ftl_simple.o: ../ftl_simple.c
 	gcc $(CFLAGS) -c $^
