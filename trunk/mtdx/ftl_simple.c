@@ -863,6 +863,8 @@ static void ftl_simple_set_address(struct ftl_simple_data *fsd)
 
 static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 {
+	struct mtdx_dev *parent = container_of(fsd->req_out.src_dev->dev.parent,
+					       struct mtdx_dev, dev);
 	unsigned int z_log_block, z_src_block;
 	struct mtdx_page_info p_info = {};
 	int rc = 0;
@@ -971,7 +973,7 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 	p_info.status = MTDX_PAGE_MAPPED;
 	p_info.log_block = fsd->req_out.log_block;
 	p_info.phy_block = fsd->dst_block;
-	rc = fsd->req_dev->info_to_oob(fsd->req_dev, fsd->oob_buf, &p_info);
+	rc = parent->info_to_oob(parent, fsd->oob_buf, &p_info);
 	return rc;
 }
 
