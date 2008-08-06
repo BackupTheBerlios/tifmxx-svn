@@ -14,7 +14,7 @@
 #include <linux/idr.h>
 
 static DEFINE_IDA(mtdx_dev_ida);
-static DEFINE_SPINLOCK(mtdx_dev_lock);
+static DEFINE_MUTEX(mtdx_dev_lock);
 
 static struct device_type mtdx_type = {
 	.name = "mtdx"
@@ -98,9 +98,9 @@ static int mtdx_device_remove(struct device *dev)
 		mdev->dev.driver = NULL;
 	}
 
-	spin_lock(&mtdx_dev_lock);
+	mutex_lock(&mtdx_dev_lock);
 	ida_remove(&mtdx_dev_ida, mdev->ord);
-	spin_unlock(&mtdx_dev_lock);
+	mutex_unlock(&mtdx_dev_lock);
 
 	put_device(dev);
 	return 0;
@@ -293,9 +293,9 @@ struct mtdx_dev *mtdx_alloc_dev(struct device *parent,
 	if (!ida_pre_get(&mtdx_dev_ida, GFP_KERNEL))
 		goto err_out_free;
 
-	spin_lock(&mtdx_dev_lock);
+	mutex_lock(&mtdx_dev_lock);
 	rc = ida_get_new(&mtdx_dev_ida, &mdev->ord);
-	spin_unlock(&mtdx_dev_lock);
+	mutex_unlock(&mtdx_dev_lock);
 
 	if (rc)
 		goto err_out_free;
@@ -320,9 +320,9 @@ EXPORT_SYMBOL(mtdx_alloc_dev);
 void __mtdx_free_dev(struct mtdx_dev *mdev)
 {
 	if (mdev) {
-		spin_lock(&mtdx_dev_lock);
+		mutex_lock(&mtdx_dev_lock);
 		ida_remove(&mtdx_dev_ida, mdev->ord);
-		spin_unlock(&mtdx_dev_lock);
+		mutex_unlock(&mtdx_dev_lock);
 		kfree(mdev);
 	}
 }

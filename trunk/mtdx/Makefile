@@ -5,7 +5,7 @@ KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 #KERNELDIR ?= ~/linux-2.6
 #KERNELDIR ?= /usr/src/linux-2.6.23
 PWD       := $(shell pwd)
-EXTRA_CFLAGS = -fno-inline -DDEBUG
+EXTRA_CFLAGS = -g -fno-inline -DDEBUG
 
 all:
 	echo $(PWD)

@@ -633,7 +633,7 @@ static int jmb38x_ms_reset(struct jmb38x_ms_host *host)
 		ndelay(20);
 	}
 	dev_dbg(&host->chip->pdev->dev, "reset_req timeout\n");
-	return -EIO;
+	//return -EIO;
 
 reset_next:
 	writel(HOST_CONTROL_RESET | HOST_CONTROL_CLOCK_EN

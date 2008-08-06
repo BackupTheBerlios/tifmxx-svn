@@ -19,6 +19,9 @@
 
 #define DRIVER_NAME "ms_block"
 
+#undef dev_dbg
+#define dev_dbg dev_emerg
+
 struct ms_block_system_item {
 	unsigned int  start_addr;
 	unsigned int  data_size;
@@ -1376,6 +1379,10 @@ static int h_ms_block_set_param_addr_init(struct memstick_dev *card,
 	msb->t_count = 0;
 	msb->trans_err = 0;
 
+	dev_dbg(&card->dev, "init request %x, %x, %x:%x\n", msb->req_in->cmd,
+		msb->req_in->phy_block, msb->req_in->offset,
+		msb->req_in->length);
+
 	switch (msb->req_in->cmd) {
 	case MTDX_CMD_READ:
 		msb->cmd_flags = MS_BLOCK_FLG_EXTRA | MS_BLOCK_FLG_DATA
@@ -1548,9 +1555,12 @@ unsigned int ms_block_find_boot_block(struct memstick_dev *card,
 
 	for (b_cnt = start_addr; b_cnt < MS_BLOCK_MAX_BOOT_ADDR; ++b_cnt) {
 		m_req.phy_block = b_cnt;
+		msb->req_dev = msb->mdev;
 		msb->req_in = &m_req;
 		sg_set_buf(&msb->req_sg, header, m_req.length);
 		memset(&msb->extra, 0xff, sizeof(msb->extra));
+
+		dev_dbg(&card->dev, "block %x\n", b_cnt);
 
 		card->next_request = h_ms_block_req_init;
 		memstick_new_req(card->host);
@@ -1619,6 +1629,7 @@ static int ms_block_read_boot_block(struct memstick_dev *card,
 	b_ref->size = p_sum * page_size;
 	m_req.length = b_ref->size;
 
+	msb->req_dev = msb->mdev;
 	msb->req_in = &m_req;
 	sg_set_buf(&msb->req_sg, b_ref->data, b_ref->size);
 	memset(&msb->extra, 0xff, sizeof(msb->extra));
@@ -1749,7 +1760,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 	msb->geo.page_size = sizeof(struct ms_block_boot_header);
 	msb->system = MEMSTICK_SYS_BAMD;
 
-	card->next_request = h_ms_block_internal_req_init;;
+	card->next_request = h_ms_block_internal_req_init;
 	msb->mrq_handler = h_ms_block_default;
 	memstick_init_req(&card->current_mrq, MS_TPC_SET_CMD, &cmd, 1);
 	card->current_mrq.need_card_int = 0;
@@ -1793,6 +1804,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 	msb->read_only = (card->current_mrq.data[2] & MEMSTICK_STATUS0_WP)
 			 ? 1 : 0;
 
+	dev_dbg(&card->dev, "find boot_blocks\n");
 	header = kzalloc(sizeof(struct ms_block_boot_header), GFP_KERNEL);
 	if (!header)
 		return -ENOMEM;
@@ -2193,14 +2205,7 @@ static int ms_block_probe(struct memstick_dev *card)
 	spin_lock_init(&msb->lock);
 	init_waitqueue_head(&msb->req_wq);
 
-	rc = ms_block_init_card(card);
-	if (rc)
-		goto err_out_free;
-
-	card->check = ms_block_check_card;
-	card->stop = ms_block_stop;
-	card->start = ms_block_start;
-
+	dev_dbg(&card->dev, "alloc dev\n");
 	msb->mdev = mtdx_alloc_dev(&card->dev, &c_id);
 	if (!msb->mdev)
 		goto err_out_free;
@@ -2215,12 +2220,21 @@ static int ms_block_probe(struct memstick_dev *card)
 	msb->mdev->info_to_oob = ms_block_mtdx_info_to_oob;
 	msb->mdev->get_param = ms_block_mtdx_get_param;
 
-	rc = device_register(&msb->mdev->dev);
-	if (rc) {
-		__mtdx_free_dev(msb->mdev);
-		goto err_out_free;
-	}
+	dev_dbg(&card->dev, "init card\n");
+	rc = ms_block_init_card(card);
+	if (rc)
+		goto err_out_free_mdev;
 
+	card->check = ms_block_check_card;
+	card->stop = ms_block_stop;
+	card->start = ms_block_start;
+
+	dev_dbg(&card->dev, "dev register\n");
+	rc = device_register(&msb->mdev->dev);
+	if (rc)
+		goto err_out_free_mdev;
+	return 0;
+	dev_dbg(&card->dev, "sysfs register\n");
 	rc = ms_block_sysfs_register(card);
 
 	if (!rc) {
@@ -2234,16 +2248,19 @@ static int ms_block_probe(struct memstick_dev *card)
 		msb->active = 1;
 
 		/* Temporary hack to insert ftl */
-		cdev = mtdx_alloc_dev(&msb->mdev->dev, &c_id);
-		if (cdev) {
-			rc = device_register(&cdev->dev);
-			if (rc)
-				__mtdx_free_dev(cdev);
-		}
+//		cdev = mtdx_alloc_dev(&msb->mdev->dev, &c_id);
+//		if (cdev) {
+//			rc = device_register(&cdev->dev);
+//			if (rc)
+//				__mtdx_free_dev(cdev);
+//		}
 		return 0;
 	}
 
 	device_unregister(&msb->mdev->dev);
+	goto err_out_free;
+err_out_free_mdev:
+	__mtdx_free_dev(msb->mdev);
 err_out_free:
 	memstick_set_drvdata(card, NULL);
 	ms_block_data_free(msb);
