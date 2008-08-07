@@ -276,7 +276,7 @@ static int ftl_simple_lookup_block(struct ftl_simple_data *fsd)
 	fsd->req_out.log_block = MTDX_INVALID_BLOCK;
 	fsd->req_out.phy_block = fsd->zone_scan_pos;
 	fsd->req_out.offset = 0;
-	fsd->req_out.length = 0;
+	fsd->req_out.length = fsd->geo.page_size;
 	fsd->end_req_fn = ftl_simple_end_lookup_block;
 	return 0;
 }
@@ -332,12 +332,14 @@ static int ftl_simple_get_data_buf_sg(struct mtdx_request *req,
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(req->src_dev);
 
 	if (!fsd->sg_length)
-		return -ENOMEM;
+		return -EAGAIN;
 
 	if (fsd->sg_off >= fsd->req_sg.length) {
 		int rc = mtdx_get_data_buf_sg(fsd->req_in, &fsd->req_sg);
-		if (rc)
+		if (rc) {
+			fsd->sg_length = 0;
 			return rc;
+		}
 		fsd->sg_off = 0;
 	}
 
@@ -368,7 +370,7 @@ static int ftl_simple_get_tmp_buf_sg(struct mtdx_request *req,
 		sg_set_buf(sg, fsd->block_buf + fsd->tmp_off, fsd->sg_length);
 		fsd->sg_length = 0;
 	} else
-		rc = -ENOMEM;
+		rc = -EAGAIN;
 
 	spin_unlock_irqrestore(&fsd->lock, flags);
 	return rc;

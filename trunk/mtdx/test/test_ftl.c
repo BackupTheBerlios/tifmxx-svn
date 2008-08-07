@@ -26,16 +26,164 @@ struct mtdx_dev_geo btm_geo = {
 char *flat_space;
 char *trans_space;
 
-struct btm_oob *blocks;
+struct btm_oob *pages;
+
+int btm_trans_data(struct mtdx_request *req, int dir)
+{
+	struct scatterlist sg;
+	unsigned int c_pos = req->phy_block
+			     * (btm_geo.page_cnt * btm_geo.page_size);
+	unsigned int t_len, r_len = req->length;
+	int rc;
+
+	c_pos += req->offset;
+
+	while (!(rc = btm_req_dev->get_data_buf_sg(req, &sg))) {
+		t_len = min(sg.length, r_len);
+
+		if (dir)
+			memcpy(trans_space + c_pos, sg_virt(&sg), t_len);
+		else
+			memcpy(sg_virt(&sg), trans_space + c_pos, t_len);
+
+		r_len -= t_len;
+		c_pos += t_len;
+	}
+	return rc;
+}
+
+int btm_trans_oob(struct mtdx_request *req, int dir)
+{
+	unsigned int c_pos = req->phy_block * btm_geo.page_cnt;
+	unsigned int cnt = req->length / btm_geo.page_size;
+	char *oob_buf;
+
+	c_pos += req->offset / btm_geo.page_size;
+
+	for (; cnt; --cnt) {
+		oob_buf = btm_req_dev->get_oob_buf(req);
+		if (!oob_buf)
+			return -ENOMEM;
+
+		if (dir)
+			memcpy(&pages[c_pos], oob_buf,
+			       sizeof(struct btm_oob));
+		else
+			memcpy(oob_buf, &pages[c_pos],
+			       sizeof(struct btm_oob));
+		c_pos++;
+	}
+	return 0;
+}
 
 void *request_thread(void *data)
 {
+	struct mtdx_request *req;
+	unsigned int cnt, src_off, src_blk;
+	int rc;
+
 	pthread_mutex_lock(&req_lock);
 	while (1) {
 		while (!btm_req_dev)
 			pthread_cond_wait(&next_req, &req_lock);
 
-		
+		while ((req = btm_req_dev->get_request(btm_req_dev))) {
+			printf("req cmd %x, block %x, %x:%x\n", req->cmd,
+			       req->phy_block, req->offset, req->length);
+			if ((req->offset % btm_geo.page_size)
+			    || (req->length % btm_geo.page_size))
+				printf("unaligned offset/length!\n");
+			if ((req->offset
+			     > (btm_geo.page_cnt * btm_geo.page_size))
+			    || ((req->offset + req->length)
+				> (btm_geo.page_cnt * btm_geo.page_size)))
+				printf("invalid offset/length!\n");
+
+			switch (req->cmd) {
+			case MTDX_CMD_READ:
+				rc = btm_trans_data(req, 0);
+				if (!rc)
+					rc = btm_trans_oob(req, 0);
+
+				btm_req_dev->end_request(req, rc, req->length);
+				break;
+			case MTDX_CMD_READ_DATA:
+				rc = btm_trans_data(req, 0);
+
+				btm_req_dev->end_request(req, rc, req->length);
+				break;
+			case MTDX_CMD_READ_OOB:
+				rc = btm_trans_oob(req, 0);
+
+				btm_req_dev->end_request(req, rc, req->length);
+				break;
+			case MTDX_CMD_ERASE:
+				memset(trans_space
+				       + req->phy_block * btm_geo.page_size,
+				       btm_geo.fill_value,
+				       btm_geo.page_cnt * btm_geo.page_size);
+				memset(&pages[req->phy_block
+					      * btm_geo.page_size],
+				       btm_geo.fill_value,
+				       btm_geo.page_cnt
+				       * sizeof(struct btm_oob));
+
+				btm_req_dev->end_request(req, 0, 0);
+				break;
+			case MTDX_CMD_WRITE:
+				rc = btm_trans_data(req, 1);
+				if (!rc)
+					rc = btm_trans_oob(req, 1);
+
+				btm_req_dev->end_request(req, rc, req->length);
+				break;
+			case MTDX_CMD_WRITE_DATA:
+				rc = btm_trans_data(req, 1);
+
+				btm_req_dev->end_request(req, rc, req->length);
+				break;
+			case MTDX_CMD_WRITE_OOB:
+				rc = btm_trans_oob(req, 1);
+
+				btm_req_dev->end_request(req, rc, req->length);
+				break;
+			case MTDX_CMD_SELECT:
+				printf("select block %x, stat %x\n",
+				       req->phy_block,
+				       pages[req->phy_block * btm_geo.page_cnt]
+					    .status);
+				pages[req->phy_block * btm_geo.page_cnt].status
+					= MTDX_PAGE_SMAPPED;
+				btm_req_dev->end_request(req, 0, 0);
+				break;
+			case MTDX_CMD_INVALIDATE:
+				printf("invalidate block %x, stat %x\n",
+				       req->phy_block,
+				       pages[req->phy_block * btm_geo.page_cnt]
+					    .status);
+				pages[req->phy_block * btm_geo.page_cnt].status
+					= MTDX_PAGE_INVALID;
+				btm_req_dev->end_request(req, 0, 0);
+				break;
+			case MTDX_CMD_COPY:
+				rc = btm_req_dev->get_copy_source(req, &src_blk,
+								  &src_off);
+				if (rc)
+					btm_req_dev->end_request(req, rc, 0);
+
+				memcpy(trans_space
+				       + req->phy_block * btm_geo.page_size +
+				       req->offset,
+				       trans_space + src_blk * btm_geo.page_size
+				       + src_off,
+				       req->length);
+				btm_req_dev->end_request(req, 0, req->length);
+				break;
+			default:
+				btm_req_dev->end_request(req, -EINVAL, 0);
+			}
+		}
+		btm_req_dev = NULL;
 	}
 	pthread_mutex_unlock(&req_lock);
 }

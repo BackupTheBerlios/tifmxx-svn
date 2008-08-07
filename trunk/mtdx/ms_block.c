@@ -1471,7 +1471,8 @@ static int ms_block_complete_req(struct memstick_dev *card, int error)
 		if (error == -EAGAIN)
 			error = 0;
 
-		mtdx_complete_request(msb->req_in, error, msb->t_count);
+		mtdx_complete_request(msb->req_in, error,
+				      msb->t_count * msb->geo.page_size);
 		msb->req_in = NULL;
 		card->next_request = h_ms_block_req_init;
 

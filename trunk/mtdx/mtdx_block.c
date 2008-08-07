@@ -192,7 +192,7 @@ static int mtdx_block_get_data_buf_sg(struct mtdx_request *req,
 	struct mtdx_block_data *mbd = mtdx_get_drvdata(req->src_dev);
 
 	if (mbd->sg_pos >= mbd->sg_len)
-		return -ENOMEM;
+		return -EAGAIN;
 
 	memcpy(sg, &mbd->req_sg[mbd->sg_pos++], sizeof(struct scatterlist));
 	return 0;
