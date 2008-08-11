@@ -850,6 +850,8 @@ static int ms_block_complete_multi(struct memstick_dev *card,
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 
+	dev_dbg(&card->dev, "complete_multi: %d\n", error);
+
 	if (msb->cmd_flags & MS_BLOCK_FLG_PAGE_INC) {
 		msb->trans_err = error;
 		msb->cmd = MS_CMD_BLOCK_END;
@@ -1128,6 +1130,8 @@ static int h_ms_block_data_get_int(struct memstick_dev *card,
 	unsigned char int_reg = (*mrq)->data[0];
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 
+	dev_dbg(&card->dev, "data_get_int: %d, %x\n", (*mrq)->error, int_reg);
+
 	if (!(*mrq)->error) {
 		if (int_reg & MEMSTICK_INT_CMDNAK)
 			return ms_block_complete_multi(card, mrq, -EIO);
@@ -1200,13 +1204,9 @@ static int h_ms_block_cmd_get_int(struct memstick_dev *card,
 	unsigned char int_reg = (*mrq)->data[0];
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 
-	if (!(*mrq)->error) {
-		if (int_reg & MEMSTICK_INT_CMDNAK) {
-			(*mrq)->error = -EIO;
-			return ms_block_complete_req(card, (*mrq)->error);
-		} else if (int_reg & MEMSTICK_INT_ERR)
-			(*mrq)->error = -EFAULT;
-	} else
+	dev_dbg(&card->dev, "cmd_get_int: %d, %x\n", (*mrq)->error, int_reg);
+
+	if ((*mrq)->error)
 		return ms_block_complete_req(card, (*mrq)->error);
 
 	switch (msb->cmd) {
@@ -1216,7 +1216,9 @@ static int h_ms_block_cmd_get_int(struct memstick_dev *card,
 
 		return ms_block_complete_req(card, (*mrq)->error);
 	case MS_CMD_BLOCK_READ:
-		if (int_reg & MEMSTICK_INT_ERR) {
+		if (int_reg & MEMSTICK_INT_CMDNAK)
+			return ms_block_complete_req(card, -EIO);
+		else if (int_reg & MEMSTICK_INT_ERR) {
 			memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
 					  &ms_block_r_stat_w_param,
 					  sizeof(ms_block_r_stat_w_param));
@@ -1230,11 +1232,19 @@ static int h_ms_block_cmd_get_int(struct memstick_dev *card,
 
 		return ms_block_setup_read(card, mrq);
 	case MS_CMD_BLOCK_WRITE:
-		if (int_reg & MEMSTICK_INT_ERR)
+		if (int_reg & MEMSTICK_INT_CMDNAK)
+			return ms_block_complete_req(card, -EIO);
+		else if (int_reg & MEMSTICK_INT_ERR)
 			return ms_block_complete_multi(card, mrq, -EFAULT);
 
 		return ms_block_setup_write(card, mrq);
-	default: /* other memstick commands - erase, reset, etc */
+	case MS_CMD_BLOCK_ERASE:
+		if (int_reg & MEMSTICK_INT_CMDNAK)
+			return ms_block_complete_req(card, -EIO);
+		else if (int_reg & MEMSTICK_INT_ERR)
+			return ms_block_complete_req(card, -EFAULT);
+		/* fall through */
+	default: /* other memstick commands */
 		return ms_block_complete_req(card, (*mrq)->error);
 	};
 }
@@ -1567,11 +1577,17 @@ unsigned int ms_block_find_boot_block(struct memstick_dev *card,
 		memstick_new_req(card->host);
 		wait_for_completion(&card->mrq_complete);
 
-		if (msb->trans_err)
-			return msb->trans_err;
+		if (msb->trans_err) {
+			dev_dbg(&card->dev, "transfer error %d\n",
+				msb->trans_err);
+			return MTDX_INVALID_BLOCK;
+		}
 
-		if (msb->t_count != m_req.length)
-			return -EIO;
+		if (msb->t_count != m_req.length) {
+			dev_dbg(&card->dev, "got %x bytes, expected %x\n",
+				msb->t_count, m_req.length);
+			return MTDX_INVALID_BLOCK;
+		}
 
 		if (!(msb->extra.overwrite_flag & MEMSTICK_OVERWRITE_BKST))
 			continue;
@@ -1756,6 +1772,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 	int rc, rcx;
 	enum memstick_command cmd = MS_CMD_RESET;
 
+	msb->caps = host->caps;
 	msb->boot_blocks[0].phy_block = MTDX_INVALID_BLOCK;
 	msb->boot_blocks[1].phy_block = MTDX_INVALID_BLOCK;
 	msb->geo.page_size = sizeof(struct ms_block_boot_header);
@@ -1791,6 +1808,9 @@ static int ms_block_init_card(struct memstick_dev *card)
 			       "parallel interface\n", card->dev.bus_id);
 	}
 
+	if (!(msb->system & MEMSTICK_SYS_PAM))
+		msb->caps |= MEMSTICK_CAP_AUTO_GET_INT;
+
 	card->next_request = h_ms_block_internal_req_init;
 	msb->mrq_handler = h_ms_block_default;
 	memstick_init_req(&card->current_mrq, MS_TPC_READ_REG, NULL,
@@ -1805,7 +1825,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 	msb->read_only = (card->current_mrq.data[2] & MEMSTICK_STATUS0_WP)
 			 ? 1 : 0;
 
-	dev_dbg(&card->dev, "find boot_blocks\n");
+	dev_dbg(&card->dev, "find boot block\n");
 	header = kzalloc(sizeof(struct ms_block_boot_header), GFP_KERNEL);
 	if (!header)
 		return -ENOMEM;
@@ -1818,6 +1838,9 @@ static int ms_block_init_card(struct memstick_dev *card)
 		goto out;
 	}
 
+	dev_dbg(&card->dev, "first boot block: %x\n",
+		msb->boot_blocks[0].phy_block);
+
 	msb->geo.zone_size_log = 9;
 	msb->geo.log_block_cnt
 		= be16_to_cpu(header->info.number_of_effective_blocks);
@@ -1828,11 +1851,15 @@ static int ms_block_init_card(struct memstick_dev *card)
 	msb->geo.oob_size = sizeof(struct ms_extra_data_register);
 	msb->geo.fill_value = 0xff;
 
+	dev_dbg(&card->dev, "read first boot block\n");
 	rc = ms_block_read_boot_block(card, header, &msb->boot_blocks[0]);
 
 	msb->boot_blocks[1].phy_block
 		= ms_block_find_boot_block(card, header,
 					   msb->boot_blocks[0].phy_block + 1);
+
+	dev_dbg(&card->dev, "second boot block: %x\n",
+		msb->boot_blocks[1].phy_block);
 
 	if (msb->boot_blocks[1].phy_block != MTDX_INVALID_BLOCK)
 		rcx = ms_block_read_boot_block(card, header,

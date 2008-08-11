@@ -17,6 +17,9 @@
 #include <linux/fs.h>
 #include <linux/delay.h>
 
+#undef dev_dbg
+#define dev_dbg dev_emerg
+
 #define DRIVER_NAME "memstick"
 
 static unsigned int cmd_retries = 3;
@@ -439,7 +442,7 @@ static void memstick_check(struct work_struct *work)
 	if (!host->card) {
 		if (memstick_power_on(host))
 			goto out_power_off;
-	} else
+	} else if (host->card->stop)
 		host->card->stop(host->card);
 
 	card = memstick_alloc_card(host);
@@ -458,7 +461,7 @@ static void memstick_check(struct work_struct *work)
 			    || !(host->card->check(host->card))) {
 				device_unregister(&host->card->dev);
 				host->card = NULL;
-			} else
+			} else if (host->card->start)
 				host->card->start(host->card);
 		}
 

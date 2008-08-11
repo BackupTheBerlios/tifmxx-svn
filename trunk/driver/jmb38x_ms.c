@@ -20,6 +20,9 @@
 #define PCI_DEVICE_ID_JMICRON_JMB38X_MS 0x2383
 #define DRIVER_NAME "jmb38x_ms"
 
+#undef dev_dbg
+#define dev_dbg dev_emerg
+
 static int no_dma;
 module_param(no_dma, bool, 0644);
 
