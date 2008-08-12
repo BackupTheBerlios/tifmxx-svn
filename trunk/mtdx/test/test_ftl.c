@@ -1,6 +1,7 @@
 #include "../mtdx_common.h"
 #include <linux/module.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 struct mtdx_driver *test_driver;
 
@@ -271,6 +272,40 @@ struct mtdx_dev ftl_dev = {
 	}
 };
 
+char *top_data_buf;
+unsigned int top_pos;
+unsigned int top_size;
+pthread_mutex_t top_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t top_cond = PTHREAD_COND_INITIALIZER;
+unsigned int top_req_done = 0;
+
+static int top_get_data_buf_sg(struct mtdx_request *req,
+			       struct scatterlist *sg)
+{
+	if (top_pos >= top_size)
+		return -EAGAIN;
+
+	sg->page = top_data_buf;
+	sg->offset = top_pos;
+	sg->length = top_size - top_pos;
+
+	top_pos += sg->length;
+	return 0;
+}
+
+static void top_end_request(struct mtdx_request *req, int error,
+			    unsigned int count)
+{
+	printf("top end request, count %x, error %d\n");
+
+	pthread_mutex_lock(&top_lock);
+	top_req_done = 2;
+	pthread_cond_signal(&top_cond);
+	pthread_mutex_unlock(&top_lock);
+}
+
+static struct mtdx_request *top_get_request(struct mtdx_dev *mdev);
+
 struct mtdx_dev top_dev = {
 	.get_request = top_get_request,
 	.end_request = top_end_request,
@@ -279,6 +314,25 @@ struct mtdx_dev top_dev = {
 		.parent = &ftl_dev.dev
 	}
 };
+
+struct mtdx_request top_req = {
+	.src_dev = &top_dev,
+	.phy_block = MTDX_INVALID_BLOCK
+};
+
+static struct mtdx_request *top_get_request(struct mtdx_dev *mdev)
+{
+	struct mtdx_request *rv;
+
+	pthread_mutex_lock(&top_lock);
+	if (!top_req_done) {
+		rv =  &top_req;
+		top_req_done++;
+	} else
+		rv = NULL;
+	pthread_mutex_unlock(&top_lock);
+	return rv;
+}
 
 int mtdx_register_driver(struct mtdx_driver *drv)
 {
@@ -306,7 +360,91 @@ int device_register(struct device *dev)
 
 int main(int argc, char **argv)
 {
+	unsigned int t_cnt, err_cnt = 0;
+	unsigned int off, size;
+	unsigned int media_size = btm_geo.phy_block_cnt * btm_geo.page_cnt
+				  * btm_geo.page_size;
+	char *data_w, *data_r;
+	int rc;
+
+	trans_space = malloc(media_size);
+	flat_space = malloc(media_size);
+	memset(trans_space, btm_geo.fill_value, media_size);
+	memset(flat_space, btm_geo.fill_value, media_size);
+	pages = calloc(btm_geo.phy_block_cnt, sizeof(struct btm_oob));
+
 	init_module();
 	test_driver->probe(&ftl_dev);
 
+
+
+	pthread_mutex_lock(&top_lock);
+	for (t_cnt = 2; t_cnt; --t_cnt) {
+		do {
+			off = random32() % (btm_geo.log_block_cnt
+					    * btm_geo.page_cnt);
+			size = random32() % (btm_geo.log_block_cnt
+					     * btm_geo.page_cnt - off);
+		} while (!size);
+
+		top_size = size * btm_geo.page_size;
+
+		data_w = malloc(top_size);
+		RAND_bytes(data_w, top_size);
+		data_r = calloc(1, top_size);
+
+		top_req.log_block = off / btm_geo.page_cnt;
+		top_req.offset = (off % btm_geo.page_cnt)
+				 * btm_geo.page_size;
+		top_req.length = top_size;
+
+		top_pos = 0;
+		top_req.cmd = MTDX_CMD_WRITE_DATA;
+		top_data_buf = data_w;
+
+		printf("Writing %x sectors at %x\n", size, off);
+
+		rc = ftl_dev.new_request(&ftl_dev, &top_dev);
+		if (rc) {
+			printf("could not issue, error %d\n", rc);
+			goto clean_up;
+		}
+		pthread_cond_wait(&top_cond, &top_lock);
+
+		top_pos = 0;
+		top_req.cmd = MTDX_CMD_READ_DATA;
+		top_data_buf = data_r;
+		top_req_done = 0;
+
+		memcpy(flat_space + (off * btm_geo.page_size), data_w,
+		       top_size);
+
+		printf("Reading %x sectors at %x\n", size, off);
+
+		rc = ftl_dev.new_request(&ftl_dev, &top_dev);
+		if (rc) {
+			printf("could not issue, error %d\n", rc);
+			goto clean_up;
+		}
+		pthread_cond_wait(&top_cond, &top_lock);
+
+		if (memcmp(data_w, data_r, top_size)) {
+			printf("read/write err\n");
+			err_cnt++;
+		} else
+			printf("req OK!\n");
+clean_up:
+		free(data_w);
+		free(data_r);
+	}
+
+	pthread_mutex_unlock(&top_lock);
+	test_driver->remove(&ftl_dev);
+
+	kfree(flat_space);
+	kfree(trans_space);
+	kfree(pages);
+
+struct btm_oob *pages;
+	cleanup_module();
 }

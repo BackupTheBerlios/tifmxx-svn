@@ -20,8 +20,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <limits.h>
+#include <string.h>
 #include <linux/module.h>
-#include <linux/string.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <sys/types.h>
