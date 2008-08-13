@@ -83,11 +83,13 @@ void *request_thread(void *data)
 	unsigned int cnt, src_off, src_blk;
 	int rc;
 
+	printf("thread created\n");
 	pthread_mutex_lock(&req_lock);
 	while (1) {
 		while (!btm_req_dev)
 			pthread_cond_wait(&next_req, &req_lock);
 
+		printf("got request dev\n");
 		while ((req = btm_req_dev->get_request(btm_req_dev))) {
 			printf("req cmd %x, block %x, %x:%x\n", req->cmd,
 			       req->phy_block, req->offset, req->length);
@@ -192,7 +194,7 @@ void *request_thread(void *data)
 int btm_new_req(struct mtdx_dev *this_dev, struct mtdx_dev *req_dev)
 {
 	pthread_mutex_lock(&req_lock);
-	if (req_dev) {
+	if (btm_req_dev) {
 		printf("crap\n");
 		pthread_mutex_unlock(&req_lock);
 		return -EBUSY;
@@ -365,7 +367,12 @@ int main(int argc, char **argv)
 	unsigned int media_size = btm_geo.phy_block_cnt * btm_geo.page_cnt
 				  * btm_geo.page_size;
 	char *data_w, *data_r;
+	pthread_t req_t;
 	int rc;
+
+	rc = pthread_create(&req_t, NULL, request_thread, NULL);
+	if (rc)
+		return rc;
 
 	trans_space = malloc(media_size);
 	flat_space = malloc(media_size);
@@ -375,8 +382,6 @@ int main(int argc, char **argv)
 
 	init_module();
 	test_driver->probe(&ftl_dev);
-
-
 
 	pthread_mutex_lock(&top_lock);
 	for (t_cnt = 2; t_cnt; --t_cnt) {
@@ -440,6 +445,8 @@ clean_up:
 
 	pthread_mutex_unlock(&top_lock);
 	test_driver->remove(&ftl_dev);
+
+	pthread_cancel(req_t);
 
 	kfree(flat_space);
 	kfree(trans_space);

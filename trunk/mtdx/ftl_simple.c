@@ -1351,6 +1351,7 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 		}
 	}
 
+	INIT_LIST_HEAD(&fsd->special_blocks);
 	parent->get_param(parent, MTDX_PARAM_SPECIAL_BLOCKS,
 			  &fsd->special_blocks);
 
