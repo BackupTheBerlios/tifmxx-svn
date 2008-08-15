@@ -3,6 +3,7 @@
 
 #include <linux/list.h>
 #include <linux/errno.h>
+#include <stdio.h>
 
 #define THIS_MODULE NULL
 
@@ -29,5 +30,8 @@ static inline void dev_set_drvdata(struct device *dev, void *data)
 {
 	dev->driver_data = data;
 }
+
+#define dev_dbg(dev, format, arg...)            \
+        printf(format , ## arg)
 
 #endif

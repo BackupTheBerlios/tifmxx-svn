@@ -30,7 +30,7 @@ typedef int (req_fn_t)(struct ftl_simple_data *fsd);
 
 struct ftl_simple_data {
 	spinlock_t            lock;
-	atomic_long_t         usage_count;
+	unsigned int          usage_count;
 
 	/* Device geometry */
 	struct mtdx_dev_geo   geo;
@@ -192,9 +192,11 @@ static void ftl_simple_end_lookup_block(struct ftl_simple_data *fsd, int error,
 
 	p_info.phy_block = fsd->zone_scan_pos;
 
+	dev_dbg(&parent->dev, "end lookup0 %d\n");
 	if (!error)
 		error = parent->oob_to_info(parent, &p_info, fsd->oob_buf);
 
+	dev_dbg(&parent->dev, "end lookup1 %d\n");
 	z_log_block = p_info.log_block & ((1U << fsd->geo.zone_size_log) - 1U);
 
 	if (!error) {
@@ -237,7 +239,7 @@ static void ftl_simple_end_lookup_block(struct ftl_simple_data *fsd, int error,
 	}
 
 	fsd->zone_scan_pos++;
-	if (fsd->zone_scan_pos < max_block) {
+	if (fsd->zone_scan_pos >= max_block) {
 		ftl_simple_pop_all_req_fn(fsd);
 		set_bit(fsd->zone, ftl_simple_zone_map(fsd));
 	} else
@@ -301,6 +303,7 @@ static int ftl_simple_setup_zone_scan(struct ftl_simple_data *fsd)
 	unsigned int cnt;
 	struct mtdx_page_info *p_info;
 
+	dev_dbg(&fsd->req_out.src_dev.dev, "scanning zone %d\n", fsd->zone);
 	fsd->zone_scan_pos = fsd->zone << fsd->geo.zone_size_log;
 	fsd->conflict_pos = MTDX_INVALID_BLOCK;
 	mtdx_peb_alloc_reset(fsd->b_alloc, fsd->zone);
@@ -320,7 +323,6 @@ static int ftl_simple_setup_zone_scan(struct ftl_simple_data *fsd)
 
 	for (cnt = 0; cnt < (1 << fsd->geo.zone_size_log); ++cnt)
 		fsd->zones[fsd->zone]->b_table[cnt] = MTDX_INVALID_BLOCK;
-
 
 	ftl_simple_push_req_fn(fsd, ftl_simple_lookup_block);
 	return 0;
@@ -355,6 +357,7 @@ static char *ftl_simple_get_oob_buf(struct mtdx_request *req)
 {
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(req->src_dev);
 
+	dev_dbg(&req->src_dev->dev, "ftl get oob buf\n");
 	return fsd->oob_buf;
 }
 
@@ -1090,15 +1093,18 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 	int rc;
 	unsigned long flags;
 
+	dev_dbg(&this_dev->dev, "ftl get request\n");
 	spin_lock_irqsave(&fsd->lock, flags);
+	dev_dbg(&this_dev->dev, "ftl 1\n");
 	if (!fsd->req_dev) {
 		spin_unlock_irqrestore(&fsd->lock, flags);
+		dev_dbg(&this_dev->dev, "ftl 2\n");
 		return NULL;
 	}
 
 	while (1) {
 		rc = 0;
-
+		dev_dbg(&this_dev->dev, "ftl request loop\n");
 		while ((req_fn = ftl_simple_pop_req_fn(fsd))) {
 			rc = (*req_fn)(fsd);
 			if (!rc)
@@ -1142,7 +1148,7 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 			fsd->req_in = fsd->req_dev->get_request(fsd->req_dev);
 			if (!fsd->req_in) {
 				fsd->req_dev = NULL;
-				atomic_long_dec(&fsd->usage_count);
+				fsd->usage_count--;
 				break;
 			}
 		}
@@ -1168,21 +1174,25 @@ static int ftl_simple_new_request(struct mtdx_dev *this_dev,
 	unsigned long flags;
 	int rc;
 
-	atomic_long_inc(&fsd->usage_count);
-	rc = parent->new_request(parent, this_dev);
-
 	spin_lock_irqsave(&fsd->lock, flags);
+	fsd->usage_count++;
+	rc = parent->new_request(parent, this_dev);
+	dev_dbg(&this_dev->dev, "parent notified, %d\n", rc);
+
 	if (!rc && fsd->req_dev)
 		rc = -EIO;
 
+	dev_dbg(&this_dev->dev, "ftl 3\n");
 	if (rc) {
+		dev_dbg(&this_dev->dev, "ftl 4\n");
+		fsd->usage_count--;
 		spin_unlock_irqrestore(&fsd->lock, flags);
-		atomic_long_dec(&fsd->usage_count);
 		return rc;
 	}
 
 	fsd->req_dev = req_dev;
 	spin_unlock_irqrestore(&fsd->lock, flags);
+	dev_dbg(&this_dev->dev, "ftl 5\n");
 	return 0;
 }
 
@@ -1394,12 +1404,20 @@ err_out:
 static void ftl_simple_remove(struct mtdx_dev *mdev)
 {
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(mdev);
+	unsigned long flags;
 
 	mdev->new_request = ftl_simple_dummy_new_request;
 
 	/* Just wait for everybody to go away! */
-	while (atomic_long_read(&fsd->usage_count))
+	while (1) {
+		spin_lock_irqsave(&fsd->lock, flags);
+		if (!fsd->usage_count)
+			break;
+
+		spin_unlock_irqrestore(&fsd->lock, flags);
 		msleep(1);
+	};
+	spin_unlock_irqrestore(&fsd->lock, flags);
 
 	mtdx_set_drvdata(mdev, NULL);
 	ftl_simple_free(fsd);

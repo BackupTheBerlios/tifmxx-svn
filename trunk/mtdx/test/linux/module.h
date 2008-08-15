@@ -19,7 +19,7 @@
 #define MODULE_DEVICE_TABLE(x, y)
 #define EXPORT_SYMBOL(x)
 
-#define BUG_ON assert
+#define BUG_ON(x) assert(!(x))
 
 typedef int gfp_t;
 typedef AO_t atomic_long_t;

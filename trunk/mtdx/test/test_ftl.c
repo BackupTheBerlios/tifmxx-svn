@@ -15,7 +15,7 @@ struct btm_oob {
 };
 
 struct mtdx_dev_geo btm_geo = {
-	.zone_size_log = 8,
+	.zone_size_log = 4,
 	.log_block_cnt = 2000,
 	.phy_block_cnt = 2048,
 	.page_cnt = 4,
@@ -118,6 +118,7 @@ void *request_thread(void *data)
 			case MTDX_CMD_READ_OOB:
 				rc = btm_trans_oob(req, 0);
 
+				printf("read oob, %x, %d\n", req->length, rc);
 				btm_req_dev->end_request(req, rc, req->length);
 				break;
 			case MTDX_CMD_ERASE:
@@ -187,7 +188,9 @@ void *request_thread(void *data)
 			}
 		}
 		btm_req_dev = NULL;
+		printf("x1\n");
 	}
+	printf("x2\n");
 	pthread_mutex_unlock(&req_lock);
 }
 
@@ -200,6 +203,7 @@ int btm_new_req(struct mtdx_dev *this_dev, struct mtdx_dev *req_dev)
 		return -EBUSY;
 	}
 	btm_req_dev = req_dev;
+	printf("request set\n");
 	pthread_cond_signal(&next_req);
 	pthread_mutex_unlock(&req_lock);
 }
@@ -208,6 +212,8 @@ int btm_oob_to_info(struct mtdx_dev *this_dev, struct mtdx_page_info *p_info,
 		    void *oob)
 {
 	struct btm_oob *b_oob = oob;
+
+	printf("oob to info\n");
 
 	p_info->log_block = b_oob->log_block;
 	p_info->status = b_oob->status;
@@ -298,7 +304,7 @@ static int top_get_data_buf_sg(struct mtdx_request *req,
 static void top_end_request(struct mtdx_request *req, int error,
 			    unsigned int count)
 {
-	printf("top end request, count %x, error %d\n");
+	printf("top end request, count %x, error %d\n", count, error);
 
 	pthread_mutex_lock(&top_lock);
 	top_req_done = 2;
@@ -326,6 +332,7 @@ static struct mtdx_request *top_get_request(struct mtdx_dev *mdev)
 {
 	struct mtdx_request *rv;
 
+	printf("top get request\n");
 	pthread_mutex_lock(&top_lock);
 	if (!top_req_done) {
 		rv =  &top_req;
@@ -380,6 +387,10 @@ int main(int argc, char **argv)
 	memset(flat_space, btm_geo.fill_value, media_size);
 	pages = calloc(btm_geo.phy_block_cnt, sizeof(struct btm_oob));
 
+	for (rc = 0; rc < btm_geo.phy_block_cnt; ++rc)
+		pages[rc].status = MTDX_PAGE_UNMAPPED;
+
+	rc = 0;
 	init_module();
 	test_driver->probe(&ftl_dev);
 
