@@ -3,7 +3,6 @@
 
 #include <stddef.h>
 #include <assert.h>
-#include <atomic_ops.h>
 #include <linux/spinlock.h>
 #include <linux/bitmap.h>
 #include <linux/div64.h>
@@ -22,18 +21,6 @@
 #define BUG_ON(x) assert(!(x))
 
 typedef int gfp_t;
-typedef AO_t atomic_long_t;
-
-#define atomic_long_read AO_load
-static inline void atomic_long_inc(atomic_long_t *l)
-{
-	AO_fetch_and_add1(l);
-}
-
-static inline void atomic_long_dec(atomic_long_t *l)
-{
-	AO_fetch_and_sub1(l);
-}
 
 void msleep(unsigned int msecs);
 

@@ -1,6 +1,8 @@
 #ifndef _ASM_GENERIC_BITOPS_FFZ_H_
 #define _ASM_GENERIC_BITOPS_FFZ_H_
 
+#include "__ffs.h"
+
 /*
  * ffz - find first zero in word.
  * @word: The word to search

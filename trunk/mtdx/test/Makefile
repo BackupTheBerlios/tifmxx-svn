@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -I../ -I. -g
+CFLAGS = -I../ -I. -g -fno-inline
 
 test_ftl: test_ftl.o ftl_simple.o rand_peb_alloc.o long_map.o dummy_kernel.o \
 	  rbtree.o bitmap.o find_next_bit.o sg_bounce.o hweight.o vsprintf.o

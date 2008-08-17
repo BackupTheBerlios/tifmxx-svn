@@ -42,6 +42,7 @@ int btm_trans_data(struct mtdx_request *req, int dir)
 	while (!(rc = btm_req_dev->get_data_buf_sg(req, &sg))) {
 		t_len = min(sg.length, r_len);
 
+		printf("trans data %x\n", t_len);
 		if (dir)
 			memcpy(trans_space + c_pos, sg_virt(&sg), t_len);
 		else
@@ -50,6 +51,9 @@ int btm_trans_data(struct mtdx_request *req, int dir)
 		r_len -= t_len;
 		c_pos += t_len;
 	}
+	if (rc == - EAGAIN)
+		rc = 0;
+
 	return rc;
 }
 
@@ -76,11 +80,12 @@ int btm_trans_oob(struct mtdx_request *req, int dir)
 	}
 	return 0;
 }
-
+unsigned int xcnt = 20;
 void *request_thread(void *data)
 {
 	struct mtdx_request *req;
 	unsigned int cnt, src_off, src_blk;
+	unsigned int block_size = btm_geo.page_cnt * btm_geo.page_size;
 	int rc;
 
 	printf("thread created\n");
@@ -91,6 +96,9 @@ void *request_thread(void *data)
 
 		printf("got request dev\n");
 		while ((req = btm_req_dev->get_request(btm_req_dev))) {
+		xcnt--;
+		if (!xcnt)
+			break;
 			printf("req cmd %x, block %x, %x:%x\n", req->cmd,
 			       req->phy_block, req->offset, req->length);
 			if ((req->offset % btm_geo.page_size)
@@ -122,23 +130,27 @@ void *request_thread(void *data)
 				btm_req_dev->end_request(req, rc, req->length);
 				break;
 			case MTDX_CMD_ERASE:
+				printf("erase %x\n", req->phy_block);
 				memset(trans_space
-				       + req->phy_block * btm_geo.page_size,
-				       btm_geo.fill_value,
-				       btm_geo.page_cnt * btm_geo.page_size);
-				memset(&pages[req->phy_block
-					      * btm_geo.page_size],
-				       btm_geo.fill_value,
-				       btm_geo.page_cnt
-				       * sizeof(struct btm_oob));
+				       + req->phy_block * block_size,
+				       btm_geo.fill_value, block_size);
+				for (cnt = req->phy_block * btm_geo.page_cnt;
+				     cnt < ((req->phy_block + 1)
+					    * btm_geo.page_cnt);
+				     ++cnt) {
+					pages[cnt].status = MTDX_PAGE_ERASED;
+					pages[cnt].log_block = MTDX_INVALID_BLOCK;
+				}
 
 				btm_req_dev->end_request(req, 0, 0);
 				break;
 			case MTDX_CMD_WRITE:
 				rc = btm_trans_data(req, 1);
+				printf("write data %d\n", rc);
 				if (!rc)
 					rc = btm_trans_oob(req, 1);
 
+				printf("write oob %d\n", rc);
 				btm_req_dev->end_request(req, rc, req->length);
 				break;
 			case MTDX_CMD_WRITE_DATA:
@@ -176,9 +188,9 @@ void *request_thread(void *data)
 					btm_req_dev->end_request(req, rc, 0);
 
 				memcpy(trans_space
-				       + req->phy_block * btm_geo.page_size +
+				       + req->phy_block * block_size +
 				       req->offset,
-				       trans_space + src_blk * btm_geo.page_size
+				       trans_space + src_blk * block_size
 				       + src_off,
 				       req->length);
 				btm_req_dev->end_request(req, 0, req->length);
@@ -212,8 +224,6 @@ int btm_oob_to_info(struct mtdx_dev *this_dev, struct mtdx_page_info *p_info,
 		    void *oob)
 {
 	struct btm_oob *b_oob = oob;
-
-	printf("oob to info\n");
 
 	p_info->log_block = b_oob->log_block;
 	p_info->status = b_oob->status;
@@ -385,9 +395,10 @@ int main(int argc, char **argv)
 	flat_space = malloc(media_size);
 	memset(trans_space, btm_geo.fill_value, media_size);
 	memset(flat_space, btm_geo.fill_value, media_size);
-	pages = calloc(btm_geo.phy_block_cnt, sizeof(struct btm_oob));
+	pages = calloc(btm_geo.phy_block_cnt * btm_geo.page_cnt,
+		       sizeof(struct btm_oob));
 
-	for (rc = 0; rc < btm_geo.phy_block_cnt; ++rc)
+	for (rc = 0; rc < (btm_geo.phy_block_cnt * btm_geo.page_cnt); ++rc)
 		pages[rc].status = MTDX_PAGE_UNMAPPED;
 
 	rc = 0;
@@ -395,13 +406,15 @@ int main(int argc, char **argv)
 	test_driver->probe(&ftl_dev);
 
 	pthread_mutex_lock(&top_lock);
-	for (t_cnt = 2; t_cnt; --t_cnt) {
+	for (t_cnt = 1; t_cnt; --t_cnt) {
 		do {
 			off = random32() % (btm_geo.log_block_cnt
 					    * btm_geo.page_cnt);
 			size = random32() % (btm_geo.log_block_cnt
 					     * btm_geo.page_cnt - off);
 		} while (!size);
+		off = 0;
+		size = 1;
 
 		top_size = size * btm_geo.page_size;
 
@@ -427,6 +440,7 @@ int main(int argc, char **argv)
 		}
 		pthread_cond_wait(&top_cond, &top_lock);
 
+		printf("Write signalled\n");
 		top_pos = 0;
 		top_req.cmd = MTDX_CMD_READ_DATA;
 		top_data_buf = data_r;
@@ -434,7 +448,7 @@ int main(int argc, char **argv)
 
 		memcpy(flat_space + (off * btm_geo.page_size), data_w,
 		       top_size);
-
+/*
 		printf("Reading %x sectors at %x\n", size, off);
 
 		rc = ftl_dev.new_request(&ftl_dev, &top_dev);
@@ -449,6 +463,7 @@ int main(int argc, char **argv)
 			err_cnt++;
 		} else
 			printf("req OK!\n");
+*/
 clean_up:
 		free(data_w);
 		free(data_r);
@@ -457,8 +472,9 @@ clean_up:
 	pthread_mutex_unlock(&top_lock);
 	test_driver->remove(&ftl_dev);
 
+	printf("c1\n");
 	pthread_cancel(req_t);
-
+	printf("c2\n");
 	kfree(flat_space);
 	kfree(trans_space);
 	kfree(pages);

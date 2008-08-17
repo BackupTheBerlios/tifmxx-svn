@@ -105,15 +105,22 @@ static unsigned int rand_peb_alloc_get(struct mtdx_peb_alloc *bal,
 		if (c_pos == zone_max)
 			c_pos = zone_min;
 
-		if (c_pos == f_pos)
-			break;
-
 		c_pos = rand_peb_alloc_find_circ(c_map, zone_min, zone_max,
 						 c_pos);
-		c_stat = test_bit(f_pos, rb->erase_map);
+
+		if (c_pos != MTDX_INVALID_BLOCK) {
+			c_stat = test_bit(c_pos, rb->erase_map);
+
+			if (c_pos == f_pos)
+				break;
+		} else {
+			c_stat = test_bit(f_pos, rb->erase_map);
+			c_pos = f_pos;
+			break;
+		}
 	}
 
-
+	c_stat = test_bit(c_pos, rb->erase_map);
 	*dirty = c_stat;
 	set_bit(c_pos, rb->map_a);
 	set_bit(c_pos, rb->map_b);
