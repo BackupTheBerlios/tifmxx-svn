@@ -16,6 +16,7 @@
 #include "sg_bounce.h"
 
 #define DRIVER_NAME "ftl_simple"
+#define fsd_dev(fsd) (fsd->req_out.src_dev->dev)
 
 struct zone_data {
 	unsigned long *useful_blocks;
@@ -203,17 +204,17 @@ static void ftl_simple_end_lookup_block(struct ftl_simple_data *fsd, int error,
 				       ->b_table[z_log_block];
 		switch (p_info.status) {
 		case MTDX_PAGE_ERASED:
-			dev_dbg(&parent->dev, "erased block %x\n",
+			dev_dbg(&fsd_dev(fsd), "erased block %x\n",
 				fsd->zone_scan_pos);
 			mtdx_put_peb(fsd->b_alloc, fsd->zone_scan_pos, 0);
 			break;
 		case MTDX_PAGE_UNMAPPED:
-			dev_dbg(&parent->dev, "free block %x\n",
+			dev_dbg(&fsd_dev(fsd), "free block %x\n",
 				fsd->zone_scan_pos);
 			mtdx_put_peb(fsd->b_alloc, fsd->zone_scan_pos, 1);
 			break;
 		case MTDX_PAGE_MAPPED:
-			dev_dbg(&parent->dev, "allocated block %x\n",
+			dev_dbg(&fsd_dev(fsd), "allocated block %x\n",
 				fsd->zone_scan_pos);
 			if (fsd->conflict_pos != MTDX_INVALID_BLOCK) {
 				ftl_simple_pop_all_req_fn(fsd);
@@ -224,7 +225,7 @@ static void ftl_simple_end_lookup_block(struct ftl_simple_data *fsd, int error,
 					= fsd->zone_scan_pos;
 			break;
 		case MTDX_PAGE_SMAPPED:
-			dev_dbg(&parent->dev, "selected block %x\n",
+			dev_dbg(&fsd_dev(fsd), "selected block %x\n",
 				fsd->zone_scan_pos);
 			/* As higher address supposedly take preference over
 			 * lower ones and the block is selected, conflict
@@ -308,13 +309,48 @@ static void ftl_simple_clear_useful(struct ftl_simple_data *fsd)
 	}
 }
 
+static void ftl_simple_make_useful(struct ftl_simple_data *fsd,
+				   unsigned int peb)
+{
+	unsigned int z_peb = peb & ((1U << fsd->geo.zone_size_log) - 1U);
+
+	if (!fsd->b_map)
+		return;
+
+	fsd->src_bmap_ref = long_map_insert(fsd->b_map, peb);
+
+	if (!fsd->src_bmap_ref)
+		return;
+
+	if (fsd->track_inc)
+		*(fsd->src_bmap_ref) = 0;
+	else
+		bitmap_zero(fsd->src_bmap_ref, fsd->geo.page_cnt);
+
+	set_bit(z_peb, fsd->zones[peb >> fsd->geo.zone_size_log]
+			  ->useful_blocks);
+}
+
+static void ftl_simple_drop_useful(struct ftl_simple_data *fsd,
+				   unsigned int peb)
+{
+	unsigned int z_peb = peb & ((1U << fsd->geo.zone_size_log) - 1U);
+
+	if ((peb == MTDX_INVALID_BLOCK) || !fsd->b_map)
+		return;
+
+	long_map_erase(fsd->b_map, peb);
+	clear_bit(z_peb, fsd->zones[peb >> fsd->geo.zone_size_log]
+			    ->useful_blocks);
+}
+
 static int ftl_simple_setup_zone_scan(struct ftl_simple_data *fsd)
 {
 	unsigned int max_block = (fsd->zone + 1) << fsd->geo.zone_size_log;
 	unsigned int cnt;
 	struct mtdx_page_info *p_info;
 
-	dev_dbg(&fsd->req_out.src_dev.dev, "scanning zone %x\n", fsd->zone);
+	dev_dbg(&fsd_dev(fsd), "scanning zone %x\n", fsd->zone);
 	fsd->zone_scan_pos = fsd->zone << fsd->geo.zone_size_log;
 	fsd->conflict_pos = MTDX_INVALID_BLOCK;
 	mtdx_peb_alloc_reset(fsd->b_alloc, fsd->zone);
@@ -405,19 +441,6 @@ static int ftl_simple_can_merge(struct ftl_simple_data *fsd,
 					   count / fsd->geo.page_size);
 }
 
-static void ftl_simple_drop_useful(struct ftl_simple_data *fsd,
-				   unsigned int peb)
-{
-	unsigned int z_peb = peb & ((1U << fsd->geo.zone_size_log) - 1U);
-
-	if ((peb == MTDX_INVALID_BLOCK) || !fsd->b_map)
-		return;
-
-	long_map_erase(fsd->b_map, peb);
-	clear_bit(z_peb, fsd->zones[peb >> fsd->geo.zone_size_log]
-			    ->useful_blocks);
-}
-
 static void ftl_simple_advance(struct ftl_simple_data *fsd)
 {
 	unsigned int z_log_block = fsd->req_out.log_block
@@ -438,17 +461,21 @@ static void ftl_simple_advance(struct ftl_simple_data *fsd)
 	if (fsd->track_inc) {
 		fsd->tmp_off /= fsd->geo.page_size;
 
-		if (*fsd->src_bmap_ref < fsd->tmp_off)
-			*fsd->src_bmap_ref = fsd->tmp_off;
+		if (*(fsd->src_bmap_ref) < fsd->tmp_off)
+			*(fsd->src_bmap_ref) = fsd->tmp_off;
 
-		if (*fsd->src_bmap_ref < fsd->block_size) {
+		if (!*(fsd->src_bmap_ref)
+		    || (*(fsd->src_bmap_ref) >= fsd->block_size))
+			ftl_simple_drop_useful(fsd, fsd->src_block);
+		else if (fsd->dst_block != fsd->src_block) {
 			dst_bmap_ref = long_map_insert(fsd->b_map,
 						       fsd->dst_block);
 			if (dst_bmap_ref) {
-				*dst_bmap_ref = *fsd->src_bmap_ref;
+				*dst_bmap_ref = *(fsd->src_bmap_ref);
 				set_bit(z_dst_block, fsd->zones[fsd->zone]
 							->useful_blocks);
 			}
+			ftl_simple_drop_useful(fsd, fsd->src_block);
 		}
 	} else {
 		unsigned int p_off = fsd->b_off / fsd->geo.page_size;
@@ -473,7 +500,10 @@ static void ftl_simple_advance(struct ftl_simple_data *fsd)
 
 		bitmap_set_region(fsd->src_bmap_ref, p_off, p_len);
 
-		if (!bitmap_full(fsd->src_bmap_ref, fsd->geo.page_cnt)) {
+		if (bitmap_full(fsd->src_bmap_ref, fsd->geo.page_cnt)
+		    || bitmap_empty(fsd->src_bmap_ref, fsd->geo.page_cnt))
+			ftl_simple_drop_useful(fsd, fsd->src_block);
+		else if (fsd->src_block != fsd->dst_block) {
 			dst_bmap_ref = long_map_insert(fsd->b_map,
 						       fsd->dst_block);
 			if (dst_bmap_ref) {
@@ -484,15 +514,15 @@ static void ftl_simple_advance(struct ftl_simple_data *fsd)
 				set_bit(z_dst_block, fsd->zones[fsd->zone]
 							->useful_blocks);
 			}
+			ftl_simple_drop_useful(fsd, fsd->src_block);
 		}
 	}
-
-	ftl_simple_drop_useful(fsd, fsd->src_block);
 }
 
 static void ftl_simple_end_abort(struct ftl_simple_data *fsd, int error,
 				 int free_dst)
 {
+	dev_dbg(&fsd_dev(fsd), "abort request\n");
 	if (free_dst && (fsd->dst_block != fsd->src_block)) {
 		fsd->b_alloc->put_peb(fsd->b_alloc, fsd->dst_block,
 				      fsd->clean_dst == 1);
@@ -965,6 +995,8 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 				ftl_simple_push_req_fn(fsd,
 						       ftl_simple_merge_data);
 			else {
+				ftl_simple_make_useful(fsd, fsd->dst_block);
+
 				if (fsd->b_off)
 					memset(fsd->block_buf,
 					       fsd->geo.fill_value,
@@ -1145,17 +1177,21 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 		dev_dbg(&this_dev->dev, "ftl request loop\n");
 		while ((req_fn = ftl_simple_pop_req_fn(fsd))) {
 			rc = (*req_fn)(fsd);
+			dev_dbg(&this_dev->dev, "req_fn_pos %d, req_fn %p\n",
+				fsd->req_fn_pos, req_fn);
 			if (!rc)
 				goto out;
 			else if (rc != -EAGAIN)
 				break;
 		}
 
+		dev_dbg(&this_dev->dev, "processing stopped %d, %p\n", rc, req_fn);
 		ftl_simple_pop_all_req_fn(fsd);
 
 		if (fsd->req_in) {
 			if (rc) {
-				mtdx_complete_request(fsd->req_in, rc,
+				mtdx_complete_request(fsd->req_in,
+						      rc == -EAGAIN ? 0 : rc,
 						      fsd->t_count);
 				fsd->req_in = NULL;
 			} else

@@ -96,9 +96,9 @@ void *request_thread(void *data)
 
 		printf("got request dev\n");
 		while ((req = btm_req_dev->get_request(btm_req_dev))) {
-		xcnt--;
-		if (!xcnt)
-			break;
+//		xcnt--;
+//		if (!xcnt)
+//			break;
 			printf("req cmd %x, block %x, %x:%x\n", req->cmd,
 			       req->phy_block, req->offset, req->length);
 			if ((req->offset % btm_geo.page_size)

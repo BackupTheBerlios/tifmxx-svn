@@ -14,6 +14,9 @@
 #include <linux/workqueue.h>
 #include "long_map.h"
 
+static int extra = 0;
+module_param(extra, int, 0644);
+
 struct map_node {
 	struct rb_node node;
 	unsigned long  key;
@@ -218,7 +221,7 @@ struct long_map *long_map_create(unsigned int nr, long_map_alloc_t *alloc_fn,
 	if (!map)
 		return NULL;
 
-	map->target_count = nr;
+	map->target_count = nr + extra;
 	spin_lock_init(&map->lock);
 	INIT_WORK(&map->allocator_work, long_map_async_alloc);
 

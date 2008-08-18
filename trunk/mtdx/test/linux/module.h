@@ -37,6 +37,7 @@ unsigned int random32(void);
 typedef int (*initcall_t)(void);
 typedef void (*exitcall_t)(void);
 
+#define module_param(x, y, z)
 
 /* Each module must use one module_init(), or one no_module_init */
 #define module_init(initfn)                                     \
