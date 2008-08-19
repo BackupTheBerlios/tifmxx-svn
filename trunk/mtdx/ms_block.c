@@ -828,6 +828,10 @@ static int ms_block_set_req_data(struct ms_block_data *msb,
 	else
 		return -EINVAL;
 
+	dev_dbg(&msb->card->dev, "set req data page_count %x, t_count %x, "
+		"req_sg.length %x, sg_offset %x\n", msb->page_count,
+		msb->t_count, msb->req_sg.length, msb->sg_offset);
+		
 	if (msb->page_count - msb->t_count) {
 		if ((msb->req_sg.length - msb->sg_offset)
 		    < msb->geo.page_size) {
@@ -1720,6 +1724,7 @@ static int ms_block_read_boot_block(struct memstick_dev *card,
 out:
 	if (rc) {
 		kfree(b_ref->data);
+		b_ref->data = NULL;
 		b_ref->size = 0;
 	}
 
@@ -1895,6 +1900,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 	dev_dbg(&card->dev, "read first boot block\n");
 	rc = ms_block_read_boot_block(card, header, &msb->boot_blocks[0]);
 
+	dev_dbg(&card->dev, "find another boot block\n");
 	msb->boot_blocks[1].phy_block
 		= ms_block_find_boot_block(card, header,
 					   msb->boot_blocks[0].phy_block + 1);
@@ -2229,6 +2235,8 @@ static int ms_block_get_data_buf_sg(struct mtdx_request *req,
 						 dev);
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 
+	dev_dbg(&card->dev, "internal get_data, %x\n", msb->sg_offset);
+
 	if (msb->sg_offset)
 		return -EAGAIN;
 	else
@@ -2364,11 +2372,14 @@ static void ms_block_remove(struct memstick_dev *card)
 	while (waitqueue_active(&msb->req_wq))
 		msleep(1);
 
+	dev_dbg(&card->dev, "mtdx uregister\n");
 	device_unregister(&msb->mdev->dev);
 
+	dev_dbg(&card->dev, "block data free\n");
 	ms_block_data_free(msb);
 
 	memstick_set_drvdata(card, NULL);
+	dev_dbg(&card->dev, "removed\n");
 }
 
 #ifdef CONFIG_PM
