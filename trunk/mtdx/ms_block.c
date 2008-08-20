@@ -141,6 +141,7 @@ struct ms_block_data {
 #define MS_BLOCK_FLG_OV       0x04
 #define MS_BLOCK_FLG_PAGE_INC 0x08
 #define MS_BLOCK_FLG_COPY     0x10
+#define MS_BLOCK_FLG_WRITE    0x20
 
 	struct ms_block_boot_ref boot_blocks[2];
 	struct mtdx_dev_geo      geo;
@@ -544,8 +545,10 @@ static int h_ms_block_set_extra_addr_r(struct memstick_dev *card,
 				       struct memstick_request **mrq);
 static int h_ms_block_trans_data(struct memstick_dev *card,
 				 struct memstick_request **mrq);
-static int h_ms_block_write_extra_multi(struct memstick_dev *card,
-					struct memstick_request **mrq);
+static int h_ms_block_trans_extra(struct memstick_dev *card,
+				  struct memstick_request **mrq);
+static int h_ms_block_data_get_int(struct memstick_dev *card,
+				   struct memstick_request **mrq);
 
 static int ms_block_reg_addr_cmp(struct memstick_dev *card,
 				 const struct ms_register_addr *addr)
@@ -718,20 +721,20 @@ static DEVICE_ATTR(format, 0644, ms_block_format_show, ms_block_format_store);
  * 4. cmd_get_int
  * 5-1 (extra)
  * 5-1-1. set_extra_addr_r
- * 5-1-2. read_extra
+ * 5-1-2. trans_extra
  * 5-2 (error)
  * 5-2-1. set_stat_addr_r
  * 5-2-2. read_status ?-> 5-1
  * 5-3 (end, page_inc)
  * 5-3-1. set_cmd
  * 5-3-2. cmd_get_int
- * 6. read_data
- * 7. data_get_int
- * 8-1 (page_inc)
- * 8-1-1. -> 5
- * 8-2 (!page_inc)
- * 8-2-1. set_param_addr
- * 8-2-2. -> 2
+ * 6. trans_data (data)
+ * 7-1 (page_inc)
+ * 7-1-1. data_get_int
+ * 7-1-2. -> 5
+ * 7-2 (!page_inc)
+ * 7-2-1. set_param_addr
+ * 7-2-2. -> 2
  *
  *
  * Expected callback activation sequence for erasing:
@@ -744,31 +747,36 @@ static DEVICE_ATTR(format, 0644, ms_block_format_show, ms_block_format_store);
  * Expected callback activation sequence for writing:
  * 1. set_param_addr_init
  * 2. write_param
- * 3-1 (extra)
- * 3-1-1. set_extra_addr_w (extra)
- * 3-1-2. write_extra_single (!page_inc)
- * 4. set_cmd
- * 5. cmd_get_int
- * 6-1
- * 6-1-1. set_extra_addr_w
- * 6-1-2. write_extra_multi (page_inc)
- * 7. write_data
- * 8. data_get_int
- * 9-1 (page_inc)
- * 9-1-1. -> 6
- * 9-2 (!page_inc)
- * 9-2-1. set_param_addr
- * 9-2-2. -> 2
- * 9-3 (end)
- * 9-3-1. -> 4
+ * 3. set_cmd
+ * 4. cmd_get_int
+ * 5-1 (extra)
+ * 5-1-1. set_extra_addr_w
+ * 5-1-2. trans_extra
+ * 5-2 (error)
+ * 6-1 (data)
+ * 6-1-1. trans_data
+ * 7. data_get_int
+ * 8-1 (page_inc)
+ * 8-1-1. -> 5
+ * 8-2 (end, page_inc)
+ * 8-2-1. set_cmd
+ * 8-2-2. cmd_get_int
+ * 8-3 (!page_inc)
+ * 8-3-1. -> set_param_addr
+ * 8-3-2. -> 2
  *
  *
  * Expected callback activation sequence for copying:
- * 1. write_param
- * 2. set_cmd
- * 3. cmd_get_int
- * 4-1 read_status
- * 5. -> 1
+ * 1. set_param_addr_init
+ * 2. write_param
+ * 3. set_cmd
+ * 4. cmd_get_int
+ * 5-1 (read error)
+ * 5-1-1. read_status
+ * 5-1-2. read_data (corr. err)
+ * 5-1-3. write_data (corr. err)
+ * 5-2 (error)
+ * 6. -> 2
  */
 
 static int h_ms_block_internal_req_init(struct memstick_dev *card,
@@ -821,12 +829,10 @@ static int ms_block_set_req_data(struct ms_block_data *msb,
 	enum memstick_tpc tpc;
 	struct scatterlist sg;
 
-	if (msb->cmd == MS_CMD_BLOCK_READ)
-		tpc = MS_TPC_READ_LONG_DATA;
-	else if (msb->cmd == MS_CMD_BLOCK_WRITE)
+	if (msb->cmd_flags & MS_BLOCK_FLG_WRITE)
 		tpc = MS_TPC_WRITE_LONG_DATA;
 	else
-		return -EINVAL;
+		tpc = MS_TPC_READ_LONG_DATA;
 
 	dev_dbg(&msb->card->dev, "set req data page_count %x, t_count %x, "
 		"req_sg.length %x, sg_offset %x\n", msb->page_count,
@@ -860,6 +866,13 @@ static int ms_block_complete_multi(struct memstick_dev *card,
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 
 	dev_dbg(&card->dev, "complete_multi: %d\n", error);
+
+	if (msb->cmd_flags & MS_BLOCK_FLG_COPY) {
+		if (!(msb->cmd_flags & MS_BLOCK_FLG_WRITE))
+			mtdx_put_copy_source(msb->req_in, error);
+		else
+			mtdx_put_copy_source(msb->req_in, 0);
+	}
 
 	if (msb->cmd_flags & MS_BLOCK_FLG_PAGE_INC) {
 		msb->trans_err = error;
@@ -895,6 +908,11 @@ static int ms_block_setup_read(struct memstick_dev *card,
 						       msb->trans_err);
 
 		card->next_request = h_ms_block_trans_data;
+
+		if ((msb->cmd_flags & MS_BLOCK_FLG_PAGE_INC)
+		    || (msb->cmd_flags & MS_BLOCK_FLG_WRITE))
+			(*mrq)->need_card_int = 1;
+
 		return 0;
 	}
 
@@ -908,6 +926,7 @@ static int ms_block_setup_read(struct memstick_dev *card,
 			.cp = MEMSTICK_CP_PAGE | MEMSTICK_CP_EXTRA,
 			.page_address = msb->dst_page
 		};
+		msb->cmd_flags |= MS_BLOCK_FLG_WRITE;
 		msb->cmd = MS_CMD_BLOCK_WRITE;
 		memstick_init_req(*mrq, MS_TPC_WRITE_REG, &param,
 				  sizeof(param));
@@ -923,9 +942,7 @@ static int ms_block_setup_write(struct memstick_dev *card,
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 
-	if ((msb->cmd_flags & MS_BLOCK_FLG_PAGE_INC)
-	    && (msb->cmd_flags & MS_BLOCK_FLG_EXTRA)) {
-		msb->mrq_handler = h_ms_block_write_extra_multi;
+	if (msb->cmd_flags & MS_BLOCK_FLG_EXTRA) {
 		memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
 				  &ms_block_r_stat_w_extra,
 				  sizeof(ms_block_r_stat_w_extra));
@@ -963,6 +980,7 @@ static int ms_block_setup_write(struct memstick_dev *card,
 		msb->src_page++;
 		msb->dst_page++;
 		msb->t_count++;
+		msb->cmd_flags &= ~MS_BLOCK_FLG_WRITE;
 		msb->cmd = MS_CMD_BLOCK_READ;
 
 		memstick_init_req(*mrq, MS_TPC_WRITE_REG, &param,
@@ -992,15 +1010,6 @@ static int h_ms_block_read_status(struct memstick_dev *card,
 			status->reserved, status->interrupt, status->status0,
 			status->status1);
 
-		if (msb->cmd_flags & MS_BLOCK_FLG_COPY)
-			mtdx_put_copy_source(msb->req_in, -EFAULT);
-
-		if (msb->dst_page)
-			msb->dst_page--;
-
-		if (msb->t_count)
-			msb->t_count--;
-
 		return ms_block_complete_multi(card, mrq, -EFAULT);
 	}
 
@@ -1011,19 +1020,10 @@ static int h_ms_block_read_status(struct memstick_dev *card,
 			 status->reserved, status->interrupt, status->status0,
 			 status->status1);
 
-	if (msb->t_count == msb->page_count)
-		return ms_block_complete_multi(card, mrq, 0);
-	else if (msb->cmd_flags & MS_BLOCK_FLG_PAGE_INC)
+	if (!(msb->cmd_flags & MS_BLOCK_FLG_COPY))
 		return ms_block_setup_read(card, mrq);
 	else {
-		memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
-				  &ms_block_r_stat_w_param,
-				  sizeof(ms_block_r_stat_w_param));
-		if (ms_block_reg_addr_cmp(card, &ms_block_r_stat_w_param)) {
-			card->next_request = h_ms_block_set_param_addr;
-			return 0;
-		} else
-			return h_ms_block_set_param_addr(card, mrq);
+#warning read/write block for copy
 	}
 }
 
@@ -1068,8 +1068,8 @@ static int h_ms_block_set_param_addr(struct memstick_dev *card,
 	return 0;
 }
 
-static int h_ms_block_read_extra(struct memstick_dev *card,
-				 struct memstick_request **mrq)
+static int h_ms_block_trans_extra(struct memstick_dev *card,
+				  struct memstick_request **mrq)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	char *oob_buf;
@@ -1077,11 +1077,14 @@ static int h_ms_block_read_extra(struct memstick_dev *card,
 	if ((*mrq)->error)
 		return ms_block_complete_multi(card, mrq, (*mrq)->error);
 
-	oob_buf = mtdx_get_oob_buf(msb->req_in);
-	if (!oob_buf)
-		return ms_block_complete_multi(card, mrq, -ENOMEM);
+	if (!(msb->cmd_flags & MS_BLOCK_FLG_WRITE)) {
+		oob_buf = mtdx_get_oob_buf(msb->req_in);
+		if (!oob_buf)
+			return ms_block_complete_multi(card, mrq, -ENOMEM);
 
-	memcpy(oob_buf, (*mrq)->data, sizeof(struct ms_extra_data_register));
+		memcpy(oob_buf, (*mrq)->data,
+		       sizeof(struct ms_extra_data_register));
+	}
 
 	if (msb->cmd_flags & MS_BLOCK_FLG_DATA) {
 		msb->trans_err = ms_block_set_req_data(msb, *mrq);
@@ -1094,14 +1097,17 @@ static int h_ms_block_read_extra(struct memstick_dev *card,
 		return 0;
 	}
 
-	if (msb->cmd_flags & MS_BLOCK_FLG_PAGE_INC)
-		return ms_block_complete_multi(card, mrq, -EINVAL);
+	msb->dst_page++;
+	msb->t_count++;
+
+	if (msb->t_count == msb->page_count)
+		return ms_block_complete_multi(card, mrq, 0);
 	else {
-		msb->dst_page++;
-		msb->t_count++;
-		if (msb->t_count == msb->page_count)
-			return ms_block_complete_multi(card, mrq, 0);
-		else {
+		if (msb->cmd_flags & MS_BLOCK_FLG_PAGE_INC) {
+			memstick_init_req(*mrq, MS_TPC_GET_INT, NULL, 1);
+			(*mrq)->need_card_int = 1;
+			card->next_request = h_ms_block_data_get_int;
+		} else {
 			memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
 					  &ms_block_r_stat_w_param,
 					  sizeof(ms_block_r_stat_w_param));
@@ -1114,6 +1120,7 @@ static int h_ms_block_read_extra(struct memstick_dev *card,
 			} else
 				return h_ms_block_set_param_addr(card, mrq);
 		}
+		return 0;
 	}
 }
 
@@ -1126,30 +1133,8 @@ static int h_ms_block_set_extra_addr_r(struct memstick_dev *card,
 	ms_block_reg_addr_set(card, &ms_block_r_extra_w_param);
 	memstick_init_req(*mrq, MS_TPC_READ_REG, NULL,
 			  sizeof(struct ms_extra_data_register));
-	card->next_request = h_ms_block_read_extra;
+	card->next_request = h_ms_block_trans_extra;
 	return 0;
-}
-
-static int h_ms_block_write_extra_multi(struct memstick_dev *card,
-					struct memstick_request **mrq)
-{
-	struct ms_block_data *msb = memstick_get_drvdata(card);
-
-	if ((*mrq)->error)
-		return ms_block_complete_multi(card, mrq, (*mrq)->error);
-
-	if (msb->cmd_flags & MS_BLOCK_FLG_DATA) {
-		msb->trans_err = ms_block_set_req_data(msb, *mrq);
-
-		if (msb->trans_err)
-			return ms_block_complete_multi(card, mrq,
-						       msb->trans_err);
-
-		card->next_request = h_ms_block_trans_data;
-		return 0;
-	}
-
-	return ms_block_complete_multi(card, mrq, -EINVAL);
 }
 
 static int h_ms_block_data_get_int(struct memstick_dev *card,
@@ -1168,7 +1153,17 @@ static int h_ms_block_data_get_int(struct memstick_dev *card,
 	} else
 		return ms_block_complete_multi(card, mrq, (*mrq)->error);
 
-	if (msb->cmd == MS_CMD_BLOCK_READ) {
+	if (msb->cmd_flags & MS_BLOCK_FLG_WRITE) {
+		if (int_reg & MEMSTICK_INT_ERR) {
+			if (msb->dst_page)
+				msb->dst_page--;
+
+			if (msb->t_count)
+				msb->t_count--;
+
+			return ms_block_complete_multi(card, mrq, -EFAULT);
+		}
+	} else {
 		if (int_reg & MEMSTICK_INT_ERR) {
 			memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
 					  &ms_block_r_stat_w_param,
@@ -1180,18 +1175,7 @@ static int h_ms_block_data_get_int(struct memstick_dev *card,
 			} else
 				return h_ms_block_set_stat_addr_r(card, mrq);
 		}
-	} else if (msb->cmd == MS_CMD_BLOCK_WRITE) {
-		if (int_reg & MEMSTICK_INT_ERR) {
-			if (msb->dst_page)
-				msb->dst_page--;
-
-			if (msb->t_count)
-				msb->t_count--;
-
-			return ms_block_complete_multi(card, mrq, -EFAULT);
-		}
-	} else
-		return ms_block_complete_multi(card, mrq, -EINVAL);
+	}
 
 	if (msb->t_count == msb->page_count)
 		return ms_block_complete_multi(card, mrq, 0);
@@ -1303,21 +1287,6 @@ static int h_ms_block_set_cmd(struct memstick_dev *card,
 	return 0;
 }
 
-static int h_ms_block_write_extra_single(struct memstick_dev *card,
-					 struct memstick_request **mrq)
-{
-	struct ms_block_data *msb = memstick_get_drvdata(card);
-
-	if ((*mrq)->error)
-		return ms_block_complete_req(card, (*mrq)->error);
-
-	memstick_init_req(&card->current_mrq, MS_TPC_SET_CMD,
-			  &msb->cmd, 1);
-	card->next_request = h_ms_block_set_cmd;
-
-	return 0;
-}
-
 static int h_ms_block_set_extra_addr_w(struct memstick_dev *card,
 				       struct memstick_request **mrq)
 {
@@ -1327,47 +1296,35 @@ static int h_ms_block_set_extra_addr_w(struct memstick_dev *card,
 		return ms_block_complete_req(card, (*mrq)->error);
 
 	ms_block_reg_addr_set(card, &ms_block_r_stat_w_extra);
-	if (!(msb->cmd_flags & MS_BLOCK_FLG_PAGE_INC)) {
-		if (msb->cmd_flags & MS_BLOCK_FLG_OV) {
-			struct ms_extra_data_register extra = {0xff, 0xff,
-							       0xffff};
-			switch (msb->req_in->cmd) {
-			case MTDX_CMD_SELECT:
-				extra.overwrite_flag
-				&= ~MEMSTICK_OVERWRITE_UDST;
-				break;
-			case MTDX_CMD_INVALIDATE:
-				extra.overwrite_flag
-				&= ~MEMSTICK_OVERWRITE_BKST;
-				break;
-			default:
-				(*mrq)->error = -EINVAL;
-				return ms_block_complete_req(card,
-							     (*mrq)->error);
-			}
-			memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG,
-					  &extra, sizeof(extra));
-		} else {
-			char *oob_buf = mtdx_get_oob_buf(msb->req_in);
 
-			if (!oob_buf)
-				return ms_block_complete_multi(card, mrq,
-							       -ENOMEM);
+	if (msb->cmd_flags & MS_BLOCK_FLG_OV) {
+		struct ms_extra_data_register extra = {0xff, 0xff, 0xffff};
 
-			memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG,
-					  oob_buf,
-					  sizeof(struct
-						 ms_extra_data_register));
+		switch (msb->req_in->cmd) {
+		case MTDX_CMD_SELECT:
+			extra.overwrite_flag &= ~MEMSTICK_OVERWRITE_UDST;
+			break;
+		case MTDX_CMD_INVALIDATE:
+			extra.overwrite_flag &= ~MEMSTICK_OVERWRITE_BKST;
+			break;
+		default:
+			(*mrq)->error = -EINVAL;
+			return ms_block_complete_req(card, (*mrq)->error);
 		}
-		card->next_request = msb->mrq_handler;
 
-		return 0;
+		memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG,
+				  &extra, sizeof(extra));
+	} else {
+		char *oob_buf = mtdx_get_oob_buf(msb->req_in);
+
+		if (!oob_buf)
+			return ms_block_complete_multi(card, mrq, -ENOMEM);
+
+		memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, oob_buf,
+				  sizeof(struct ms_extra_data_register));
 	}
 
-	memstick_init_req(&card->current_mrq, MS_TPC_SET_CMD,
-			  &msb->cmd, 1);
-	card->next_request = h_ms_block_set_cmd;
-
+	card->next_request = h_ms_block_trans_extra;
 	return 0;
 }
 
@@ -1378,20 +1335,6 @@ static int h_ms_block_write_param(struct memstick_dev *card,
 
 	if ((*mrq)->error)
 		return ms_block_complete_req(card, (*mrq)->error);
-
-	if ((msb->cmd == MS_CMD_BLOCK_WRITE)
-	    && (msb->cmd_flags & MS_BLOCK_FLG_EXTRA)) {
-		memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
-				  &ms_block_r_stat_w_extra,
-				  sizeof(ms_block_r_stat_w_extra));
-
-		msb->mrq_handler = h_ms_block_write_extra_single;
-		if (ms_block_reg_addr_cmp(card, &ms_block_r_stat_w_extra)) {
-			card->next_request = h_ms_block_set_extra_addr_w;
-			return 0;
-		} else
-			return h_ms_block_set_extra_addr_w(card, mrq);
-	}
 
 	memstick_init_req(&card->current_mrq, MS_TPC_SET_CMD,
 			  &msb->cmd, 1);
@@ -1451,27 +1394,30 @@ static int h_ms_block_set_param_addr_init(struct memstick_dev *card,
 		break;
 	case MTDX_CMD_WRITE:
 		msb->cmd_flags = MS_BLOCK_FLG_EXTRA | MS_BLOCK_FLG_DATA
-				 | MS_BLOCK_FLG_PAGE_INC;
+				 | MS_BLOCK_FLG_PAGE_INC | MS_BLOCK_FLG_WRITE;
 		msb->cmd = MS_CMD_BLOCK_WRITE;
 		(*mrq)->error = mtdx_get_data_buf_sg(msb->req_in, &msb->req_sg);
 		break;
 	case MTDX_CMD_WRITE_DATA:
-		msb->cmd_flags = MS_BLOCK_FLG_DATA | MS_BLOCK_FLG_PAGE_INC;
+		msb->cmd_flags = MS_BLOCK_FLG_DATA | MS_BLOCK_FLG_PAGE_INC
+				 | MS_BLOCK_FLG_WRITE;
 		msb->cmd = MS_CMD_BLOCK_WRITE;
 		(*mrq)->error = mtdx_get_data_buf_sg(msb->req_in, &msb->req_sg);
 		break;
 	case MTDX_CMD_WRITE_OOB:
-		msb->cmd_flags = MS_BLOCK_FLG_EXTRA;
+		msb->cmd_flags = MS_BLOCK_FLG_EXTRA | MS_BLOCK_FLG_WRITE;
 		msb->cmd = MS_CMD_BLOCK_WRITE;
 		param.cp = MEMSTICK_CP_EXTRA;
 		break;
 	case MTDX_CMD_SELECT:
-		msb->cmd_flags = MS_BLOCK_FLG_OV | MS_BLOCK_FLG_EXTRA;
+		msb->cmd_flags = MS_BLOCK_FLG_OV | MS_BLOCK_FLG_EXTRA
+				 | MS_BLOCK_FLG_WRITE;
 		msb->cmd = MS_CMD_BLOCK_WRITE;
 		param.cp = MEMSTICK_CP_OVERWRITE;
 		break;
 	case MTDX_CMD_INVALIDATE:
-		msb->cmd_flags = MS_BLOCK_FLG_OV | MS_BLOCK_FLG_EXTRA;
+		msb->cmd_flags = MS_BLOCK_FLG_OV | MS_BLOCK_FLG_EXTRA
+				 | MS_BLOCK_FLG_WRITE;
 		msb->cmd = MS_CMD_BLOCK_WRITE;
 		param.cp = MEMSTICK_CP_OVERWRITE;
 		break;
