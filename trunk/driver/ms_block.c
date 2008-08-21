@@ -115,7 +115,7 @@ struct ms_cis_idi {
 	unsigned short reserved2[5];
 	unsigned short pio_mode_number;
 	unsigned short dma_mode_number;
-	unsigned short field_validity;	
+	unsigned short field_validity;
 	unsigned short current_logical_cylinders;
 	unsigned short current_logical_heads;
 	unsigned short current_sectors_per_track;
@@ -272,7 +272,7 @@ static int ms_block_bd_open(struct inode *inode, struct file *filp)
 	int rc = -ENXIO;
 
 	mutex_lock(&ms_block_disk_lock);
-	
+
 	if (msb && msb->card) {
 		msb->usage_count++;
 		if ((filp->f_mode & FMODE_WRITE) && msb->read_only)
@@ -299,7 +299,7 @@ static int ms_block_disk_release(struct gendisk *disk)
 			kfree(msb);
 			disk->private_data = NULL;
 			idr_remove(&ms_block_disk_idr, disk_id);
-			put_disk(disk);	
+			put_disk(disk);
 		}
 	}
 
@@ -333,7 +333,7 @@ static struct block_device_operations ms_block_bdops = {
 	.owner   = THIS_MODULE
 };
 
-/*** Information ***/ 
+/*** Information ***/
 
 static ssize_t ms_boot_attr_show(struct device *dev,
 				 struct device_attribute *attr, char *buf)
@@ -434,7 +434,7 @@ static ssize_t ms_cis_idi_show(struct device *dev,
 	for (cnt = 0; cnt < 18; cnt++)
 		rc += sprintf(buf + rc, "%c", ms_cis->model_name[cnt]);
 	rc += sprintf(buf + rc, "'\n");
-	
+
 	rc += sprintf(buf + rc, "pio_mode_number: %x\n",
 		      ms_cis->pio_mode_number);
 	rc += sprintf(buf + rc, "dma_mode_number: %x\n",
@@ -537,7 +537,7 @@ static ssize_t ms_block_log_block_map_read(struct kobject *kobj,
 			memcpy(buf + rv, line + offset, count);
 			rv += count;
 			break;
-		} 
+		}
 
 		memcpy(buf + rv, line + offset, MS_BLOCK_MAP_LINE_SZ - offset);
 		rv += MS_BLOCK_MAP_LINE_SZ - offset;
@@ -583,7 +583,7 @@ static ssize_t ms_block_phys_block_map_read(struct kobject *kobj,
 		p_addr = ms_block_physical(msb, l_addr);
 		if (p_addr >= line_low && p_addr <= line_high)
 			p_map[p_addr - line_low] = l_addr;
-			
+
 	}
 
 	p_addr = line_low;
@@ -1166,7 +1166,7 @@ skip_page:
 		}
 		msb->page_off++;
 		if (msb->page_off == msb->block_psize) {
-			msb->page_off = 0; 
+			msb->page_off = 0;
 			msb->src_block++;
 		}
 
@@ -1209,7 +1209,7 @@ static int h_ms_block_get_extra(struct memstick_dev *card,
 	case MS_TPC_SET_RW_REG_ADRS:
 		memstick_init_req(*mrq, MS_TPC_READ_REG, NULL,
 				  sizeof(struct ms_extra_data_register));
-		return 0; 
+		return 0;
 	case MS_TPC_READ_REG:
 		memcpy(&msb->current_extra, (*mrq)->data,
 		       sizeof(msb->current_extra));
@@ -1244,7 +1244,7 @@ static int h_ms_block_set_extra(struct memstick_dev *card,
 	case MS_TPC_SET_RW_REG_ADRS:
 		memstick_init_req(*mrq, MS_TPC_WRITE_REG, &msb->current_extra,
 				  sizeof(struct ms_extra_data_register));
-		break; 
+		break;
 	case MS_TPC_WRITE_REG:
 		memcpy(&msb->current_extra, (*mrq)->data,
 		       sizeof(msb->current_extra));
@@ -1370,7 +1370,7 @@ static int ms_block_write_req(struct memstick_dev *card)
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct memstick_request *mrq = &card->current_mrq;
 	struct ms_param_register param;
-	
+
 	enum write_state w_state;
 	int rc = 0, t_rc = 0;
 
@@ -1452,7 +1452,7 @@ static int ms_block_read_req(struct memstick_dev *card)
 		.block_address = cpu_to_be16(src_phy_block),
 		.cp = MEMSTICK_CP_PAGE,
 		.page_address = msb->page_off
-	}; 
+	};
 
 	msb->total_page_cnt = 0;
 
@@ -1472,7 +1472,7 @@ static int ms_block_read_req(struct memstick_dev *card)
 		}
 		msb->page_off++;
 		if (msb->page_off == msb->block_psize) {
-			msb->page_off = 0; 
+			msb->page_off = 0;
 			msb->src_block++;
 		}
 
@@ -1924,7 +1924,7 @@ static int ms_block_fetch_cis_idi(struct memstick_dev *card,
 	page_off += 0x100;
 
 	memcpy(&msb->cis_idi, buf + page_off, sizeof(msb->cis_idi));
-	
+
 	rc = 0;
 
 out_free_buf:
@@ -2067,7 +2067,7 @@ static void ms_block_format(struct memstick_dev *card)
 	}
  	boot_pages[0] = (struct ms_boot_page*)buf;
 	boot_pages[1] = (struct ms_boot_page*)(buf + msb->page_size);
- 
+
 	rc = ms_block_find_boot_blocks(card, boot_pages, boot_blocks);
 	if (!rc && boot_blocks[0] == MS_BLOCK_INVALID)
 		rc = -EFAULT;
@@ -2236,7 +2236,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 		return -ENOMEM;
  	boot_pages[0] = (struct ms_boot_page*)buf;
 	boot_pages[1] = (struct ms_boot_page*)(buf + msb->page_size);
- 
+
 	rc = ms_block_find_boot_blocks(card, boot_pages, boot_blocks);
 	if (rc || boot_blocks[0] == MS_BLOCK_INVALID)
 		goto out_free_buf;

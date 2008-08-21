@@ -741,6 +741,9 @@ static int ftl_simple_copy_last(struct ftl_simple_data *fsd)
 	fsd->req_out.length = fsd->sg_length;
 	fsd->req_out.src_dev->get_data_buf_sg = ftl_simple_get_tmp_buf_sg;
 	fsd->end_req_fn = ftl_simple_end_copy_last;
+
+	memset(fsd->block_buf + fsd->tmp_off, fsd->geo.fill_value,
+	       fsd->sg_length);
 	return 0;
 }
 
@@ -787,14 +790,14 @@ static int ftl_simple_write_first(struct ftl_simple_data *fsd)
 	fsd->req_out.length = fsd->b_off;
 	fsd->tmp_off = 0;
 
-	if (ftl_simple_can_merge(fsd, 0, fsd->b_off))
+	if (ftl_simple_can_merge(fsd, 0, fsd->b_off)) {
 		fsd->sg_length = fsd->geo.page_size;
-	else
+		memset(fsd->block_buf, fsd->geo.fill_value, fsd->sg_length);
+	} else
 		fsd->sg_length = fsd->b_off;
 
 
 	fsd->req_out.length = fsd->sg_length;
-	memset(fsd->block_buf, fsd->geo.fill_value, fsd->sg_length);
 
 	fsd->req_out.src_dev->get_data_buf_sg = ftl_simple_get_tmp_buf_sg;
 	fsd->end_req_fn = ftl_simple_end_copy_first;
@@ -816,6 +819,7 @@ static int ftl_simple_copy_first(struct ftl_simple_data *fsd)
 	if (ftl_simple_can_merge(fsd, 0, fsd->b_off))
 		return ftl_simple_write_first(fsd);
 
+	memset(fsd->block_buf, fsd->geo.fill_value, fsd->sg_length);
 	fsd->req_out.src_dev->get_data_buf_sg = ftl_simple_get_tmp_buf_sg;
 	fsd->end_req_fn = ftl_simple_end_copy_first;
 	return 0;

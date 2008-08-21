@@ -773,8 +773,8 @@ static DEVICE_ATTR(format, 0644, ms_block_format_show, ms_block_format_store);
  * 4. cmd_get_int
  * 5-1 (read error)
  * 5-1-1. read_status
- * 5-1-2. read_data (corr. err)
- * 5-1-3. write_data (corr. err)
+ * 5-1-2. copy_read (corr. err)
+ * 5-1-3. copy_write (corr. err)
  * 5-2 (error)
  * 6. -> 2
  */
@@ -837,7 +837,7 @@ static int ms_block_set_req_data(struct ms_block_data *msb,
 	dev_dbg(&msb->card->dev, "set req data page_count %x, t_count %x, "
 		"req_sg.length %x, sg_offset %x\n", msb->page_count,
 		msb->t_count, msb->req_sg.length, msb->sg_offset);
-		
+
 	if (msb->page_count - msb->t_count) {
 		if ((msb->req_sg.length - msb->sg_offset)
 		    < msb->geo.page_size) {
@@ -992,6 +992,36 @@ static int ms_block_setup_write(struct memstick_dev *card,
 	return ms_block_complete_multi(card, mrq, -EINVAL);
 }
 
+static int h_ms_block_copy_write(struct memstick_dev *card,
+				 struct memstick_request **mrq)
+{
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+
+	if ((*mrq)->error)
+		return ms_block_complete_multi(card, mrq, (*mrq)->error);
+
+	msb->sg_offset += msb->geo.page_size;
+	return ms_block_setup_read(card, mrq);
+}
+
+static int h_ms_block_copy_read(struct memstick_dev *card,
+				struct memstick_request **mrq)
+{
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct scatterlist sg;
+
+	if ((*mrq)->error)
+		return ms_block_complete_multi(card, mrq, (*mrq)->error);
+
+	memcpy(&sg, &msb->req_sg, sizeof(sg));
+	sg.offset += msb->sg_offset;
+	sg.length = msb->geo.page_size;
+	memstick_init_req_sg(*mrq, MS_TPC_WRITE_LONG_DATA, &sg);
+	card->next_request = h_ms_block_copy_write;
+	return 0;
+
+}
+
 static int h_ms_block_read_status(struct memstick_dev *card,
 				  struct memstick_request **mrq)
 {
@@ -1013,18 +1043,37 @@ static int h_ms_block_read_status(struct memstick_dev *card,
 		return ms_block_complete_multi(card, mrq, -EFAULT);
 	}
 
-	if (status->status1 & MS_BLOCK_CORRECTABLE)
+	if (status->status1 & MS_BLOCK_CORRECTABLE) {
 		dev_warn(&card->dev, "Correctable error reading %x:%x, "
 			 "status: %02x, %02x, %02x, %02x\n",
 			 msb->req_in->phy_block, msb->dst_page,
 			 status->reserved, status->interrupt, status->status0,
 			 status->status1);
 
-	if (!(msb->cmd_flags & MS_BLOCK_FLG_COPY))
-		return ms_block_setup_read(card, mrq);
-	else {
-#warning read/write block for copy
+		if (msb->cmd_flags & MS_BLOCK_FLG_COPY) {
+			/* We need to read and then write back data, to fix
+			 * the error.
+			 */
+			struct scatterlist sg;
+
+			if (!msb->sg_offset) {
+				int rc = mtdx_get_data_buf_sg(msb->req_in,
+							      &msb->req_sg);
+				if (rc)
+					return ms_block_complete_multi(card,
+								       mrq, rc);
+			}
+
+			memcpy(&sg, &msb->req_sg, sizeof(sg));
+			sg.offset += msb->sg_offset;
+			sg.length = msb->geo.page_size;
+			memstick_init_req_sg(*mrq, MS_TPC_READ_LONG_DATA, &sg);
+			card->next_request = h_ms_block_copy_read;
+			return 0;
+		}
 	}
+
+	return ms_block_setup_read(card, mrq);
 }
 
 static int h_ms_block_set_stat_addr_r(struct memstick_dev *card,

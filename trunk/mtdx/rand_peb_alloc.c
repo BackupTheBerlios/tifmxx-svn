@@ -51,12 +51,13 @@ static unsigned int rand_peb_alloc_find_circ(unsigned long *map,
 	unsigned long n_pos = find_next_zero_bit(map, max_pos, s_pos);
 	unsigned int rv = MTDX_INVALID_BLOCK;
 
-	if (n_pos == max_pos) {
+	if (n_pos != max_pos)
+		rv = n_pos;
+	else if (s_pos) {
 		n_pos = find_next_zero_bit(map, s_pos, min_pos);
 		if (n_pos != s_pos)
 			rv = n_pos;
-	} else
-		rv = n_pos;
+	}
 
 	return rv;
 }

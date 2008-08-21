@@ -209,12 +209,14 @@ err_out_free:
 
 static void *work_thread(void *data)
 {
+	printf("work thread running\n");
 	struct work_struct *work = data;
 	pthread_mutex_lock(&work->lock);
 	work->state = 2;
 	pthread_cond_broadcast(&work->cond);
 	pthread_mutex_unlock(&work->lock);
 	work->func(work);
+	printf("work thread finished\n");
 	return NULL;
 }
 
@@ -238,6 +240,7 @@ int schedule_work(struct work_struct *work)
 	int rc = 0;
 
 	pthread_mutex_lock(&work->lock);
+	printf("schedule work %d\n", work->thread);
 	if (work->state == 1)
 		goto out;
 	else if (work->state == 2) {
@@ -246,11 +249,15 @@ int schedule_work(struct work_struct *work)
 
 		work->thread = 0;
 		work->state = 0;
+		printf("work thread joined\n");
 	}
 
 	rc = pthread_create(&work->thread, NULL, work_thread, &work);
-	if (!rc)
+	if (!rc) {
 		work->state = 1;
+		printf("work thread created\n");
+	}
+
 out:
 	pthread_mutex_unlock(&work->lock);
 	return rc;
