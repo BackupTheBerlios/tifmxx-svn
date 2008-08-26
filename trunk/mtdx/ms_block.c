@@ -713,8 +713,11 @@ static ssize_t ms_block_format_store(struct device *dev,
 }
 
 static DEVICE_ATTR(format, 0644, ms_block_format_show, ms_block_format_store);
-
-/* Expected callback activation sequence for reading:
+/*
+ * All sequences start from CLEAR_BUF command and optional SET_RW_REG_ADDR tpc.
+ *
+ *
+ * Expected callback activation sequence for reading:
  * 1. set_param_addr_init
  * 2. write_param
  * 3. set_cmd
@@ -789,10 +792,29 @@ static int h_ms_block_internal_req_init(struct memstick_dev *card,
 	return 0;
 }
 
+static int h_ms_block_clear_buf(struct memstick_dev *card,
+				struct memstick_request **mrq)
+{
+	if ((*mrq)->error)
+		return ms_block_complete_req(card, (*mrq)->error);
+
+	memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
+			  &ms_block_r_stat_w_param,
+			  sizeof(ms_block_r_stat_w_param));
+
+	if (ms_block_reg_addr_cmp(card, &ms_block_r_stat_w_param))
+		card->next_request = h_ms_block_set_param_addr_init;
+	else
+		return h_ms_block_set_param_addr_init(card, mrq);
+
+	return 0;
+}
+
 static int h_ms_block_req_init(struct memstick_dev *card,
 			       struct memstick_request **mrq)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
+	int c_cmd = MS_CMD_CLEAR_BUF;
 
 	*mrq = &card->current_mrq;
 
@@ -805,15 +827,8 @@ static int h_ms_block_req_init(struct memstick_dev *card,
 		return -EAGAIN;
 	}
 
-	memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
-			  &ms_block_r_stat_w_param,
-			  sizeof(ms_block_r_stat_w_param));
-
-	if (ms_block_reg_addr_cmp(card, &ms_block_r_stat_w_param))
-		card->next_request = h_ms_block_set_param_addr_init;
-	else
-		return h_ms_block_set_param_addr_init(card, mrq);
-
+	memstick_init_req(*mrq, MS_TPC_SET_CMD, &c_cmd, 1);
+	card->next_request = h_ms_block_clear_buf;
 	return 0;
 }
 
@@ -1255,6 +1270,7 @@ static int h_ms_block_trans_data(struct memstick_dev *card,
 
 	msb->dst_page++;
 	msb->t_count++;
+	msb->sg_offset += msb->geo.page_size;
 
 	memstick_init_req(*mrq, MS_TPC_GET_INT, NULL, 1);
 
@@ -1493,9 +1509,6 @@ static int h_ms_block_set_param_addr_init(struct memstick_dev *card,
 	if ((*mrq)->error)
 		return ms_block_complete_req(card, (*mrq)->error);
 
-	if (msb->page_count == 1)
-		msb->cmd_flags &= ~MS_BLOCK_FLG_PAGE_INC;
-
 	memstick_init_req(*mrq, MS_TPC_WRITE_REG, &param, sizeof(param));
 	card->next_request = h_ms_block_write_param;
 	return 0;
@@ -1625,12 +1638,18 @@ unsigned int ms_block_find_boot_block(struct memstick_dev *card,
 			return MTDX_INVALID_BLOCK;
 		}
 
+		dev_dbg(&card->dev, "block %x, ov_flag %x\n",
+			b_cnt, msb->extra.overwrite_flag);
+
 		if (!(msb->extra.overwrite_flag & MEMSTICK_OVERWRITE_BKST))
 			continue;
 
 		if (!(msb->extra.overwrite_flag
 		      & (MEMSTICK_OVERWRITE_PGST0 | MEMSTICK_OVERWRITE_PGST1)))
 			continue;
+
+		print_hex_dump(KERN_EMERG, "boot header: ", DUMP_PREFIX_OFFSET,
+			       16, 1, header, m_req.length, 0);
 
 		if (be16_to_cpu(header->block_id) == MS_BLOCK_ID_BOOT)
 			return b_cnt;
@@ -1667,6 +1686,8 @@ static int ms_block_read_boot_block(struct memstick_dev *card,
 		p_sum = max(p_sum, p1 + p2);
 	}
 
+	rc = 0;
+
 	p_sum += sizeof(struct ms_block_boot_header);
 	p1 = p_sum;
 	p_sum /= page_size;
@@ -1695,6 +1716,7 @@ static int ms_block_read_boot_block(struct memstick_dev *card,
 	memstick_new_req(card->host);
 	wait_for_completion(&card->mrq_complete);
 
+	dev_dbg(&card->dev, "end read block %d\n", msb->trans_err);
 	if (msb->trans_err) {
 		rc = msb->trans_err;
 		goto out;
@@ -1729,7 +1751,7 @@ out:
 static int ms_block_get_boot_values(struct ms_block_data *msb,
 				    struct ms_block_boot_ref *b_ref)
 {
-	int off, cnt, rc = 0;
+	int off, cnt, s_pos, rc = 0;
 	struct ms_block_boot_header *header
 		= (struct ms_block_boot_header *)b_ref->data;
 
@@ -1738,12 +1760,12 @@ static int ms_block_get_boot_values(struct ms_block_data *msb,
 		goto out;
 	}
 
-	for (rc = 0; rc < header->sys_entry_cnt; ++rc) {
-		off = be32_to_cpu(header->sys_entry[rc].start_addr);
-		cnt = be32_to_cpu(header->sys_entry[rc].data_size);
+	for (s_pos = 0; s_pos < header->sys_entry_cnt; ++s_pos) {
+		off = be32_to_cpu(header->sys_entry[s_pos].start_addr);
+		cnt = be32_to_cpu(header->sys_entry[s_pos].data_size);
 		off += sizeof(struct ms_block_boot_header);
 
-		if (header->sys_entry[rc].data_type_id
+		if (header->sys_entry[s_pos].data_type_id
 		    == MS_BLOCK_ENTRY_BAD_BLOCKS) {
 			unsigned short *bblk;
 
@@ -1763,13 +1785,13 @@ static int ms_block_get_boot_values(struct ms_block_data *msb,
 				continue;
 
 			cnt /= 2;
-			b_ref->bad_blocks_cnt = cnt / 2;
+			b_ref->bad_blocks_cnt = cnt;
 
 			bblk = (unsigned short *)(b_ref->data + off);
 
 			for (cnt = 0; cnt < b_ref->bad_blocks_cnt; ++cnt)
 				b_ref->bad_blocks[cnt] = be16_to_cpu(bblk[cnt]);
-		} else if (header->sys_entry[rc].data_type_id
+		} else if (header->sys_entry[s_pos].data_type_id
 			   == MS_BLOCK_ENTRY_CIS_IDI) {
 			struct ms_block_idi *idi;
 
@@ -1909,12 +1931,15 @@ static int ms_block_init_card(struct memstick_dev *card)
 	else
 		rcx = -EIO;
 
+	dev_dbg(&card->dev, "init_card status 1 %d:%d\n", rc, rcx);
+
 	if (!rc)
 		rc = ms_block_get_boot_values(msb, &msb->boot_blocks[0]);
 
 	if (!rcx)
 		rcx = ms_block_get_boot_values(msb, &msb->boot_blocks[1]);
 
+	dev_dbg(&card->dev, "init_card status 2 %d:%d\n", rc, rcx);
 	if (!rc || !rcx)
 		rc = 0;
 
@@ -2300,8 +2325,8 @@ static int ms_block_probe(struct memstick_dev *card)
 	msb->mdev->info_to_oob = ms_block_mtdx_info_to_oob;
 	msb->mdev->get_param = ms_block_mtdx_get_param;
 
-	dev_dbg(&card->dev, "init card\n");
 	rc = ms_block_init_card(card);
+	dev_dbg(&card->dev, "init card %d\n", rc);
 	if (rc)
 		goto err_out_free_mdev;
 
@@ -2309,13 +2334,14 @@ static int ms_block_probe(struct memstick_dev *card)
 	card->stop = ms_block_stop;
 	card->start = ms_block_start;
 
-	dev_dbg(&card->dev, "dev register\n");
+
 	rc = device_register(&msb->mdev->dev);
+	dev_dbg(&card->dev, "dev register %d\n", rc);
 	if (rc)
 		goto err_out_free_mdev;
-	return 0;
-	dev_dbg(&card->dev, "sysfs register\n");
+
 	rc = ms_block_sysfs_register(card);
+	dev_dbg(&card->dev, "sysfs register %d\n", rc);
 
 	if (!rc) {
 		struct mtdx_dev *cdev;
@@ -2328,12 +2354,12 @@ static int ms_block_probe(struct memstick_dev *card)
 		msb->active = 1;
 
 		/* Temporary hack to insert ftl */
-//		cdev = mtdx_alloc_dev(&msb->mdev->dev, &c_id);
-//		if (cdev) {
-//			rc = device_register(&cdev->dev);
-//			if (rc)
-//				__mtdx_free_dev(cdev);
-//		}
+		cdev = mtdx_alloc_dev(&msb->mdev->dev, &c_id);
+		if (cdev) {
+			rc = device_register(&cdev->dev);
+			if (rc)
+				__mtdx_free_dev(cdev);
+		}
 		return 0;
 	}
 

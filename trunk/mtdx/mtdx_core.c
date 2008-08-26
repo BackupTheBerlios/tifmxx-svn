@@ -250,7 +250,7 @@ static struct device_attribute mtdx_dev_attrs[] = {
 	MTDX_ATTR_RO(out_rmode),
 	MTDX_ATTR_RO(type),
 	MTDX_ATTR_RO(id),
-	__ATTR("children", (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH),
+	__ATTR(children, (S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH),
 	       mtdx_children_show, mtdx_children_store),
 	__ATTR_NULL
 };
