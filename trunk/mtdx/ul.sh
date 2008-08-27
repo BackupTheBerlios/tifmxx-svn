@@ -8,6 +8,7 @@ rmmod jmb38x_ms.ko
 #rmmod ./xd_card.ko
 #rmmod ./flash_bd.ko
 rmmod ms_block.ko
+rmmod mtdx_block.ko
 rmmod ftl_simple.ko
 rmmod sg_bounce.ko
 rmmod rand_peb_alloc.ko

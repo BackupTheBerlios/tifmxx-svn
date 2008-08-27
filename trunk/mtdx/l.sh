@@ -6,6 +6,7 @@ insmod ./long_map.ko
 insmod ./rand_peb_alloc.ko
 insmod ./sg_bounce.ko
 insmod ./ftl_simple.ko
+insmod ./mtdx_block.ko
 insmod ./ms_block.ko
 #insmod ./ms_block.ko
 insmod ../driver/jmb38x_ms.ko

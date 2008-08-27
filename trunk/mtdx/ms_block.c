@@ -1648,9 +1648,6 @@ unsigned int ms_block_find_boot_block(struct memstick_dev *card,
 		      & (MEMSTICK_OVERWRITE_PGST0 | MEMSTICK_OVERWRITE_PGST1)))
 			continue;
 
-		print_hex_dump(KERN_EMERG, "boot header: ", DUMP_PREFIX_OFFSET,
-			       16, 1, header, m_req.length, 0);
-
 		if (be16_to_cpu(header->block_id) == MS_BLOCK_ID_BOOT)
 			return b_cnt;
 	}
@@ -1909,7 +1906,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 		= be16_to_cpu(header->info.number_of_effective_blocks);
 	msb->geo.phy_block_cnt = be16_to_cpu(header->info.number_of_blocks);
 	msb->geo.page_size = be16_to_cpu(header->info.page_size);
-	msb->geo.page_cnt = be16_to_cpu(header->info.block_size)
+	msb->geo.page_cnt = (be16_to_cpu(header->info.block_size) << 10)
 			    / msb->geo.page_size;
 	msb->geo.oob_size = sizeof(struct ms_extra_data_register);
 	msb->geo.fill_value = 0xff;
@@ -2393,6 +2390,8 @@ static void ms_block_remove(struct memstick_dev *card)
 	while (waitqueue_active(&msb->req_wq))
 		msleep(1);
 
+	dev_dbg(&card->dev, "mtdx drop\n");
+	mtdx_drop_children(msb->mdev);
 	dev_dbg(&card->dev, "mtdx uregister\n");
 	device_unregister(&msb->mdev->dev);
 

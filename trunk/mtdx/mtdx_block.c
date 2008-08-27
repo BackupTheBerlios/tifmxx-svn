@@ -76,6 +76,7 @@ static int mtdx_block_disk_release(struct gendisk *disk)
 	mutex_lock(&mtdx_block_disk_lock);
 
 	if (mbd) {
+		printk(KERN_INFO "mtdx_block release, %d\n", mbd->usage_count);
 		if (mbd->usage_count)
 			mbd->usage_count--;
 
@@ -349,6 +350,7 @@ static int mtdx_block_probe(struct mtdx_dev *mdev)
 
 	spin_lock_init(&mbd->q_lock);
 	mtdx_set_drvdata(mdev, mbd);
+	mbd->mdev = mdev;
 
 	rc = parent->get_param(parent, MTDX_PARAM_GEO, &mbd->geo);
 	if (rc)
@@ -378,7 +380,7 @@ static void mtdx_block_remove(struct mtdx_dev *mdev)
 	unsigned long flags;
 
 	del_gendisk(mbd->disk);
-	dev_dbg(&mdev->dev, "mtdx block remove\n");
+	dev_dbg(&mdev->dev, "mtdx block del disk\n");
 	spin_lock_irqsave(&mbd->q_lock, flags);
 	mbd->eject = 1;
 	blk_start_queue(mbd->queue);
@@ -393,6 +395,7 @@ static void mtdx_block_remove(struct mtdx_dev *mdev)
 
 	mtdx_block_disk_release(mbd->disk);
 	mtdx_set_drvdata(mdev, NULL);
+	dev_dbg(&mdev->dev, "mtdx block remove\n");
 }
 
 #ifdef CONFIG_PM

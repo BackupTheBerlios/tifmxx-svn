@@ -1274,7 +1274,7 @@ static int ftl_simple_get_param(struct mtdx_dev *this_dev,
 	/* What about them in FTLs? */
 		return -EINVAL;
 	case MTDX_PARAM_HD_GEO:
-	/* Really, we should make something up instead off blindly relying on
+	/* Really, we should make something up instead of blindly relying on
 	 * parent to provide this info.
 	 */
 	default: {
@@ -1337,7 +1337,7 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 			return -ENOMEM;
 
 		fsd->zone_cnt = zone_cnt;
-		memcpy(&fsd->geo, &geo, sizeof(struct mtdx_dev_geo));
+		memcpy(&fsd->geo, &geo, sizeof(geo));
 	}
 
 	fsd->zone_block_cnt = min(fsd->geo.phy_block_cnt,
@@ -1472,6 +1472,8 @@ static void ftl_simple_remove(struct mtdx_dev *mdev)
 	/* Just wait for everybody to go away! */
 	while (1) {
 		spin_lock_irqsave(&fsd->lock, flags);
+		dev_dbg(&mdev->dev, "ftl_simple wait cnt %d\n",
+			fsd->usage_count);
 		if (!fsd->usage_count)
 			break;
 
@@ -1480,8 +1482,10 @@ static void ftl_simple_remove(struct mtdx_dev *mdev)
 	};
 	spin_unlock_irqrestore(&fsd->lock, flags);
 
+	mtdx_drop_children(mdev);
 	mtdx_set_drvdata(mdev, NULL);
 	ftl_simple_free(fsd);
+	dev_dbg(&mdev->dev, "ftl_simple removed\n");
 }
 
 static struct mtdx_device_id mtdx_ftl_simple_id_tbl[] = {
