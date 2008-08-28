@@ -160,7 +160,7 @@ static void long_map_async_alloc(struct work_struct *work)
 	unsigned long flags;
 
 	spin_lock_irqsave(&map->lock, flags);
-	while (map->rnode_count > map->target_count) {
+	while (map->rnode_count && (map->rnode_count > map->target_count)) {
 		b = rb_entry(map->retired_nodes, struct map_node,
 			     node);
 		map->retired_nodes = b->node.rb_right;
@@ -208,6 +208,7 @@ static void long_map_async_alloc(struct work_struct *work)
 			h = b->node.rb_right;
 			b->node.rb_right = map->retired_nodes;
 			map->retired_nodes = &b->node;
+			map->rnode_count++;
 		}
 		spin_unlock_irqrestore(&map->lock, flags);
 	}

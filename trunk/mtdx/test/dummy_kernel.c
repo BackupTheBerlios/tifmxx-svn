@@ -209,10 +209,10 @@ err_out_free:
 
 static void *work_thread(void *data)
 {
-	printf("work thread running\n");
 	struct work_struct *work = data;
 	pthread_mutex_lock(&work->lock);
 	work->state = 2;
+	printf("work thread running %p, %d\n", work, work->state);
 	pthread_cond_broadcast(&work->cond);
 	pthread_mutex_unlock(&work->lock);
 	work->func(work);
@@ -222,16 +222,20 @@ static void *work_thread(void *data)
 
 int cancel_work_sync(struct work_struct *work)
 {
+	printf("cancel work %p\n", work);
 	pthread_mutex_lock(&work->lock);
+	printf("locked %d\n", work->state);
 	while (work->state == 1)
 		pthread_cond_wait(&work->cond, &work->lock);
 
+	printf("join\n");
 	if (work->thread)
 		pthread_join(work->thread, NULL);
 
 	work->thread = 0;
 	work->state = 0;
 	pthread_mutex_unlock(&work->lock);
+	printf("done\n");
 	return 0;
 }
 
@@ -240,7 +244,7 @@ int schedule_work(struct work_struct *work)
 	int rc = 0;
 
 	pthread_mutex_lock(&work->lock);
-	printf("schedule work %d\n", work->thread);
+	printf("schedule work %p, %p, %d\n", work, work->thread, work->state);
 	if (work->state == 1)
 		goto out;
 	else if (work->state == 2) {
@@ -252,13 +256,21 @@ int schedule_work(struct work_struct *work)
 		printf("work thread joined\n");
 	}
 
-	rc = pthread_create(&work->thread, NULL, work_thread, &work);
-	if (!rc) {
-		work->state = 1;
+	work->state = 1;
+	rc = pthread_create(&work->thread, NULL, work_thread, work);
+	if (!rc)
 		printf("work thread created\n");
+	else {
+		work->state = 0;
+		printf("work thread failed\n");
 	}
 
 out:
+	printf("schedule out %d\n", work->state);
 	pthread_mutex_unlock(&work->lock);
 	return rc;
+}
+
+void mtdx_drop_children(struct mtdx_dev *mdev)
+{
 }

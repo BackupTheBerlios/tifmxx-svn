@@ -147,7 +147,8 @@ struct ms_block_data {
 	struct mtdx_dev_geo      geo;
 	struct task_struct       *f_thread;
 
-	struct ms_extra_data_register extra;
+	struct ms_extra_data_register extra[2];
+	unsigned int             extra_pos;
 
 	wait_queue_head_t        req_wq;
 	struct mtdx_dev          *req_dev;
@@ -1431,6 +1432,7 @@ static int h_ms_block_set_param_addr_init(struct memstick_dev *card,
 	msb->page_count = msb->req_in->length / msb->geo.page_size;
 	msb->t_count = 0;
 	msb->trans_err = 0;
+	msb->extra_pos = 0;
 
 	dev_dbg(&card->dev, "init request %x, %x, %x:%x\n", msb->req_in->cmd,
 		msb->req_in->phy_block, msb->req_in->offset,
@@ -1639,12 +1641,12 @@ unsigned int ms_block_find_boot_block(struct memstick_dev *card,
 		}
 
 		dev_dbg(&card->dev, "block %x, ov_flag %x\n",
-			b_cnt, msb->extra.overwrite_flag);
+			b_cnt, msb->extra[0].overwrite_flag);
 
-		if (!(msb->extra.overwrite_flag & MEMSTICK_OVERWRITE_BKST))
+		if (!(msb->extra[0].overwrite_flag & MEMSTICK_OVERWRITE_BKST))
 			continue;
 
-		if (!(msb->extra.overwrite_flag
+		if (!(msb->extra[0].overwrite_flag
 		      & (MEMSTICK_OVERWRITE_PGST0 | MEMSTICK_OVERWRITE_PGST1)))
 			continue;
 
@@ -1724,12 +1726,12 @@ static int ms_block_read_boot_block(struct memstick_dev *card,
 		goto out;
 	}
 
-	if (!(msb->extra.overwrite_flag & MEMSTICK_OVERWRITE_BKST)) {
+	if (!(msb->extra[0].overwrite_flag & MEMSTICK_OVERWRITE_BKST)) {
 		rc = -EFAULT;
 		goto out;
 	}
 
-	if (!(msb->extra.overwrite_flag
+	if (!(msb->extra[0].overwrite_flag
 	      & (MEMSTICK_OVERWRITE_PGST0 | MEMSTICK_OVERWRITE_PGST1))) {
 		rc = -EFAULT;
 		goto out;
@@ -2267,7 +2269,11 @@ static char* ms_block_get_oob_buf(struct mtdx_request *req)
 						 dev);
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 
-	return (char *)&msb->extra;
+	if (!msb->extra_pos) {
+		msb->extra_pos++;
+		return (char *)&msb->extra[0];
+	} else
+		return (char *)&msb->extra[1];
 }
 
 static void ms_block_data_free(struct ms_block_data *msb)

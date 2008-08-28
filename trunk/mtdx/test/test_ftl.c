@@ -88,27 +88,27 @@ void *request_thread(void *data)
 	unsigned int block_size = btm_geo.page_cnt * btm_geo.page_size;
 	int rc;
 
-	printf("thread created\n");
+	printf("rt: thread created\n");
 	pthread_mutex_lock(&req_lock);
 	while (1) {
 		while (!btm_req_dev)
 			pthread_cond_wait(&next_req, &req_lock);
 
-		printf("got request dev\n");
+		printf("rt: got request dev\n");
 		while ((req = btm_req_dev->get_request(btm_req_dev))) {
 //		xcnt--;
 //		if (!xcnt)
 //			break;
-			printf("req cmd %x, block %x, %x:%x\n", req->cmd,
+			printf("rt: req cmd %x, block %x, %x:%x\n", req->cmd,
 			       req->phy_block, req->offset, req->length);
 			if ((req->offset % btm_geo.page_size)
 			    || (req->length % btm_geo.page_size))
-				printf("unaligned offset/length!\n");
+				printf("rt: unaligned offset/length!\n");
 			if ((req->offset
 			     > (btm_geo.page_cnt * btm_geo.page_size))
 			    || ((req->offset + req->length)
 				> (btm_geo.page_cnt * btm_geo.page_size)))
-				printf("invalid offset/length!\n");
+				printf("rt: invalid offset/length!\n");
 
 			switch (req->cmd) {
 			case MTDX_CMD_READ:
@@ -126,11 +126,11 @@ void *request_thread(void *data)
 			case MTDX_CMD_READ_OOB:
 				rc = btm_trans_oob(req, 0);
 
-				printf("read oob, %x, %d\n", req->length, rc);
+				printf("rt: read oob, %x, %d\n", req->length, rc);
 				btm_req_dev->end_request(req, rc, req->length);
 				break;
 			case MTDX_CMD_ERASE:
-				printf("erase %x\n", req->phy_block);
+				printf("rt: erase %x\n", req->phy_block);
 				memset(trans_space
 				       + req->phy_block * block_size,
 				       btm_geo.fill_value, block_size);
@@ -146,11 +146,11 @@ void *request_thread(void *data)
 				break;
 			case MTDX_CMD_WRITE:
 				rc = btm_trans_data(req, 1);
-				printf("write data %d\n", rc);
+				printf("rt: write data %d\n", rc);
 				if (!rc)
 					rc = btm_trans_oob(req, 1);
 
-				printf("write oob %d\n", rc);
+				printf("rt: write oob %d\n", rc);
 				btm_req_dev->end_request(req, rc, req->length);
 				break;
 			case MTDX_CMD_WRITE_DATA:
@@ -164,7 +164,7 @@ void *request_thread(void *data)
 				btm_req_dev->end_request(req, rc, req->length);
 				break;
 			case MTDX_CMD_SELECT:
-				printf("select block %x, stat %x\n",
+				printf("rt: select block %x, stat %x\n",
 				       req->phy_block,
 				       pages[req->phy_block * btm_geo.page_cnt]
 					    .status);
@@ -173,7 +173,7 @@ void *request_thread(void *data)
 				btm_req_dev->end_request(req, 0, 0);
 				break;
 			case MTDX_CMD_INVALIDATE:
-				printf("invalidate block %x, stat %x\n",
+				printf("rt: invalidate block %x, stat %x\n",
 				       req->phy_block,
 				       pages[req->phy_block * btm_geo.page_cnt]
 					    .status);
@@ -200,9 +200,9 @@ void *request_thread(void *data)
 			}
 		}
 		btm_req_dev = NULL;
-		printf("x1\n");
+		printf("rt: x1\n");
 	}
-	printf("x2\n");
+	printf("rt: x2\n");
 	pthread_mutex_unlock(&req_lock);
 }
 
@@ -274,6 +274,9 @@ struct mtdx_dev btm_dev = {
 		MTDX_WMODE_PAGE_PEB_INC, MTDX_WMODE_NONE, MTDX_RMODE_PAGE_PEB,
 		MTDX_RMODE_NONE, MTDX_TYPE_MEDIA, MTDX_ID_MEDIA_MEMORYSTICK
 	},
+	.dev = {
+		.bus_id = "btm"
+	},
 	.new_request = btm_new_req,
 	.oob_to_info = btm_oob_to_info,
 	.info_to_oob = btm_info_to_oob,
@@ -286,6 +289,7 @@ struct mtdx_dev ftl_dev = {
 		MTDX_RMODE_PAGE_PEB, MTDX_TYPE_FTL, MTDX_ID_FTL_SIMPLE
 	},
 	.dev = {
+		.bus_id = "ftl",
 		.parent = &btm_dev.dev
 	}
 };
@@ -350,6 +354,7 @@ static struct mtdx_request *top_get_request(struct mtdx_dev *mdev)
 	} else
 		rv = NULL;
 	pthread_mutex_unlock(&top_lock);
+	printf("top get request %p\n", rv);
 	return rv;
 }
 
@@ -448,7 +453,7 @@ int main(int argc, char **argv)
 
 		memcpy(flat_space + (off * btm_geo.page_size), data_w,
 		       top_size);
-/*
+
 		printf("Reading %x sectors at %x\n", size, off);
 
 		rc = ftl_dev.new_request(&ftl_dev, &top_dev);
@@ -463,13 +468,15 @@ int main(int argc, char **argv)
 			err_cnt++;
 		} else
 			printf("req OK!\n");
-*/
+
 clean_up:
 		free(data_w);
 		free(data_r);
 	}
 
 	pthread_mutex_unlock(&top_lock);
+	printf("no more requests\n");
+	fflush(NULL);
 	test_driver->remove(&ftl_dev);
 
 	printf("c1\n");
