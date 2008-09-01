@@ -896,7 +896,7 @@ static void ftl_simple_set_address(struct ftl_simple_data *fsd)
 	fsd->zone = fsd->req_out.log_block >> fsd->geo.zone_size_log;
 	fsd->b_off = pos % fsd->block_size;
 	fsd->b_len = min(fsd->req_in->length - fsd->t_count,
-			 fsd->block_size - fsd->req_out.offset);
+			 fsd->block_size - fsd->b_off);
 	fsd->oob_pos = 0;
 }
 
@@ -913,7 +913,7 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 	if (!test_bit(fsd->zone, ftl_simple_zone_map(fsd)))
 		return ftl_simple_setup_zone_scan(fsd);
 
-	dev_dbg(&parent->dev, "setup write - zone valid\n");
+	dev_dbg(&fsd_dev(fsd), "setup write - zone valid\n");
 	z_log_block = fsd->req_out.log_block
 		      & ((1U << fsd->geo.zone_size_log) - 1U);
 
@@ -935,15 +935,15 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 	if (ftl_simple_can_merge(fsd, fsd->b_off, fsd->b_len)) {
 		fsd->dst_block = fsd->src_block;
 		ftl_simple_push_req_fn(fsd, ftl_simple_merge_data);
-		dev_dbg(&parent->dev, "merging into block %x\n",
+		dev_dbg(&fsd_dev(fsd), "merging into block %x\n",
 			fsd->src_block);
 	} else {
 		fsd->dst_block = mtdx_get_peb(fsd->b_alloc, fsd->zone, &rc);
-		dev_dbg(&parent->dev, "allocating new block %x\n",
+		dev_dbg(&fsd_dev(fsd), "allocating new block %x\n",
 			fsd->dst_block);
 
 		if (fsd->dst_block == MTDX_INVALID_BLOCK) {
-			dev_dbg(&parent->dev, "no new block, current %x\n",
+			dev_dbg(&fsd_dev(fsd), "no new block, current %x\n",
 				fsd->src_block);
 			if (fsd->src_block == MTDX_INVALID_BLOCK)
 				return -EIO;
@@ -958,6 +958,8 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 		} else if (fsd->src_block != MTDX_INVALID_BLOCK) {
 			ftl_simple_push_req_fn(fsd, ftl_simple_erase_src);
 			if (!fsd->b_map || fsd->dumb_copy) {
+				dev_dbg(&fsd_dev(fsd), "dump copy, src %x\n",
+					fsd->src_block);
 				ftl_simple_push_req_fn(fsd,
 						       ftl_simple_write_last);
 				ftl_simple_push_req_fn(fsd,
@@ -969,6 +971,8 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 				ftl_simple_push_req_fn(fsd,
 						       ftl_simple_read_first);
 			} else {
+				dev_dbg(&fsd_dev(fsd), "fast copy, src %x\n",
+					fsd->src_block);
 				ftl_simple_push_req_fn(fsd,
 						       ftl_simple_copy_last);
 				ftl_simple_push_req_fn(fsd,
@@ -985,10 +989,12 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 				fsd->clean_dst = 1;
 		} else {
 			/* Writing new block */
-			if (fsd->b_len == fsd->block_size)
+			if (fsd->b_len == fsd->block_size) {
+				dev_dbg(&fsd_dev(fsd), "full block write\n");
 				ftl_simple_push_req_fn(fsd,
 						       ftl_simple_merge_data);
-			else {
+			} else {
+				dev_dbg(&fsd_dev(fsd), "partial block write\n");
 				ftl_simple_make_useful(fsd, fsd->dst_block);
 
 				if (fsd->b_off)
@@ -1026,7 +1032,7 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 	/* Set subsequent pages oob data */
 	memcpy(fsd->oob_buf + fsd->geo.oob_size, fsd->oob_buf,
 	       fsd->geo.oob_size);
-	dev_dbg(&parent->dev, "setup write %d\n", rc);
+	dev_dbg(&fsd_dev(fsd), "setup write %d\n", rc);
 	return rc;
 }
 
@@ -1082,14 +1088,16 @@ static int ftl_simple_fill_data(struct ftl_simple_data *fsd)
 static void ftl_simple_end_read_data(struct ftl_simple_data *fsd, int error,
 				     unsigned int count)
 {
+	if (!error && count != fsd->b_len)
+		error = -EIO;
+
 	fsd->t_count += count;
 
-	if (!error && (fsd->t_count < fsd->req_in->length))
-		return;
-
-	mtdx_complete_request(fsd->req_in, error, fsd->t_count);
-	ftl_simple_pop_all_req_fn(fsd);
-	fsd->req_in = NULL;
+	if (error || (fsd->t_count >= fsd->req_in->length)) {
+		mtdx_complete_request(fsd->req_in, error, fsd->t_count);
+		ftl_simple_pop_all_req_fn(fsd);
+		fsd->req_in = NULL;
+	}
 }
 
 static int ftl_simple_read_data(struct ftl_simple_data *fsd)
@@ -1205,6 +1213,7 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 		if (rc) {
 			fsd->req_sg.length = 0;
 			fsd->sg_off = 0;
+			fsd->t_count = 0;
 			fsd->req_in = fsd->req_dev->get_request(fsd->req_dev);
 			if (!fsd->req_in) {
 				fsd->req_dev = NULL;

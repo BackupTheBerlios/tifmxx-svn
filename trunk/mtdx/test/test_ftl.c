@@ -102,13 +102,17 @@ void *request_thread(void *data)
 			printf("rt: req cmd %x, block %x, %x:%x\n", req->cmd,
 			       req->phy_block, req->offset, req->length);
 			if ((req->offset % btm_geo.page_size)
-			    || (req->length % btm_geo.page_size))
+			    || (req->length % btm_geo.page_size)) {
 				printf("rt: unaligned offset/length!\n");
+				exit(1);
+			}
 			if ((req->offset
 			     > (btm_geo.page_cnt * btm_geo.page_size))
 			    || ((req->offset + req->length)
-				> (btm_geo.page_cnt * btm_geo.page_size)))
+				> (btm_geo.page_cnt * btm_geo.page_size))) {
 				printf("rt: invalid offset/length!\n");
+				exit(2);
+			}
 
 			switch (req->cmd) {
 			case MTDX_CMD_READ:
@@ -418,8 +422,8 @@ int main(int argc, char **argv)
 			size = random32() % (btm_geo.log_block_cnt
 					     * btm_geo.page_cnt - off);
 		} while (!size);
-		off = 0;
-		size = 1;
+		//off = 0;
+		size = 3;
 
 		top_size = size * btm_geo.page_size;
 

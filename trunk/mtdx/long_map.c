@@ -289,9 +289,9 @@ unsigned long *long_map_insert(struct long_map *map, unsigned long key)
 
 	spin_lock_irqsave(&map->lock, flags);
 	b = long_map_get_node(map);
-	b->key = key;
 
 	if (b) {
+		b->key = key;
 		if (long_map_add_useful(map, b))
 			long_map_put_node(map, b);
 		else {
