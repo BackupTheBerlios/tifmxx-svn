@@ -397,6 +397,7 @@ static int ftl_simple_get_data_buf_sg(struct mtdx_request *req,
 	memcpy(sg, &fsd->req_sg, sizeof(struct scatterlist));
 	sg->offset += fsd->sg_off;
 	sg->length = min(fsd->sg_length, sg->length - fsd->sg_off);
+	fsd->sg_off += sg->length;
 	fsd->sg_length -= sg->length;
 
 	return 0;

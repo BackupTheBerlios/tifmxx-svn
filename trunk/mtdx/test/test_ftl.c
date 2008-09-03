@@ -42,7 +42,6 @@ int btm_trans_data(struct mtdx_request *req, int dir)
 	while (!(rc = btm_req_dev->get_data_buf_sg(req, &sg))) {
 		t_len = min(sg.length, r_len);
 
-		printf("trans data %x\n", t_len);
 		if (dir)
 			memcpy(trans_space + c_pos, sg_virt(&sg), t_len);
 		else
@@ -51,6 +50,7 @@ int btm_trans_data(struct mtdx_request *req, int dir)
 		r_len -= t_len;
 		c_pos += t_len;
 	}
+	printf("trans data end %d\n", rc);
 	if (rc == - EAGAIN)
 		rc = 0;
 
@@ -423,7 +423,7 @@ int main(int argc, char **argv)
 					     * btm_geo.page_cnt - off);
 		} while (!size);
 		//off = 0;
-		size = 3;
+		size = 10;
 
 		top_size = size * btm_geo.page_size;
 
@@ -466,7 +466,12 @@ int main(int argc, char **argv)
 			goto clean_up;
 		}
 		pthread_cond_wait(&top_cond, &top_lock);
-
+/*
+		printf("data_w %04x, %04x, %04x\n", *(int*)data_w,
+		       *(int*)(data_w + 512), *(int*)(data_w + 1024));
+		printf("data_r %04x, %04x, %04x\n", *(int*)data_r,
+		       *(int*)(data_r + 512), *(int*)(data_r + 1024));
+*/
 		if (memcmp(data_w, data_r, top_size)) {
 			printf("read/write err\n");
 			err_cnt++;
