@@ -415,7 +415,7 @@ int main(int argc, char **argv)
 	test_driver->probe(&ftl_dev);
 
 	pthread_mutex_lock(&top_lock);
-	for (t_cnt = 1; t_cnt; --t_cnt) {
+	for (t_cnt = 10; t_cnt; --t_cnt) {
 		do {
 			off = random32() % (btm_geo.log_block_cnt
 					    * btm_geo.page_cnt);
@@ -423,7 +423,7 @@ int main(int argc, char **argv)
 					     * btm_geo.page_cnt - off);
 		} while (!size);
 		//off = 0;
-		size = 10;
+		//size = 10;
 
 		top_size = size * btm_geo.page_size;
 
@@ -473,8 +473,8 @@ int main(int argc, char **argv)
 		       *(int*)(data_r + 512), *(int*)(data_r + 1024));
 */
 		if (memcmp(data_w, data_r, top_size)) {
-			printf("read/write err\n");
-			err_cnt++;
+			printf("read/write err - %d\n", t_cnt);
+			break;
 		} else
 			printf("req OK!\n");
 

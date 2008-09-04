@@ -1591,7 +1591,7 @@ static int ms_block_switch_to_parallel(struct memstick_dev *card)
 	if (card->current_mrq.error) {
 		msb->system &= ~MEMSTICK_SYS_PAM;
 		host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_SERIAL);
-		return -EFAULT;
+		return card->current_mrq.error;
 	}
 
 	return 0;
@@ -1896,7 +1896,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 								 0);
 
 	if (msb->boot_blocks[0].phy_block == MTDX_INVALID_BLOCK) {
-		rc = -EFAULT;
+		rc = -ENOENT;
 		goto out;
 	}
 
@@ -2154,7 +2154,7 @@ static int ms_block_mtdx_get_param(struct mtdx_dev *this_dev,
 			 memcpy(val, &msb->boot_blocks[1].hd_geo,
 				sizeof(struct hd_geometry));
 		else
-			return -EFAULT;
+			return -ENOENT;
 
 		return 0;
 	}
@@ -2456,7 +2456,7 @@ static int ms_block_resume(struct memstick_dev *card)
 		    || memcmp(new_msb->boot_blocks[0].data,
 			      msb->boot_blocks[0].data,
 			      msb->boot_blocks[0].size)) {
-			rc = -EFAULT;
+			rc = -ENODEV;
 			goto out;
 		}
 	} else if (msb->boot_blocks[1].data) {
@@ -2466,11 +2466,11 @@ static int ms_block_resume(struct memstick_dev *card)
 		    || memcmp(new_msb->boot_blocks[1].data,
 			      msb->boot_blocks[1].data,
 			      msb->boot_blocks[1].size)) {
-			rc = -EFAULT;
+			rc = -ENODEV;
 			goto out;
 		}
 	} else {
-		rc = -EFAULT;
+		rc = -ENODEV;
 		goto out;
 	}
 

@@ -197,12 +197,23 @@ static void ftl_simple_end_lookup_block(struct ftl_simple_data *fsd, int error,
 
 	if (!error)
 		error = parent->oob_to_info(parent, &p_info, fsd->oob_buf);
+	else if (error == -EFAULT) {
+		/* Uncorrectable error reading block */
+		p_info.status = MTDX_PAGE_FAILURE;
+		p_info.log_block = MTDX_INVALID_BLOCK;
+		error = 0;
+	}
 
 	z_log_block = p_info.log_block & ((1U << fsd->geo.zone_size_log) - 1U);
 
 	if (!error) {
-		fsd->conflict_pos = fsd->zones[fsd->zone]
-				       ->b_table[z_log_block];
+		if (p_info.log_block != MTDX_INVALID_BLOCK)
+			fsd->conflict_pos = fsd->zones[fsd->zone]
+					       ->b_table[z_log_block];
+		else if ((p_info.status == MTDX_PAGE_MAPPED)
+			   || (p_info.status == MTDX_PAGE_SMAPPED))
+			p_info.status = MTDX_PAGE_UNMAPPED;
+
 		switch (p_info.status) {
 		case MTDX_PAGE_ERASED:
 			dev_dbg(&fsd_dev(fsd), "erased block %x\n",
