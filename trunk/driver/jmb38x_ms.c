@@ -20,8 +20,8 @@
 #define PCI_DEVICE_ID_JMICRON_JMB38X_MS 0x2383
 #define DRIVER_NAME "jmb38x_ms"
 
-#undef dev_dbg
-#define dev_dbg dev_emerg
+//#undef dev_dbg
+//#define dev_dbg dev_emerg
 
 static int no_dma;
 module_param(no_dma, bool, 0644);
@@ -85,6 +85,8 @@ struct jmb38x_ms {
 #define TPC_CODE_SZ_MASK       0x00000700
 #define TPC_DATA_SZ_MASK       0x00000007
 
+#define HOST_CONTROL_TDELAY_EN 0x00040000
+#define HOST_CONTROL_HW_OC_P   0x00010000
 #define HOST_CONTROL_RESET_REQ 0x00008000
 #define HOST_CONTROL_REI       0x00004000
 #define HOST_CONTROL_LED       0x00000400
@@ -92,6 +94,7 @@ struct jmb38x_ms {
 #define HOST_CONTROL_RESET     0x00000100
 #define HOST_CONTROL_POWER_EN  0x00000080
 #define HOST_CONTROL_CLOCK_EN  0x00000040
+#define HOST_CONTROL_REO       0x00000008
 #define HOST_CONTROL_IF_SHIFT  4
 
 #define HOST_CONTROL_IF_SERIAL 0x0
@@ -141,6 +144,10 @@ struct jmb38x_ms {
 #define CLOCK_CONTROL_60MHZ   0x00000008
 #define CLOCK_CONTROL_62_5MHZ 0x0000000c
 #define CLOCK_CONTROL_OFF     0x00000000
+
+#define PCI_CTL_CLOCK_DLY_ADDR   0x000000b0
+#define PCI_CTL_CLOCK_DLY_MASK_A 0x00000f00
+#define PCI_CTL_CLOCK_DLY_MASK_B 0x0000f000
 
 enum {
 	CMD_READY    = 0x01,
@@ -679,7 +686,9 @@ static int jmb38x_ms_set_param(struct memstick_host *msh,
 
 			host_ctl = 7;
 			host_ctl |= HOST_CONTROL_POWER_EN
-				 | HOST_CONTROL_CLOCK_EN;
+				    | HOST_CONTROL_CLOCK_EN
+				    | HOST_CONTROL_HW_OC_P
+				    | HOST_CONTROL_TDELAY_EN;
 			writel(host_ctl, host->addr + HOST_CONTROL);
 
 			writel(host->id ? PAD_PU_PD_ON_MS_SOCK1
@@ -703,33 +712,40 @@ static int jmb38x_ms_set_param(struct memstick_host *msh,
 		break;
 	case MEMSTICK_INTERFACE:
 		host_ctl &= ~(3 << HOST_CONTROL_IF_SHIFT);
+		pci_read_config_dword(host->chip->pdev,
+				      PCI_CTL_CLOCK_DLY_ADDR,
+				      &clock_delay);
+		clock_delay &= host->id ? ~PCI_CTL_CLOCK_DLY_MASK_B
+					: ~PCI_CTL_CLOCK_DLY_MASK_A;
 
 		if (value == MEMSTICK_SERIAL) {
 			host_ctl &= ~HOST_CONTROL_FAST_CLK;
+			host_ctl &= ~HOST_CONTROL_REO;
 			host_ctl |= HOST_CONTROL_IF_SERIAL
 				    << HOST_CONTROL_IF_SHIFT;
 			host_ctl |= HOST_CONTROL_REI;
 			clock_ctl = CLOCK_CONTROL_40MHZ;
-			clock_delay = 0;
 		} else if (value == MEMSTICK_PAR4) {
-			host_ctl |= HOST_CONTROL_FAST_CLK;
+			host_ctl |= HOST_CONTROL_FAST_CLK | HOST_CONTROL_REO;
 			host_ctl |= HOST_CONTROL_IF_PAR4
 				    << HOST_CONTROL_IF_SHIFT;
 			host_ctl &= ~HOST_CONTROL_REI;
 			clock_ctl = CLOCK_CONTROL_40MHZ;
-			clock_delay = 4;
+			clock_delay |= host->id ? (4 << 12) : (4 << 8);
 		} else if (value == MEMSTICK_PAR8) {
 			host_ctl |= HOST_CONTROL_FAST_CLK;
 			host_ctl |= HOST_CONTROL_IF_PAR8
 				    << HOST_CONTROL_IF_SHIFT;
-			host_ctl &= ~HOST_CONTROL_REI;
+			host_ctl &= ~(HOST_CONTROL_REI | HOST_CONTROL_REO);
 			clock_ctl = CLOCK_CONTROL_60MHZ;
-			clock_delay = 0;
 		} else
 			return -EINVAL;
+
 		writel(host_ctl, host->addr + HOST_CONTROL);
 		writel(clock_ctl, host->addr + CLOCK_CONTROL);
-		writel(clock_delay, host->addr + CLOCK_DELAY);
+		pci_write_config_dword(host->chip->pdev,
+				       PCI_CTL_CLOCK_DLY_ADDR,
+				       clock_delay);
 		break;
 	};
 	return 0;
