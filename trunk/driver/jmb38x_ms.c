@@ -694,7 +694,7 @@ static int jmb38x_ms_set_param(struct memstick_host *msh,
 			writel(host->id ? PAD_PU_PD_ON_MS_SOCK1
 					: PAD_PU_PD_ON_MS_SOCK0,
 			       host->addr + PAD_PU_PD);
- 
+
 			writel(PAD_OUTPUT_ENABLE_MS,
 			       host->addr + PAD_OUTPUT_ENABLE);
 
@@ -737,7 +737,7 @@ static int jmb38x_ms_set_param(struct memstick_host *msh,
 			host_ctl |= HOST_CONTROL_IF_PAR8
 				    << HOST_CONTROL_IF_SHIFT;
 			host_ctl &= ~(HOST_CONTROL_REI | HOST_CONTROL_REO);
-			clock_ctl = CLOCK_CONTROL_60MHZ;
+			clock_ctl = CLOCK_CONTROL_50MHZ;
 		} else
 			return -EINVAL;
 

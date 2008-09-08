@@ -745,8 +745,7 @@ static DEVICE_ATTR(format, 0644, ms_block_format_show, ms_block_format_store);
  * 1. set_param_addr_init
  * 2. write_param
  * 3. set_cmd
- * 4. cmd_get_int
- *
+ * 4. cmd_get_int -> 4
  *
  * Expected callback activation sequence for writing:
  * 1. set_param_addr_init
@@ -1274,13 +1273,14 @@ static int h_ms_block_trans_data(struct memstick_dev *card,
 	msb->sg_offset += msb->geo.page_size;
 
 	memstick_init_req(*mrq, MS_TPC_GET_INT, NULL, 1);
+	card->next_request = h_ms_block_data_get_int;
 
-	if (msb->caps & MEMSTICK_CAP_AUTO_GET_INT)
+	if (msb->caps & MEMSTICK_CAP_AUTO_GET_INT) {
+		(*mrq)->data[0] = (*mrq)->int_reg;
 		return h_ms_block_data_get_int(card, mrq);
-	else {
-		card->next_request = h_ms_block_data_get_int;
-		return 0;
 	}
+
+	return 0;
 }
 
 static int h_ms_block_cmd_get_int(struct memstick_dev *card,
@@ -1328,6 +1328,11 @@ static int h_ms_block_cmd_get_int(struct memstick_dev *card,
 			return ms_block_complete_req(card, -EIO);
 		else if (int_reg & MEMSTICK_INT_ERR)
 			return ms_block_complete_req(card, -EFAULT);
+
+		/* retry until CED is signalled */
+		if (!(int_reg & MEMSTICK_INT_CED))
+			return 0;
+
 		/* fall through */
 	default: /* other memstick commands */
 		return ms_block_complete_req(card, (*mrq)->error);
@@ -1342,13 +1347,13 @@ static int h_ms_block_set_cmd(struct memstick_dev *card,
 	if ((*mrq)->error)
 		return ms_block_complete_req(card, (*mrq)->error);
 
+	memstick_init_req(*mrq, MS_TPC_GET_INT, NULL, 1);
+	card->next_request = h_ms_block_cmd_get_int;
+
 	if (msb->caps & MEMSTICK_CAP_AUTO_GET_INT) {
 		(*mrq)->data[0] = (*mrq)->int_reg;
 		return h_ms_block_cmd_get_int(card, mrq);
 	}
-
-	memstick_init_req(*mrq, MS_TPC_GET_INT, NULL, 1);
-	card->next_request = h_ms_block_cmd_get_int;
 
 	return 0;
 }

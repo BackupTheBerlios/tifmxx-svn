@@ -2,6 +2,7 @@
 #include <linux/errno.h>
 #include <linux/list.h>
 #include <linux/workqueue.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -20,7 +21,10 @@ void spin_unlock_irqrestore(spinlock_t *lock, unsigned long flags)
 
 void spin_lock_init(spinlock_t *lock)
 {
-	pthread_mutex_init(&lock->mutex, NULL);
+	pthread_mutexattr_t attr;
+	pthread_mutexattr_init(&attr);
+	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ERRORCHECK_NP);
+	pthread_mutex_init(&lock->mutex, &attr);
 }
 
 void kfree(const void *ptr)

@@ -1219,17 +1219,21 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 				fsd->req_in = NULL;
 			} else
 				rc = ftl_simple_setup_request(fsd);
-		} else if (!rc)
-			rc = -EAGAIN; /* No current request */
+		}
 
-		if (rc) {
+		if (!fsd->req_in) {
 			fsd->req_sg.length = 0;
 			fsd->sg_off = 0;
 			fsd->t_count = 0;
-			fsd->req_in = fsd->req_dev->get_request(fsd->req_dev);
+
+			if (fsd->req_dev)
+				fsd->req_in = fsd->req_dev
+						 ->get_request(fsd->req_dev);
 			if (!fsd->req_in) {
-				fsd->req_dev = NULL;
-				fsd->usage_count--;
+				if (fsd->req_dev) {
+					fsd->req_dev = NULL;
+					fsd->usage_count--;
+				}
 				break;
 			}
 		}
@@ -1253,25 +1257,26 @@ static int ftl_simple_new_request(struct mtdx_dev *this_dev,
 					       struct mtdx_dev, dev);
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(this_dev);
 	unsigned long flags;
-	int rc;
+	int rc = 0;
 
 	spin_lock_irqsave(&fsd->lock, flags);
+	if (fsd->req_dev) {
+		spin_unlock_irqrestore(&fsd->lock, flags);
+		return -EBUSY;
+	}
+
 	fsd->usage_count++;
+	fsd->req_dev = req_dev;
+
 	rc = parent->new_request(parent, this_dev);
 	dev_dbg(&this_dev->dev, "parent notified, %d\n", rc);
 
-	if (!rc && fsd->req_dev)
-		rc = -EIO;
-
 	if (rc) {
 		fsd->usage_count--;
-		spin_unlock_irqrestore(&fsd->lock, flags);
-		return rc;
+		fsd->req_dev = NULL;
 	}
-
-	fsd->req_dev = req_dev;
 	spin_unlock_irqrestore(&fsd->lock, flags);
-	return 0;
+	return rc;
 }
 
 static int ftl_simple_get_param(struct mtdx_dev *this_dev,

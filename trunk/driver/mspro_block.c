@@ -1118,14 +1118,16 @@ static int mspro_block_init_card(struct memstick_dev *card)
 		return -EIO;
 
 	msb->caps = host->caps;
-	rc = mspro_block_switch_interface(card);
-	if (rc)
-		return rc;
 
 	msleep(200);
 	rc = mspro_block_wait_for_ced(card);
 	if (rc)
 		return rc;
+
+	rc = mspro_block_switch_interface(card);
+	if (rc)
+		return rc;
+
 	dev_dbg(&card->dev, "card activated\n");
 	if (msb->system != MEMSTICK_SYS_SERIAL)
 		msb->caps |= MEMSTICK_CAP_AUTO_GET_INT;

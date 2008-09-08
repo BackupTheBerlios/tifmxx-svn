@@ -1,11 +1,12 @@
 #include "../mtdx_common.h"
+#include <pthread.h>
 #include <linux/module.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 struct mtdx_driver *test_driver;
 
-pthread_mutex_t req_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t req_lock = PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP;
 pthread_cond_t next_req = PTHREAD_COND_INITIALIZER;
 struct mtdx_dev *btm_req_dev = NULL;
 
@@ -301,7 +302,7 @@ struct mtdx_dev ftl_dev = {
 char *top_data_buf;
 unsigned int top_pos;
 unsigned int top_size;
-pthread_mutex_t top_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t top_lock = PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP;
 pthread_cond_t top_cond = PTHREAD_COND_INITIALIZER;
 unsigned int top_req_done = 0;
 
@@ -325,6 +326,10 @@ static void top_end_request(struct mtdx_request *req, int error,
 	printf("top end request, count %x, error %d\n", count, error);
 
 	pthread_mutex_lock(&top_lock);
+	if (top_req_done != 1) {
+		printf("bad top_end_request %d\n", top_req_done);
+		exit(1);
+	}
 	top_req_done = 2;
 	pthread_cond_signal(&top_cond);
 	pthread_mutex_unlock(&top_lock);
@@ -353,7 +358,7 @@ static struct mtdx_request *top_get_request(struct mtdx_dev *mdev)
 	printf("top get request\n");
 	pthread_mutex_lock(&top_lock);
 	if (!top_req_done) {
-		rv =  &top_req;
+		rv = &top_req;
 		top_req_done++;
 	} else
 		rv = NULL;
@@ -415,7 +420,7 @@ int main(int argc, char **argv)
 	test_driver->probe(&ftl_dev);
 
 	pthread_mutex_lock(&top_lock);
-	for (t_cnt = 10; t_cnt; --t_cnt) {
+	for (t_cnt = 3; t_cnt; --t_cnt) {
 		do {
 			off = random32() % (btm_geo.log_block_cnt
 					    * btm_geo.page_cnt);
@@ -423,7 +428,7 @@ int main(int argc, char **argv)
 					     * btm_geo.page_cnt - off);
 		} while (!size);
 		//off = 0;
-		//size = 10;
+		size = 11;
 
 		top_size = size * btm_geo.page_size;
 
@@ -439,6 +444,7 @@ int main(int argc, char **argv)
 		top_pos = 0;
 		top_req.cmd = MTDX_CMD_WRITE_DATA;
 		top_data_buf = data_w;
+		top_req_done = 0;
 
 		printf("Writing %x sectors at %x\n", size, off);
 
@@ -447,7 +453,9 @@ int main(int argc, char **argv)
 			printf("could not issue, error %d\n", rc);
 			goto clean_up;
 		}
-		pthread_cond_wait(&top_cond, &top_lock);
+
+		while (top_req_done != 2)
+			pthread_cond_wait(&top_cond, &top_lock);
 
 		printf("Write signalled\n");
 		top_pos = 0;
@@ -459,13 +467,14 @@ int main(int argc, char **argv)
 		       top_size);
 
 		printf("Reading %x sectors at %x\n", size, off);
-
 		rc = ftl_dev.new_request(&ftl_dev, &top_dev);
 		if (rc) {
 			printf("could not issue, error %d\n", rc);
 			goto clean_up;
 		}
-		pthread_cond_wait(&top_cond, &top_lock);
+
+		while (top_req_done != 2)
+			pthread_cond_wait(&top_cond, &top_lock);
 /*
 		printf("data_w %04x, %04x, %04x\n", *(int*)data_w,
 		       *(int*)(data_w + 512), *(int*)(data_w + 1024));
