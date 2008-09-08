@@ -569,10 +569,20 @@ static int ms_block_wake_next(struct ms_block_data *msb)
 	unsigned long flags;
 
 	spin_lock_irqsave(&msb->lock, flags);
-	if (!msb->format && (!msb->active || !(msb->stopped || msb->req_dev)))
+	if (!msb->f_thread && (!msb->active || !(msb->stopped || msb->req_dev)))
 		rc = 1;
 	spin_unlock_irqrestore(&msb->lock, flags);
 	return rc;
+}
+
+static int h_ms_block_internal_req_init(struct memstick_dev *card,
+					struct memstick_request **mrq)
+{
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+
+	*mrq = &card->current_mrq;
+	card->next_request = msb->mrq_handler;
+	return 0;
 }
 
 static int ms_block_format(void *data)
@@ -600,10 +610,12 @@ static int ms_block_format(void *data)
 	}
 
 	while (!kthread_should_stop()
-	       && (msb->src_block < msb->geo.phy_block_cnt)) {
+	       && (msb->src_block < 10 /*msb->geo.phy_block_cnt*/)) {
 		if (s_block_pos != &s_blocks) {
 			if (list_entry(s_block_pos, struct mtdx_page_info,
 				       node)->phy_block == msb->src_block) {
+				dev_info(&card->dev, "skipping block %x\n",
+					 msb->src_block);
 				msb->src_block++;
 				s_block_pos = s_block_pos->next;
 				continue;
@@ -619,7 +631,8 @@ static int ms_block_format(void *data)
 
 		memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, &param,
 				  sizeof(param));
-		card->next_request = h_ms_block_write_param;
+		msb->mrq_handler = h_ms_block_write_param;
+		card->next_request = h_ms_block_internal_req_init;
 		memstick_new_req(card->host);
 		wait_for_completion(&card->mrq_complete);
 		if (card->current_mrq.error)
@@ -631,9 +644,18 @@ static int ms_block_format(void *data)
 	}
 
 out:
+	dev_dbg(&card->dev, "format out\n");
 	spin_lock_irqsave(&msb->lock, flags);
-	msb->format = 0;
-	spin_unlock_irqrestore(&msb->lock, flags);
+	if (msb->f_thread) {
+		msb->f_thread = NULL;
+		spin_unlock_irqrestore(&msb->lock, flags);
+	} else {
+		spin_unlock_irqrestore(&msb->lock, flags);
+		while(!kthread_should_stop())
+			msleep_interruptible(1);
+	}
+
+	dev_dbg(&card->dev, "format end\n");
 	return 0;
 }
 
@@ -644,27 +666,22 @@ static ssize_t ms_block_format_show(struct device *dev,
 	struct ms_block_data *msb
 		= memstick_get_drvdata(container_of(dev, struct memstick_dev,
 						    dev));
-	struct task_struct *f_thread = NULL;
 	unsigned int f_pos = MTDX_INVALID_BLOCK;
 	unsigned long flags;
 
+	dev_dbg(&msb->card->dev, "format show\n");
 	spin_lock_irqsave(&msb->lock, flags);
-	if (msb->format)
+	if (msb->f_thread)
 		f_pos = msb->src_block;
-	else {
-		f_thread = msb->f_thread;
-		msb->f_thread = NULL;
-	}
 	spin_unlock_irqrestore(&msb->lock, flags);
-
-	if (f_thread)
-		kthread_stop(f_thread);
 
 	if (f_pos != MTDX_INVALID_BLOCK)
 		return scnprintf(buf, PAGE_SIZE, "Erasing block %x of %x.\n",
 				 f_pos, msb->geo.phy_block_cnt);
 	else
 		return scnprintf(buf, PAGE_SIZE, "Not running.\n");
+
+	dev_dbg(&msb->card->dev, "format show end\n");
 }
 
 static ssize_t ms_block_format_store(struct device *dev,
@@ -679,17 +696,21 @@ static ssize_t ms_block_format_store(struct device *dev,
 	if ((count < 6) || strncmp(buf, "format", 6))
 		return count;
 
+	f_thread = kthread_create(ms_block_format, card, "msb_format%d",
+				  card->host->id);
+	if (IS_ERR(f_thread))
+		return count;
+
 	spin_lock_irqsave(&msb->lock, flags);
 	while (1) {
-		if (!msb->active || msb->format) {
+		if (!msb->active || msb->f_thread) {
 			spin_unlock_irqrestore(&msb->lock, flags);
+			kthread_stop(f_thread);
 			return count;
 		}
 
 		if (!(msb->stopped || msb->req_dev)) {
-			msb->format = 1;
-			f_thread = msb->f_thread;
-			msb->f_thread = NULL;
+			msb->f_thread = f_thread;
 			spin_unlock_irqrestore(&msb->lock, flags);
 			break;
 		}
@@ -700,16 +721,8 @@ static ssize_t ms_block_format_store(struct device *dev,
 	}
 
 	if (f_thread)
-		kthread_stop(f_thread);
+		wake_up_process(f_thread);
 
-	msb->f_thread = kthread_run(ms_block_format, card, "msb_format%d",
-				    card->host->id);
-	if (IS_ERR(msb->f_thread)) {
-		spin_lock_irqsave(&msb->lock, flags);
-		msb->f_thread = NULL;
-		msb->format = 0;
-		spin_unlock_irqrestore(&msb->lock, flags);
-	}
 	return count;
 }
 
@@ -781,16 +794,6 @@ static DEVICE_ATTR(format, 0644, ms_block_format_show, ms_block_format_store);
  * 5-2 (error)
  * 6. -> 2
  */
-
-static int h_ms_block_internal_req_init(struct memstick_dev *card,
-					struct memstick_request **mrq)
-{
-	struct ms_block_data *msb = memstick_get_drvdata(card);
-
-	*mrq = &card->current_mrq;
-	card->next_request = msb->mrq_handler;
-	return 0;
-}
 
 static int h_ms_block_clear_buf(struct memstick_dev *card,
 				struct memstick_request **mrq)
@@ -1973,7 +1976,7 @@ static void ms_block_stop(struct memstick_dev *card)
 
 	spin_lock_irqsave(&msb->lock, flags);
 	while (1) {
-		if (!msb->format) {
+		if (!msb->f_thread) {
 			if (!msb->active || msb->stopped)
 				break;
 
@@ -2030,7 +2033,7 @@ static int ms_block_mtdx_new_request(struct mtdx_dev *this_dev,
 			break;
 		}
 
-		if (!(msb->format || msb->stopped || msb->req_dev)) {
+		if (!(msb->f_thread || msb->stopped || msb->req_dev)) {
 			msb->req_dev = req_dev;
 			break;
 		} else {
@@ -2384,6 +2387,7 @@ err_out_free:
 static void ms_block_remove(struct memstick_dev *card)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct task_struct *f_thread;
 	unsigned long flags;
 
 	msb->mdev->new_request = ms_block_mtdx_dummy_new_request;
@@ -2391,15 +2395,15 @@ static void ms_block_remove(struct memstick_dev *card)
 	spin_lock_irqsave(&msb->lock, flags);
 	msb->active = 0;
 	wake_up_all(&msb->req_wq);
+	f_thread = msb->f_thread;
+	msb->f_thread = NULL;
 	spin_unlock_irqrestore(&msb->lock, flags);
 
-	if (msb->f_thread) {
-		kthread_stop(msb->f_thread);
-		msb->f_thread = NULL;
-	}
+	if (f_thread)
+		kthread_stop(f_thread);
 
 	while (waitqueue_active(&msb->req_wq))
-		msleep(1);
+		msleep_interruptible(1);
 
 	dev_dbg(&card->dev, "mtdx drop\n");
 	mtdx_drop_children(msb->mdev);

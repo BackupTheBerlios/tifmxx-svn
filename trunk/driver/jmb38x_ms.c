@@ -741,11 +741,12 @@ static int jmb38x_ms_set_param(struct memstick_host *msh,
 		} else
 			return -EINVAL;
 
-		writel(host_ctl, host->addr + HOST_CONTROL);
-		writel(clock_ctl, host->addr + CLOCK_CONTROL);
 		pci_write_config_dword(host->chip->pdev,
 				       PCI_CTL_CLOCK_DLY_ADDR,
 				       clock_delay);
+		writel(clock_ctl, host->addr + CLOCK_CONTROL);
+		writel(host_ctl, host->addr + HOST_CONTROL);
+
 		break;
 	};
 	return 0;

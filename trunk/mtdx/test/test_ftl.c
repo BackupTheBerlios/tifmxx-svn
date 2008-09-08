@@ -325,14 +325,12 @@ static void top_end_request(struct mtdx_request *req, int error,
 {
 	printf("top end request, count %x, error %d\n", count, error);
 
-	pthread_mutex_lock(&top_lock);
 	if (top_req_done != 1) {
 		printf("bad top_end_request %d\n", top_req_done);
 		exit(1);
 	}
 	top_req_done = 2;
 	pthread_cond_signal(&top_cond);
-	pthread_mutex_unlock(&top_lock);
 }
 
 static struct mtdx_request *top_get_request(struct mtdx_dev *mdev);
@@ -356,13 +354,13 @@ static struct mtdx_request *top_get_request(struct mtdx_dev *mdev)
 	struct mtdx_request *rv;
 
 	printf("top get request\n");
-	pthread_mutex_lock(&top_lock);
+
 	if (!top_req_done) {
 		rv = &top_req;
 		top_req_done++;
 	} else
 		rv = NULL;
-	pthread_mutex_unlock(&top_lock);
+
 	printf("top get request %p\n", rv);
 	return rv;
 }
@@ -419,7 +417,6 @@ int main(int argc, char **argv)
 	init_module();
 	test_driver->probe(&ftl_dev);
 
-	pthread_mutex_lock(&top_lock);
 	for (t_cnt = 3; t_cnt; --t_cnt) {
 		do {
 			off = random32() % (btm_geo.log_block_cnt
@@ -428,7 +425,7 @@ int main(int argc, char **argv)
 					     * btm_geo.page_cnt - off);
 		} while (!size);
 		//off = 0;
-		size = 11;
+		//size = 1;
 
 		top_size = size * btm_geo.page_size;
 
@@ -454,8 +451,10 @@ int main(int argc, char **argv)
 			goto clean_up;
 		}
 
+		pthread_mutex_lock(&top_lock);
 		while (top_req_done != 2)
 			pthread_cond_wait(&top_cond, &top_lock);
+		pthread_mutex_unlock(&top_lock);
 
 		printf("Write signalled\n");
 		top_pos = 0;
@@ -473,8 +472,10 @@ int main(int argc, char **argv)
 			goto clean_up;
 		}
 
+		pthread_mutex_lock(&top_lock);
 		while (top_req_done != 2)
 			pthread_cond_wait(&top_cond, &top_lock);
+		pthread_mutex_unlock(&top_lock);
 /*
 		printf("data_w %04x, %04x, %04x\n", *(int*)data_w,
 		       *(int*)(data_w + 512), *(int*)(data_w + 1024));
@@ -492,7 +493,6 @@ clean_up:
 		free(data_r);
 	}
 
-	pthread_mutex_unlock(&top_lock);
 	printf("no more requests\n");
 	fflush(NULL);
 	test_driver->remove(&ftl_dev);

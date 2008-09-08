@@ -137,14 +137,18 @@ static void mtdx_block_end_request(struct mtdx_request *req, int error,
 
 	spin_unlock_irqrestore(&mbd->q_lock, flags);
 }
-
+int pxx_cnt = 0;
 static struct mtdx_request *mtdx_block_get_request(struct mtdx_dev *mdev)
 {
 	struct mtdx_block_data *mbd = mtdx_get_drvdata(mdev);
 	struct mtdx_request *rv = NULL;
 	sector_t t_sec;
 	unsigned int flags;
-
+	if (pxx_cnt)
+		return NULL;
+	
+	pxx_cnt++;
+	
 	spin_lock_irqsave(&mbd->q_lock, flags);
 try_again:
 	while (mbd->chunk) {

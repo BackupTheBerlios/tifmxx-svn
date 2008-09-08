@@ -894,7 +894,7 @@ static int mspro_block_switch_interface(struct memstick_dev *card)
 	host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_PAR4);
 	printk(KERN_INFO "%s: switching to 4-bit parallel mode\n",
 	       card->dev.bus_id);
-
+/*
 	if (msb->caps & MEMSTICK_CAP_PAR8) {
 		rc = mspro_block_set_interface(card, MEMSTICK_SYS_PAR8);
 
@@ -910,7 +910,7 @@ static int mspro_block_switch_interface(struct memstick_dev *card)
 			       "%s: could not switch to 8-bit mode, error %d\n",
 			       card->dev.bus_id, rc);
 	}
-
+*/
 	card->next_request = h_mspro_block_req_init;
 	msb->mrq_handler = h_mspro_block_default;
 	memstick_init_req(&card->current_mrq, MS_TPC_GET_INT, NULL, 1);
@@ -1119,7 +1119,7 @@ static int mspro_block_init_card(struct memstick_dev *card)
 
 	msb->caps = host->caps;
 
-	msleep(200);
+	msleep(50);
 	rc = mspro_block_wait_for_ced(card);
 	if (rc)
 		return rc;
