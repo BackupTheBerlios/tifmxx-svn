@@ -878,6 +878,7 @@ static int mspro_block_switch_interface(struct memstick_dev *card)
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
 	int rc = 0;
 
+try_again:
 	if (msb->caps & MEMSTICK_CAP_PAR4)
 		rc = mspro_block_set_interface(card, MEMSTICK_SYS_PAR4);
 	else
@@ -931,6 +932,18 @@ static int mspro_block_switch_interface(struct memstick_dev *card)
 		rc = memstick_set_rw_addr(card);
 		if (!rc)
 			rc = mspro_block_set_interface(card, msb->system);
+
+		if (!rc) {
+			msleep(150);
+			rc = mspro_block_wait_for_ced(card);
+			if (rc)
+				return rc;
+
+			if (msb->caps & MEMSTICK_CAP_PAR8) {
+				msb->caps &= ~MEMSTICK_CAP_PAR8;
+				goto try_again;
+			}
+		}
 	}
 	return rc;
 }
@@ -1126,11 +1139,6 @@ static int mspro_block_init_card(struct memstick_dev *card)
 		return rc;
 
 	rc = mspro_block_switch_interface(card);
-	if (rc)
-		return rc;
-
-	msleep(150);
-	rc = mspro_block_wait_for_ced(card);
 	if (rc)
 		return rc;
 
