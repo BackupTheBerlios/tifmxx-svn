@@ -1,13 +1,14 @@
 #include "../mtdx_common.h"
 #include <pthread.h>
 #include <linux/module.h>
+#include <linux/wait.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 struct mtdx_driver *test_driver;
 
 pthread_mutex_t req_lock = PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP;
-pthread_cond_t next_req = PTHREAD_COND_INITIALIZER;
+wait_queue_head_t next_req_wq;
 struct mtdx_dev *btm_req_dev = NULL;
 
 struct btm_oob {
@@ -81,6 +82,7 @@ int btm_trans_oob(struct mtdx_request *req, int dir)
 	}
 	return 0;
 }
+
 unsigned int xcnt = 20;
 void *request_thread(void *data)
 {
@@ -90,10 +92,13 @@ void *request_thread(void *data)
 	int rc;
 
 	printf("rt: thread created\n");
-	pthread_mutex_lock(&req_lock);
 	while (1) {
-		while (!btm_req_dev)
-			pthread_cond_wait(&next_req, &req_lock);
+		wait_event_interruptible(next_req_wq, btm_req_dev != NULL);
+		pthread_mutex_lock(&req_lock);
+		if (!btm_req_dev) {
+			pthread_mutex_unlock(&req_lock);
+			continue;
+		}
 
 		printf("rt: got request dev\n");
 		while ((req = btm_req_dev->get_request(btm_req_dev))) {
@@ -206,9 +211,9 @@ void *request_thread(void *data)
 		}
 		btm_req_dev = NULL;
 		printf("rt: x1\n");
+		pthread_mutex_unlock(&req_lock);
 	}
 	printf("rt: x2\n");
-	pthread_mutex_unlock(&req_lock);
 }
 
 int btm_new_req(struct mtdx_dev *this_dev, struct mtdx_dev *req_dev)
@@ -220,9 +225,9 @@ int btm_new_req(struct mtdx_dev *this_dev, struct mtdx_dev *req_dev)
 		return -EBUSY;
 	}
 	btm_req_dev = req_dev;
-	printf("request set\n");
-	pthread_cond_signal(&next_req);
 	pthread_mutex_unlock(&req_lock);
+	printf("request set\n");
+	wake_up(&next_req_wq);
 }
 
 int btm_oob_to_info(struct mtdx_dev *this_dev, struct mtdx_page_info *p_info,
@@ -303,7 +308,7 @@ char *top_data_buf;
 unsigned int top_pos;
 unsigned int top_size;
 pthread_mutex_t top_lock = PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP;
-pthread_cond_t top_cond = PTHREAD_COND_INITIALIZER;
+wait_queue_head_t top_cond_wq;
 unsigned int top_req_done = 0;
 
 static int top_get_data_buf_sg(struct mtdx_request *req,
@@ -330,7 +335,7 @@ static void top_end_request(struct mtdx_request *req, int error,
 		exit(1);
 	}
 	top_req_done = 2;
-	pthread_cond_signal(&top_cond);
+	wake_up(&top_cond_wq);
 }
 
 static struct mtdx_request *top_get_request(struct mtdx_dev *mdev);
@@ -399,6 +404,9 @@ int main(int argc, char **argv)
 	pthread_t req_t;
 	int rc;
 
+	init_waitqueue_head(&next_req_wq);
+	init_waitqueue_head(&top_cond_wq);
+
 	rc = pthread_create(&req_t, NULL, request_thread, NULL);
 	if (rc)
 		return rc;
@@ -451,10 +459,7 @@ int main(int argc, char **argv)
 			goto clean_up;
 		}
 
-		pthread_mutex_lock(&top_lock);
-		while (top_req_done != 2)
-			pthread_cond_wait(&top_cond, &top_lock);
-		pthread_mutex_unlock(&top_lock);
+		wait_event_interruptible(top_cond_wq, top_req_done >= 2);
 
 		printf("Write signalled\n");
 		top_pos = 0;
@@ -472,10 +477,7 @@ int main(int argc, char **argv)
 			goto clean_up;
 		}
 
-		pthread_mutex_lock(&top_lock);
-		while (top_req_done != 2)
-			pthread_cond_wait(&top_cond, &top_lock);
-		pthread_mutex_unlock(&top_lock);
+		wait_event_interruptible(top_cond_wq, top_req_done >= 2);
 /*
 		printf("data_w %04x, %04x, %04x\n", *(int*)data_w,
 		       *(int*)(data_w + 512), *(int*)(data_w + 1024));

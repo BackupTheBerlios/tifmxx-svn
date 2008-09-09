@@ -140,7 +140,8 @@ struct jmb38x_ms {
 #define PAD_PU_PD_ON_MS_SOCK1 0x0f0f0000
 
 #define CLOCK_CONTROL_40MHZ   0x00000001
-#define CLOCK_CONTROL_50MHZ   0x00000002
+//#define CLOCK_CONTROL_50MHZ   0x00000002
+#define CLOCK_CONTROL_50MHZ   0x0000000a
 #define CLOCK_CONTROL_60MHZ   0x00000008
 #define CLOCK_CONTROL_62_5MHZ 0x0000000c
 #define CLOCK_CONTROL_OFF     0x00000000
@@ -741,12 +742,11 @@ static int jmb38x_ms_set_param(struct memstick_host *msh,
 		} else
 			return -EINVAL;
 
+		writel(host_ctl, host->addr + HOST_CONTROL);
+		writel(clock_ctl, host->addr + CLOCK_CONTROL);
 		pci_write_config_dword(host->chip->pdev,
 				       PCI_CTL_CLOCK_DLY_ADDR,
 				       clock_delay);
-		writel(clock_ctl, host->addr + CLOCK_CONTROL);
-		writel(host_ctl, host->addr + HOST_CONTROL);
-
 		break;
 	};
 	return 0;

@@ -24,6 +24,8 @@ typedef int gfp_t;
 
 void msleep(unsigned int msecs);
 
+#define msleep_interruptible msleep
+
 void kfree(const void *);
 void *kzalloc(size_t size, gfp_t flags);
 void *kmalloc(size_t size, gfp_t flags);
