@@ -150,6 +150,7 @@ struct ms_block_data {
 	struct ms_extra_data_register extra[2];
 	unsigned int             extra_pos;
 
+	struct list_head         c_queue;
 	wait_queue_head_t        req_wq;
 	struct mtdx_dev          *req_dev;
 	struct mtdx_request      *req_in;
@@ -563,18 +564,6 @@ static void ms_block_reg_addr_set(struct memstick_dev *card,
 	memcpy(&card->reg_addr, addr, sizeof(struct ms_register_addr));
 }
 
-static int ms_block_wake_next(struct ms_block_data *msb)
-{
-	int rc = 0;
-	unsigned long flags;
-
-	spin_lock_irqsave(&msb->lock, flags);
-	if (!msb->f_thread && (!msb->active || !(msb->stopped || msb->req_dev)))
-		rc = 1;
-	spin_unlock_irqrestore(&msb->lock, flags);
-	return rc;
-}
-
 static int h_ms_block_internal_req_init(struct memstick_dev *card,
 					struct memstick_request **mrq)
 {
@@ -684,6 +673,23 @@ static ssize_t ms_block_format_show(struct device *dev,
 	dev_dbg(&msb->card->dev, "format show end\n");
 }
 
+int ms_block_wake_next(struct ms_block_data *msb)
+{
+	unsigned long flags;
+	int rc = 0;
+
+	spin_lock_irqsave(&msb->lock, flags);
+	if (!msb->req_dev && !msb->f_thread)
+		rc = 1;
+
+	if (!msb->active)
+		rc = 1;
+	else if (msb->stopped)
+		rc = 0;
+	spin_unlock_irqrestore(&msb->lock, flags);
+	return rc;
+}
+
 static ssize_t ms_block_format_store(struct device *dev,
 				     struct device_attribute *attr,
 				     const char *buf, size_t count)
@@ -727,6 +733,36 @@ static ssize_t ms_block_format_store(struct device *dev,
 }
 
 static DEVICE_ATTR(format, 0644, ms_block_format_show, ms_block_format_store);
+
+static void ms_block_release_req_dev(struct ms_block_data *msb)
+{
+	if (msb->req_dev) {
+		list_del(&msb->req_dev->queue_node);
+		INIT_LIST_HEAD(&msb->req_dev->queue_node);
+		msb->req_dev = NULL;
+	}
+}
+
+static void ms_block_set_req_in(struct ms_block_data *msb)
+{
+	while (!msb->req_in) {
+		if (msb->req_dev)
+			msb->req_in = msb->req_dev->get_request(msb->req_dev);
+
+		if (!msb->req_in) {
+			ms_block_release_req_dev(msb);
+			if (!list_empty(&msb->c_queue))
+				msb->req_dev = mtdx_queue_entry(msb->c_queue
+								    .next);
+		 	else {
+				wake_up_all(&msb->req_wq);
+				break;
+			}
+		}
+	}
+
+}
+
 /*
  * All sequences start from CLEAR_BUF command and optional SET_RW_REG_ADDR tpc.
  *
@@ -818,11 +854,13 @@ static int h_ms_block_req_init(struct memstick_dev *card,
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	int c_cmd = MS_CMD_CLEAR_BUF;
+	unsigned long flags;
 
 	*mrq = &card->current_mrq;
 
-	if (!msb->req_in && msb->req_dev)
-		msb->req_in = msb->req_dev->get_request(msb->req_dev);
+	spin_lock_irqsave(&msb->lock, flags);
+	ms_block_set_req_in(msb);
+	spin_unlock_irqrestore(&msb->lock, flags);
 
 	if (!msb->req_in) {
 		*mrq = NULL;
@@ -1542,7 +1580,7 @@ static int ms_block_complete_req(struct memstick_dev *card, int error)
 		msb->req_in = NULL;
 		card->next_request = h_ms_block_req_init;
 
-		msb->req_in = msb->req_dev->get_request(msb->req_dev);
+		ms_block_set_req_in(msb);
 
 		if (!msb->req_in)
 			error = -EAGAIN;
@@ -1551,14 +1589,8 @@ static int ms_block_complete_req(struct memstick_dev *card, int error)
 
 	if (!error)
 		memstick_new_req(card->host);
-	else {
-		if (msb->req_dev) {
-			msb->req_dev = NULL;
-			wake_up(&msb->req_wq);
-		}
-
+	else
 		complete_all(&card->mrq_complete);
-	}
 
 	spin_unlock_irqrestore(&msb->lock, flags);
 	return error;
@@ -2002,10 +2034,12 @@ static void ms_block_start(struct memstick_dev *card)
 		goto out;
 
 	msb->stopped = 0;
-	if (!msb->active)
+	if (!msb->active || list_empty(&msb->c_queue))
 		wake_up_all(&msb->req_wq);
-	else if (msb->req_dev)
-		wake_up(&msb->req_wq);
+	else if (!list_empty(&msb->c_queue)) {
+		card->next_request = h_ms_block_req_init;
+		memstick_new_req(card->host);
+	}
 out:
 	spin_unlock_irqrestore(&msb->lock, flags);
 }
@@ -2023,32 +2057,29 @@ static int ms_block_mtdx_new_request(struct mtdx_dev *this_dev,
 						 struct memstick_dev,
 						 dev);
 	struct ms_block_data *msb = memstick_get_drvdata(card);
-	int rc = 0;
+	int rc = 0, restart = 0;
 	unsigned long flags;
 
 	spin_lock_irqsave(&msb->lock, flags);
-	while (1) {
-		if (!msb->active) {
-			rc = -ENODEV;
-			break;
-		}
-
-		if (!(msb->f_thread || msb->stopped || msb->req_dev)) {
-			msb->req_dev = req_dev;
-			break;
-		} else {
-			spin_unlock_irqrestore(&msb->lock, flags);
-			rc = wait_event_interruptible(msb->req_wq,
-						      ms_block_wake_next(msb));
-			spin_lock_irqsave(&msb->lock, flags);
-		}
+	if (!msb->active) {
+		rc = -ENODEV;
+		goto out;
 	}
 
-	if (!rc) {
+	if (list_empty(&msb->c_queue))
+		restart = 1;
+
+	if (msb->f_thread || msb->stopped)
+		restart = 0;
+
+	rc = mtdx_append_dev_list(&msb->c_queue, req_dev);
+
+	if (!rc && restart) {
 		card->next_request = h_ms_block_req_init;
 		memstick_new_req(card->host);
 	}
 
+out:
 	spin_unlock_irqrestore(&msb->lock, flags);
 	return rc;
 }
@@ -2319,6 +2350,7 @@ static int ms_block_probe(struct memstick_dev *card)
 	memstick_set_drvdata(card, msb);
 	msb->card = card;
 	spin_lock_init(&msb->lock);
+	INIT_LIST_HEAD(&msb->c_queue);
 	init_waitqueue_head(&msb->req_wq);
 
 	dev_dbg(&card->dev, "alloc dev\n");
@@ -2394,7 +2426,6 @@ static void ms_block_remove(struct memstick_dev *card)
 
 	spin_lock_irqsave(&msb->lock, flags);
 	msb->active = 0;
-	wake_up_all(&msb->req_wq);
 	f_thread = msb->f_thread;
 	msb->f_thread = NULL;
 	spin_unlock_irqrestore(&msb->lock, flags);
@@ -2402,8 +2433,16 @@ static void ms_block_remove(struct memstick_dev *card)
 	if (f_thread)
 		kthread_stop(f_thread);
 
-	while (waitqueue_active(&msb->req_wq))
+	while (1) {
+		spin_lock_irqsave(&msb->lock, flags);
+		if (list_empty(&msb->c_queue)
+		    && list_empty(&msb->mdev->queue_node))
+			break;
+
+		spin_unlock_irqrestore(&msb->lock, flags);
 		msleep_interruptible(1);
+	};
+	spin_unlock_irqrestore(&msb->lock, flags);
 
 	dev_dbg(&card->dev, "mtdx drop\n");
 	mtdx_drop_children(msb->mdev);
@@ -2449,6 +2488,7 @@ static int ms_block_resume(struct memstick_dev *card)
 
 	new_msb->card = card;
 	spin_lock_init(&new_msb->lock);
+	INIT_LIST_HEAD(&new_msb->c_queue);
 	init_waitqueue_head(&new_msb->req_wq);
 
 	mutex_lock(&host->lock);

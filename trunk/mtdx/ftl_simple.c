@@ -33,6 +33,7 @@ typedef int (req_fn_t)(struct ftl_simple_data *fsd);
 
 struct ftl_simple_data {
 	spinlock_t            lock;
+	struct list_head      c_queue;
 
 	/* Device geometry */
 	struct mtdx_dev_geo   geo;
@@ -41,7 +42,6 @@ struct ftl_simple_data {
 	unsigned int          block_size;
 
 	/* Incoming request */
-	wait_queue_head_t     req_wq;
 	struct mtdx_dev       *req_dev;
 	struct mtdx_request   *req_in;
 	struct scatterlist    req_sg;
@@ -131,6 +131,15 @@ static void ftl_simple_push_req_fn(struct ftl_simple_data *fsd,
 	BUG_ON(fsd->req_fn_pos >= FTL_SIMPLE_MAX_REQ_FN);
 
 	fsd->req_fn[fsd->req_fn_pos++] = req_fn;
+}
+
+static void ftl_simple_release_req_dev(struct ftl_simple_data *fsd)
+{
+	if (fsd->req_dev) {
+		list_del(&fsd->req_dev->queue_node);
+		INIT_LIST_HEAD(&fsd->req_dev->queue_node);
+		fsd->req_dev = NULL;
+	}
 }
 
 static int ftl_simple_lookup_block(struct ftl_simple_data *fsd);
@@ -1195,10 +1204,6 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 
 	dev_dbg(&this_dev->dev, "ftl get request\n");
 	spin_lock_irqsave(&fsd->lock, flags);
-	if (!fsd->req_dev) {
-		spin_unlock_irqrestore(&fsd->lock, flags);
-		return NULL;
-	}
 
 	while (1) {
 		rc = 0;
@@ -1235,11 +1240,15 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 			if (fsd->req_dev)
 				fsd->req_in = fsd->req_dev
 						 ->get_request(fsd->req_dev);
-			if (!fsd->req_in) {
-				if (fsd->req_dev) {
-					fsd->req_dev = NULL;
-					wake_up(&fsd->req_wq);
-				}
+			if (fsd->req_in)
+				continue;
+
+			ftl_simple_release_req_dev(fsd);
+			if (!list_empty(&fsd->c_queue))
+				fsd->req_dev = mtdx_queue_entry(fsd->c_queue
+								    .next);
+
+			if (!fsd->req_dev) {
 				if (!rc)
 					rc = -EAGAIN;
 
@@ -1259,17 +1268,6 @@ static int ftl_simple_dummy_new_request(struct mtdx_dev *this_dev,
 	return -ENODEV;
 }
 
-int ftl_simple_wake_next(struct ftl_simple_data *fsd)
-{
-	int rc = 0;
-	unsigned long flags;
-
-	spin_lock_irqsave(&fsd->lock, flags);
-	rc = (fsd->req_dev == NULL);
-	spin_unlock_irqrestore(&fsd->lock, flags);
-	return rc;
-}
-
 static int ftl_simple_new_request(struct mtdx_dev *this_dev,
 				  struct mtdx_dev *req_dev)
 {
@@ -1280,30 +1278,16 @@ static int ftl_simple_new_request(struct mtdx_dev *this_dev,
 	int rc = 0;
 
 	spin_lock_irqsave(&fsd->lock, flags);
-	while (1) {
-		if (!fsd->req_dev) {
-			fsd->req_dev = req_dev;
-			break;
-		}
+	rc = mtdx_append_dev_list(&fsd->c_queue, req_dev);
 
-		spin_unlock_irqrestore(&fsd->lock, flags);
-		rc = wait_event_interruptible(fsd->req_wq,
-					      ftl_simple_wake_next(fsd));
-		if (rc)
-			return rc;
-		spin_lock_irqsave(&fsd->lock, flags);
+	if (!rc) {
+		rc = parent->new_request(parent, this_dev);
+		if (rc) {
+			list_del(&req_dev->queue_node);
+			INIT_LIST_HEAD(&req_dev->queue_node);
+		}
 	}
 	spin_unlock_irqrestore(&fsd->lock, flags);
-
-	rc = parent->new_request(parent, this_dev);
-
-	if (rc) {
-		spin_lock_irqsave(&fsd->lock, flags);
-		fsd->req_dev = NULL;
-		wake_up(&fsd->req_wq);
-		spin_unlock_irqrestore(&fsd->lock, flags);
-	}
-
 	return rc;
 }
 
@@ -1398,7 +1382,7 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 	fsd->block_size = fsd->geo.page_cnt * fsd->geo.page_size;
 
 	spin_lock_init(&fsd->lock);
-	init_waitqueue_head(&fsd->req_wq);
+	INIT_LIST_HEAD(&fsd->c_queue);
 
 	if (fsd->zone_cnt > BITS_PER_LONG) {
 		fsd->valid_zones_ptr = kzalloc(BITS_TO_LONGS(fsd->zone_cnt)
@@ -1524,13 +1508,11 @@ static void ftl_simple_remove(struct mtdx_dev *mdev)
 	mdev->new_request = ftl_simple_dummy_new_request;
 
 	/* Just wait for everybody to go away! */
-	while (waitqueue_active(&fsd->req_wq))
-		msleep_interruptible(1);
-
 	while (1) {
 		spin_lock_irqsave(&fsd->lock, flags);
-		if (!fsd->req_dev)
+		if (list_empty(&fsd->c_queue) && list_empty(&mdev->queue_node))
 			break;
+
 		spin_unlock_irqrestore(&fsd->lock, flags);
 		msleep_interruptible(1);
 	};
