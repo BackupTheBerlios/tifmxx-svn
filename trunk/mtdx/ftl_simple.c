@@ -38,7 +38,8 @@ struct ftl_simple_data {
 	/* Device geometry */
 	struct mtdx_dev_geo   geo;
 	unsigned int          zone_cnt;
-	unsigned int          zone_block_cnt;
+	unsigned int          zone_phy_cnt;
+	unsigned int          zone_log_cnt;
 	unsigned int          block_size;
 
 	/* Incoming request */
@@ -174,7 +175,7 @@ static void ftl_simple_end_resolve(struct ftl_simple_data *fsd, int error,
 	if (!error)
 		error = parent->oob_to_info(parent, &p_info, fsd->oob_buf);
 
-	z_log_block = p_info.log_block & ((1U << fsd->geo.zone_size_log) - 1U);
+	z_log_block = p_info.log_block % fsd->zone_log_cnt;
 
 	if (!error) {
 		if (p_info.status == MTDX_PAGE_SMAPPED)
@@ -230,7 +231,7 @@ static void ftl_simple_end_lookup_block(struct ftl_simple_data *fsd, int error,
 		error = 0;
 	}
 
-	z_log_block = p_info.log_block & ((1U << fsd->geo.zone_size_log) - 1U);
+	z_log_block = p_info.log_block % fsd->zone_log_cnt;
 
 	if (!error) {
 		if (p_info.log_block != MTDX_INVALID_BLOCK)
@@ -342,13 +343,13 @@ static void ftl_simple_clear_useful(struct ftl_simple_data *fsd)
 {
 	unsigned int b_block = fsd->zone << fsd->geo.zone_size_log;
 	unsigned int pos = find_first_bit(fsd->zones[fsd->zone]->useful_blocks,
-					  fsd->zone_block_cnt);
+					  fsd->zone_phy_cnt);
 
-	while (pos < fsd->zone_block_cnt) {
+	while (pos < fsd->zone_phy_cnt) {
 		long_map_erase(fsd->b_map, b_block + pos);
 		clear_bit(pos, fsd->zones[fsd->zone]->useful_blocks);
 		pos = find_next_bit(fsd->zones[fsd->zone]->useful_blocks,
-				    fsd->zone_block_cnt, pos);
+				    fsd->zone_phy_cnt, pos);
 	}
 }
 
@@ -491,8 +492,7 @@ static int ftl_simple_can_merge(struct ftl_simple_data *fsd,
 
 static void ftl_simple_advance(struct ftl_simple_data *fsd)
 {
-	unsigned int z_log_block = fsd->req_out.log_block
-				   & ((1U << fsd->geo.zone_size_log) - 1U);
+	unsigned int z_log_block = fsd->req_out.log_block % fsd->zone_log_cnt;
 	unsigned int z_dst_block = fsd->dst_block
 				   & ((1U << fsd->geo.zone_size_log) - 1U);
 	unsigned long *dst_bmap_ref;
@@ -635,7 +635,7 @@ static int ftl_simple_select_src(struct ftl_simple_data *fsd)
 	fsd->req_out.cmd = MTDX_CMD_SELECT;
 	fsd->req_out.phy_block = fsd->src_block;
 	fsd->req_out.offset = 0;
-	fsd->req_out.length = 0;
+	fsd->req_out.length = fsd->geo.page_size;
 	fsd->sg_length = 0;
 	fsd->end_req_fn = NULL;
 	return 0;
@@ -920,7 +920,7 @@ static void ftl_simple_set_address(struct ftl_simple_data *fsd)
 
 	fsd->req_out.log_block = fsd->req_in->log_block;
 	fsd->req_out.log_block += pos / fsd->block_size;
-	fsd->zone = fsd->req_out.log_block >> fsd->geo.zone_size_log;
+	fsd->zone = fsd->req_out.log_block / fsd->zone_log_cnt;
 	fsd->b_off = pos % fsd->block_size;
 	fsd->b_len = min(fsd->req_in->length - fsd->t_count,
 			 fsd->block_size - fsd->b_off);
@@ -941,8 +941,7 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 		return ftl_simple_setup_zone_scan(fsd);
 
 	dev_dbg(&fsd_dev(fsd), "setup write - zone valid\n");
-	z_log_block = fsd->req_out.log_block
-		      & ((1U << fsd->geo.zone_size_log) - 1U);
+	z_log_block = fsd->req_out.log_block % fsd->zone_log_cnt;
 
 	fsd->src_block = fsd->zones[fsd->zone]->b_table[z_log_block];
 	z_src_block = fsd->src_block & ((1U << fsd->geo.zone_size_log) - 1U);
@@ -1148,8 +1147,7 @@ static int ftl_simple_setup_read(struct ftl_simple_data *fsd)
 	if (!test_bit(fsd->zone, ftl_simple_zone_map(fsd)))
 		return ftl_simple_setup_zone_scan(fsd);
 
-	z_log_block = fsd->req_out.log_block
-		      & ((1U << fsd->geo.zone_size_log) - 1U);
+	z_log_block = fsd->req_out.log_block % fsd->zone_log_cnt;
 
 	fsd->src_block = fsd->zones[fsd->zone]->b_table[z_log_block];
 
@@ -1377,9 +1375,12 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 		memcpy(&fsd->geo, &geo, sizeof(geo));
 	}
 
-	fsd->zone_block_cnt = min(fsd->geo.phy_block_cnt,
-				  1U << fsd->geo.zone_size_log);
+	fsd->zone_phy_cnt = min(fsd->geo.phy_block_cnt,
+				1U << fsd->geo.zone_size_log);
+	fsd->zone_log_cnt = fsd->geo.log_block_cnt / fsd->zone_cnt;
 	fsd->block_size = fsd->geo.page_cnt * fsd->geo.page_size;
+	dev_dbg(&mdev->dev, "zone_cnt %x, zone_phy_cnt %x, zone_log_cnt %x\n",
+		fsd->zone_cnt, fsd->zone_phy_cnt, fsd->zone_log_cnt);
 
 	spin_lock_init(&fsd->lock);
 	INIT_LIST_HEAD(&fsd->c_queue);
@@ -1404,7 +1405,7 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 	parent->get_param(parent, MTDX_PARAM_READ_ONLY, &rc);
 
 	if (!rc) {
-		unsigned int r_cnt = min(fsd->geo.phy_block_cnt
+		unsigned int r_cnt = max(fsd->geo.phy_block_cnt
 					 - fsd->geo.log_block_cnt, 8U);
 
 		if (((parent->id.inp_wmode == MTDX_WMODE_PAGE_PEB)
@@ -1441,7 +1442,7 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 
 	for (rc = 0; rc < fsd->zone_cnt; ++rc) {
 		fsd->zones[rc] = kzalloc(sizeof(struct zone_data)
-					 + (1 << fsd->geo.zone_size_log)
+					 + fsd->zone_log_cnt
 					   * sizeof(unsigned int),
 					 GFP_KERNEL);
 		if (!fsd->zones[rc]) {
@@ -1451,7 +1452,7 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 
 		if (fsd->b_map) {
 			fsd->zones[rc]->useful_blocks
-				= kzalloc(BITS_TO_LONGS(fsd->zone_block_cnt)
+				= kzalloc(BITS_TO_LONGS(fsd->zone_phy_cnt)
 					  * sizeof(unsigned long), GFP_KERNEL);
 			if (!fsd->zones[rc]->useful_blocks) {
 				rc = -ENOMEM;

@@ -278,3 +278,19 @@ out:
 void mtdx_drop_children(struct mtdx_dev *mdev)
 {
 }
+
+int mtdx_append_dev_list(struct list_head *head, struct mtdx_dev *r_dev)
+{
+	struct list_head *pos;
+
+	__list_for_each(pos, head) {
+		if (mtdx_queue_entry(pos) == r_dev)
+			return 0;
+	}
+
+	if (!list_empty(&r_dev->queue_node))
+		return -EBUSY;
+
+	list_add_tail(&r_dev->queue_node, head);
+	return 0;
+}

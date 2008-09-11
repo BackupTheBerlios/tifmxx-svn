@@ -18,7 +18,7 @@ struct btm_oob {
 
 struct mtdx_dev_geo btm_geo = {
 	.zone_size_log = 4,
-	.log_block_cnt = 2000,
+	.log_block_cnt = 1792,
 	.phy_block_cnt = 2048,
 	.page_cnt = 4,
 	.page_size = 512,
@@ -209,6 +209,7 @@ void *request_thread(void *data)
 				btm_req_dev->end_request(req, -EINVAL, 0);
 			}
 		}
+		INIT_LIST_HEAD(&btm_req_dev->queue_node);
 		btm_req_dev = NULL;
 		printf("rt: x1\n");
 		pthread_mutex_unlock(&req_lock);
@@ -406,6 +407,8 @@ int main(int argc, char **argv)
 
 	init_waitqueue_head(&next_req_wq);
 	init_waitqueue_head(&top_cond_wq);
+	INIT_LIST_HEAD(&top_dev.queue_node);
+	INIT_LIST_HEAD(&btm_dev.queue_node);
 
 	rc = pthread_create(&req_t, NULL, request_thread, NULL);
 	if (rc)
@@ -425,7 +428,7 @@ int main(int argc, char **argv)
 	init_module();
 	test_driver->probe(&ftl_dev);
 
-	for (t_cnt = 3; t_cnt; --t_cnt) {
+	for (t_cnt = 2; t_cnt; --t_cnt) {
 		do {
 			off = random32() % (btm_geo.log_block_cnt
 					    * btm_geo.page_cnt);

@@ -2,6 +2,7 @@
 #define _LINUX_LIST_H
 
 #include <stddef.h>
+#include <linux/module.h>
 
 #define prefetch(x) __builtin_prefetch(x)
 #define LIST_POISON1  ((void *) 0x00100100)
