@@ -20,6 +20,8 @@
 #define DRIVER_NAME "ftl_simple"
 #define fsd_dev(fsd) (fsd->req_out.src_dev->dev)
 
+#define FUNC_START_DBG(fsd) dev_dbg(&fsd_dev(fsd), "%s begin\n", __func__)
+
 struct zone_data {
 	unsigned long *useful_blocks;
 	unsigned int  b_table[];
@@ -39,7 +41,6 @@ struct ftl_simple_data {
 	struct mtdx_dev_geo   geo;
 	unsigned int          zone_cnt;
 	unsigned int          zone_phy_cnt;
-	unsigned int          zone_log_cnt;
 	unsigned int          block_size;
 
 	/* Incoming request */
@@ -62,6 +63,7 @@ struct ftl_simple_data {
 
 	/* Current request address */
 	unsigned int          zone;
+	unsigned int          z_log_block;
 	unsigned int          src_block;
 	unsigned int          dst_block;
 	unsigned int          b_off;
@@ -149,7 +151,7 @@ static int ftl_simple_setup_request(struct ftl_simple_data *fsd);
 static void ftl_simple_end_abort(struct ftl_simple_data *fsd, int error,
 				 int free_dst)
 {
-	dev_dbg(&fsd_dev(fsd), "abort request\n");
+	FUNC_START_DBG(fsd);
 	if (free_dst && (fsd->dst_block != fsd->src_block)) {
 		fsd->b_alloc->put_peb(fsd->b_alloc, fsd->dst_block,
 				      fsd->clean_dst == 1);
@@ -167,7 +169,7 @@ static void ftl_simple_end_resolve(struct ftl_simple_data *fsd, int error,
 	struct mtdx_dev *parent = container_of(fsd->req_out.src_dev->dev.parent,
 					       struct mtdx_dev, dev);
 	unsigned int max_block = (fsd->zone + 1) << fsd->geo.zone_size_log;
-	unsigned int z_log_block;
+	unsigned int zone, z_log_block;
 	struct mtdx_page_info p_info = {};
 
 	p_info.phy_block = fsd->conflict_pos;
@@ -175,7 +177,12 @@ static void ftl_simple_end_resolve(struct ftl_simple_data *fsd, int error,
 	if (!error)
 		error = parent->oob_to_info(parent, &p_info, fsd->oob_buf);
 
-	z_log_block = p_info.log_block % fsd->zone_log_cnt;
+	if (!error) {
+		zone = parent->log_to_zone(parent, p_info.log_block,
+					   &z_log_block);
+		if (zone != fsd->zone)
+			error = -ERANGE;
+	}
 
 	if (!error) {
 		if (p_info.status == MTDX_PAGE_SMAPPED)
@@ -217,7 +224,7 @@ static void ftl_simple_end_lookup_block(struct ftl_simple_data *fsd, int error,
 	struct mtdx_dev *parent = container_of(fsd->req_out.src_dev->dev.parent,
 					       struct mtdx_dev, dev);
 	unsigned int max_block = (fsd->zone + 1) << fsd->geo.zone_size_log;
-	unsigned int z_log_block;
+	unsigned int zone, z_log_block;
 	struct mtdx_page_info p_info = {};
 
 	p_info.phy_block = fsd->zone_scan_pos;
@@ -231,7 +238,11 @@ static void ftl_simple_end_lookup_block(struct ftl_simple_data *fsd, int error,
 		error = 0;
 	}
 
-	z_log_block = p_info.log_block % fsd->zone_log_cnt;
+	zone = parent->log_to_zone(parent, p_info.log_block, &z_log_block);
+	if (zone != fsd->zone) {
+		p_info.log_block = MTDX_INVALID_BLOCK;
+		p_info.status = MTDX_PAGE_UNMAPPED;
+	}
 
 	if (!error) {
 		if (p_info.log_block != MTDX_INVALID_BLOCK)
@@ -492,17 +503,19 @@ static int ftl_simple_can_merge(struct ftl_simple_data *fsd,
 
 static void ftl_simple_advance(struct ftl_simple_data *fsd)
 {
-	unsigned int z_log_block = fsd->req_out.log_block % fsd->zone_log_cnt;
 	unsigned int z_dst_block = fsd->dst_block
 				   & ((1U << fsd->geo.zone_size_log) - 1U);
 	unsigned long *dst_bmap_ref;
 
+	FUNC_START_DBG(fsd);
+
 	fsd->t_count += fsd->b_len;
 	if (fsd->dst_block != fsd->src_block)
-		fsd->zones[fsd->zone]->b_table[z_log_block] = fsd->dst_block;
+		fsd->zones[fsd->zone]->b_table[fsd->z_log_block]
+			= fsd->dst_block;
 
 	if (!fsd->src_bmap_ref)
-		return;
+		goto out;
 
 	fsd->tmp_off = fsd->b_off + fsd->b_len;
 
@@ -565,7 +578,9 @@ static void ftl_simple_advance(struct ftl_simple_data *fsd)
 			ftl_simple_drop_useful(fsd, fsd->src_block);
 		}
 	}
-
+out:
+	dev_dbg(&fsd_dev(fsd), "advance out %x, req %x\n", fsd->t_count,
+		fsd->req_in->length);
 	if (fsd->t_count >=  fsd->req_in->length) {
 		mtdx_complete_request(fsd->req_in, 0, fsd->t_count);
 		ftl_simple_pop_all_req_fn(fsd);
@@ -581,6 +596,7 @@ static void ftl_simple_end_invalidate_dst(struct ftl_simple_data *fsd,
 
 static int ftl_simple_invalidate_dst(struct ftl_simple_data *fsd)
 {
+	FUNC_START_DBG(fsd);
 	fsd->req_out.cmd = MTDX_CMD_INVALIDATE;
 	fsd->req_out.phy_block = fsd->dst_block;
 	fsd->req_out.offset = 0;
@@ -599,6 +615,7 @@ static void ftl_simple_end_erase_src(struct ftl_simple_data *fsd, int error,
 
 static int ftl_simple_erase_src(struct ftl_simple_data *fsd)
 {
+	FUNC_START_DBG(fsd);
 	fsd->req_out.cmd = MTDX_CMD_ERASE;
 	fsd->req_out.phy_block = fsd->src_block;
 	fsd->req_out.offset = 0;
@@ -621,6 +638,7 @@ static void ftl_simple_end_erase_dst(struct ftl_simple_data *fsd, int error,
 
 static int ftl_simple_erase_dst(struct ftl_simple_data *fsd)
 {
+	FUNC_START_DBG(fsd);
 	fsd->req_out.cmd = MTDX_CMD_ERASE;
 	fsd->req_out.phy_block = fsd->dst_block;
 	fsd->req_out.offset = 0;
@@ -632,6 +650,7 @@ static int ftl_simple_erase_dst(struct ftl_simple_data *fsd)
 
 static int ftl_simple_select_src(struct ftl_simple_data *fsd)
 {
+	FUNC_START_DBG(fsd);
 	fsd->req_out.cmd = MTDX_CMD_SELECT;
 	fsd->req_out.phy_block = fsd->src_block;
 	fsd->req_out.offset = 0;
@@ -655,6 +674,7 @@ static void ftl_simple_end_merge_data(struct ftl_simple_data *fsd, int error,
 
 static int ftl_simple_merge_data(struct ftl_simple_data *fsd)
 {
+	FUNC_START_DBG(fsd);
 	fsd->req_out.cmd = MTDX_CMD_WRITE;
 	fsd->req_out.phy_block = fsd->dst_block;
 	fsd->req_out.offset = fsd->b_off;
@@ -679,6 +699,7 @@ static void ftl_simple_end_write_data(struct ftl_simple_data *fsd, int error,
 
 static int ftl_simple_write_data(struct ftl_simple_data *fsd)
 {
+	FUNC_START_DBG(fsd);
 	fsd->req_out.cmd = MTDX_CMD_WRITE;
 	fsd->req_out.phy_block = fsd->dst_block;
 	fsd->req_out.offset = fsd->b_off;
@@ -722,6 +743,7 @@ static void ftl_simple_end_copy_last(struct ftl_simple_data *fsd, int error,
 
 static int ftl_simple_write_last(struct ftl_simple_data *fsd)
 {
+	FUNC_START_DBG(fsd);
 	fsd->tmp_off = fsd->b_off + fsd->b_len;
 	fsd->sg_length = fsd->block_size - fsd->tmp_off;
 
@@ -742,6 +764,7 @@ static int ftl_simple_write_last(struct ftl_simple_data *fsd)
 
 static int ftl_simple_copy_last(struct ftl_simple_data *fsd)
 {
+	FUNC_START_DBG(fsd);
 	fsd->tmp_off = fsd->b_off + fsd->b_len;
 	fsd->sg_length = fsd->block_size - fsd->tmp_off;
 
@@ -797,6 +820,7 @@ static void ftl_simple_end_copy_first(struct ftl_simple_data *fsd, int error,
 
 static int ftl_simple_write_first(struct ftl_simple_data *fsd)
 {
+	FUNC_START_DBG(fsd);
 	if (!fsd->b_off)
 		return -EAGAIN;
 
@@ -822,6 +846,7 @@ static int ftl_simple_write_first(struct ftl_simple_data *fsd)
 
 static int ftl_simple_copy_first(struct ftl_simple_data *fsd)
 {
+	FUNC_START_DBG(fsd);
 	if (!fsd->b_off)
 		return -EAGAIN;
 
@@ -861,6 +886,7 @@ static void ftl_simple_end_read_last(struct ftl_simple_data *fsd, int error,
 
 static int ftl_simple_read_last(struct ftl_simple_data *fsd)
 {
+	FUNC_START_DBG(fsd);
 	fsd->tmp_off = fsd->b_off + fsd->b_len;
 	fsd->sg_length = fsd->block_size - fsd->tmp_off;
 
@@ -897,6 +923,7 @@ static void ftl_simple_end_read_first(struct ftl_simple_data *fsd, int error,
 
 static int ftl_simple_read_first(struct ftl_simple_data *fsd)
 {
+	FUNC_START_DBG(fsd);
 	if (!fsd->b_off)
 		return -EAGAIN;
 
@@ -914,13 +941,15 @@ static int ftl_simple_read_first(struct ftl_simple_data *fsd)
 	return 0;
 }
 
-static void ftl_simple_set_address(struct ftl_simple_data *fsd)
+static void ftl_simple_set_address(struct ftl_simple_data *fsd,
+				   struct mtdx_dev *parent)
 {
 	unsigned int pos = fsd->req_in->offset + fsd->t_count;
 
 	fsd->req_out.log_block = fsd->req_in->log_block;
 	fsd->req_out.log_block += pos / fsd->block_size;
-	fsd->zone = fsd->req_out.log_block / fsd->zone_log_cnt;
+	fsd->zone = parent->log_to_zone(parent, fsd->req_out.log_block,
+					&fsd->z_log_block);
 	fsd->b_off = pos % fsd->block_size;
 	fsd->b_len = min(fsd->req_in->length - fsd->t_count,
 			 fsd->block_size - fsd->b_off);
@@ -931,19 +960,19 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 {
 	struct mtdx_dev *parent = container_of(fsd->req_out.src_dev->dev.parent,
 					       struct mtdx_dev, dev);
-	unsigned int z_log_block, z_src_block;
+	unsigned int z_src_block;
 	struct mtdx_page_info p_info = {};
 	int rc = 0;
 
-	ftl_simple_set_address(fsd);
+	ftl_simple_set_address(fsd, parent);
 
 	if (!test_bit(fsd->zone, ftl_simple_zone_map(fsd)))
 		return ftl_simple_setup_zone_scan(fsd);
 
-	dev_dbg(&fsd_dev(fsd), "setup write - zone valid\n");
-	z_log_block = fsd->req_out.log_block % fsd->zone_log_cnt;
+	dev_dbg(&fsd_dev(fsd), "setup write - log %x, %x:%x\n",
+		fsd->req_out.log_block, fsd->b_off, fsd->b_len);
 
-	fsd->src_block = fsd->zones[fsd->zone]->b_table[z_log_block];
+	fsd->src_block = fsd->zones[fsd->zone]->b_table[fsd->z_log_block];
 	z_src_block = fsd->src_block & ((1U << fsd->geo.zone_size_log) - 1U);
 	fsd->clean_dst = 0;
 	fsd->src_error = 0;
@@ -1128,6 +1157,7 @@ static void ftl_simple_end_read_data(struct ftl_simple_data *fsd, int error,
 
 static int ftl_simple_read_data(struct ftl_simple_data *fsd)
 {
+	FUNC_START_DBG(fsd);
 	fsd->req_out.cmd = MTDX_CMD_READ_DATA;
 	fsd->req_out.phy_block = fsd->src_block;
 	fsd->req_out.offset = fsd->b_off;
@@ -1140,16 +1170,15 @@ static int ftl_simple_read_data(struct ftl_simple_data *fsd)
 
 static int ftl_simple_setup_read(struct ftl_simple_data *fsd)
 {
-	unsigned int z_log_block;
+	struct mtdx_dev *parent = container_of(fsd->req_out.src_dev->dev.parent,
+					       struct mtdx_dev, dev);
 
-	ftl_simple_set_address(fsd);
+	ftl_simple_set_address(fsd, parent);
 
 	if (!test_bit(fsd->zone, ftl_simple_zone_map(fsd)))
 		return ftl_simple_setup_zone_scan(fsd);
 
-	z_log_block = fsd->req_out.log_block % fsd->zone_log_cnt;
-
-	fsd->src_block = fsd->zones[fsd->zone]->b_table[z_log_block];
+	fsd->src_block = fsd->zones[fsd->zone]->b_table[fsd->z_log_block];
 
 	if (fsd->src_block != MTDX_INVALID_BLOCK)
 		ftl_simple_push_req_fn(fsd, ftl_simple_read_data);
@@ -1208,8 +1237,6 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 		dev_dbg(&this_dev->dev, "ftl request loop\n");
 		while ((req_fn = ftl_simple_pop_req_fn(fsd))) {
 			rc = (*req_fn)(fsd);
-			dev_dbg(&this_dev->dev, "req_fn_pos %d, req_fn %p\n",
-				fsd->req_fn_pos, req_fn);
 			if (!rc)
 				goto out;
 			else if (rc == -EAGAIN)
@@ -1377,10 +1404,9 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 
 	fsd->zone_phy_cnt = min(fsd->geo.phy_block_cnt,
 				1U << fsd->geo.zone_size_log);
-	fsd->zone_log_cnt = fsd->geo.log_block_cnt / fsd->zone_cnt;
 	fsd->block_size = fsd->geo.page_cnt * fsd->geo.page_size;
-	dev_dbg(&mdev->dev, "zone_cnt %x, zone_phy_cnt %x, zone_log_cnt %x\n",
-		fsd->zone_cnt, fsd->zone_phy_cnt, fsd->zone_log_cnt);
+	dev_dbg(&mdev->dev, "zone_cnt %x, zone_phy_cnt %x\n",
+		fsd->zone_cnt, fsd->zone_phy_cnt);
 
 	spin_lock_init(&fsd->lock);
 	INIT_LIST_HEAD(&fsd->c_queue);
@@ -1442,7 +1468,7 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 
 	for (rc = 0; rc < fsd->zone_cnt; ++rc) {
 		fsd->zones[rc] = kzalloc(sizeof(struct zone_data)
-					 + fsd->zone_log_cnt
+					 + fsd->zone_phy_cnt
 					   * sizeof(unsigned int),
 					 GFP_KERNEL);
 		if (!fsd->zones[rc]) {

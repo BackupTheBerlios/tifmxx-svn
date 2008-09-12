@@ -172,6 +172,11 @@ struct mtdx_dev {
 					    void *oob,
 					    struct mtdx_page_info *p_info);
 
+	/* Split logical block address into zone and zone offset.      */
+	unsigned int         (*log_to_zone)(struct mtdx_dev *this_dev,
+					    unsigned int log_block,
+					    unsigned int *zone_off);
+
 	/* Get/set device metadata.                                   */
 	int                  (*get_param)(struct mtdx_dev *this_dev,
 					  enum mtdx_param param,

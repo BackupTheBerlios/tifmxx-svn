@@ -2172,6 +2172,24 @@ static int ms_block_mtdx_info_to_oob(struct mtdx_dev *this_dev,
 	return 0;
 }
 
+/* Logical block assignment in MemoryStick is fixed and predefined */
+static unsigned int ms_block_log_to_zone(struct mtdx_dev *this_dev,
+					 unsigned int log_block,
+					 unsigned int *zone_off)
+{
+	if (log_block < 494) {
+		*zone_off = log_block;
+		return 0;
+	} else {
+		unsigned int zone;
+
+		log_block -= 494;
+		zone = log_block / 496;
+		*zone_off = log_block % 496;
+		return zone + 1;
+	}
+}
+
 static int ms_block_mtdx_get_param(struct mtdx_dev *this_dev,
 				   enum mtdx_param param, void *val)
 {
@@ -2366,6 +2384,7 @@ static int ms_block_probe(struct memstick_dev *card)
 
 	msb->mdev->oob_to_info = ms_block_mtdx_oob_to_info;
 	msb->mdev->info_to_oob = ms_block_mtdx_info_to_oob;
+	msb->mdev->log_to_zone = ms_block_log_to_zone;
 	msb->mdev->get_param = ms_block_mtdx_get_param;
 
 	rc = ms_block_init_card(card);

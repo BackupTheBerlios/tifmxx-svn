@@ -83,6 +83,15 @@ int btm_trans_oob(struct mtdx_request *req, int dir)
 	return 0;
 }
 
+unsigned int btm_log_to_zone(struct mtdx_dev *this_dev,
+			     unsigned int log_block,
+			     unsigned int *zone_off)
+{
+	unsigned int b_cnt = 1U << btm_geo.zone_size_log;
+	*zone_off = log_block % b_cnt;
+	return log_block / b_cnt;
+}
+
 unsigned int xcnt = 20;
 void *request_thread(void *data)
 {
@@ -291,6 +300,7 @@ struct mtdx_dev btm_dev = {
 	.new_request = btm_new_req,
 	.oob_to_info = btm_oob_to_info,
 	.info_to_oob = btm_info_to_oob,
+	.log_to_zone = btm_log_to_zone,
 	.get_param = btm_get_param
 };
 
@@ -428,7 +438,7 @@ int main(int argc, char **argv)
 	init_module();
 	test_driver->probe(&ftl_dev);
 
-	for (t_cnt = 2; t_cnt; --t_cnt) {
+	for (t_cnt = 7; t_cnt; --t_cnt) {
 		do {
 			off = random32() % (btm_geo.log_block_cnt
 					    * btm_geo.page_cnt);
