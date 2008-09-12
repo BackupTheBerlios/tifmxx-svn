@@ -2053,10 +2053,7 @@ static int ms_block_mtdx_dummy_new_request(struct mtdx_dev *this_dev,
 static int ms_block_mtdx_new_request(struct mtdx_dev *this_dev,
 				     struct mtdx_dev *req_dev)
 {
-	struct memstick_dev *card = container_of(this_dev->dev.parent,
-						 struct memstick_dev,
-						 dev);
-	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct ms_block_data *msb = mtdx_get_drvdata(this_dev);
 	int rc = 0, restart = 0;
 	unsigned long flags;
 
@@ -2075,8 +2072,8 @@ static int ms_block_mtdx_new_request(struct mtdx_dev *this_dev,
 	rc = mtdx_append_dev_list(&msb->c_queue, req_dev);
 
 	if (!rc && restart) {
-		card->next_request = h_ms_block_req_init;
-		memstick_new_req(card->host);
+		msb->card->next_request = h_ms_block_req_init;
+		memstick_new_req(msb->card->host);
 	}
 
 out:
@@ -2193,10 +2190,7 @@ static unsigned int ms_block_log_to_zone(struct mtdx_dev *this_dev,
 static int ms_block_mtdx_get_param(struct mtdx_dev *this_dev,
 				   enum mtdx_param param, void *val)
 {
-	struct memstick_dev *card = container_of(this_dev->dev.parent,
-						 struct memstick_dev,
-						 dev);
-	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct ms_block_data *msb = mtdx_get_drvdata(this_dev);
 
 	switch (param) {
 	case MTDX_PARAM_GEO: {
@@ -2272,7 +2266,7 @@ static int ms_block_mtdx_get_param(struct mtdx_dev *this_dev,
 	}
 	case MTDX_PARAM_DMA_MASK: {
 		u64 *rv = val;
-		struct memstick_host *host = card->host;
+		struct memstick_host *host = msb->card->host;
 
 		*rv = BLK_BOUNCE_HIGH;
 
@@ -2294,10 +2288,7 @@ static struct mtdx_request *ms_block_get_request(struct mtdx_dev *this_dev)
 static void ms_block_end_request(struct mtdx_request *req, int error,
 				 unsigned int count)
 {
-	struct memstick_dev *card = container_of(req->src_dev->dev.parent,
-						 struct memstick_dev,
-						 dev);
-	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct ms_block_data *msb = mtdx_get_drvdata(req->src_dev);
 
 	msb->trans_err = error;
 	msb->t_count = count;
@@ -2306,12 +2297,9 @@ static void ms_block_end_request(struct mtdx_request *req, int error,
 static int ms_block_get_data_buf_sg(struct mtdx_request *req,
 				    struct scatterlist *sg)
 {
-	struct memstick_dev *card = container_of(req->src_dev->dev.parent,
-						 struct memstick_dev,
-						 dev);
-	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct ms_block_data *msb = mtdx_get_drvdata(req->src_dev);
 
-	dev_dbg(&card->dev, "internal get_data, %x\n", msb->sg_offset);
+	dev_dbg(&msb->card->dev, "internal get_data, %x\n", msb->sg_offset);
 
 	if (msb->sg_offset)
 		return -EAGAIN;
@@ -2321,10 +2309,7 @@ static int ms_block_get_data_buf_sg(struct mtdx_request *req,
 
 static char* ms_block_get_oob_buf(struct mtdx_request *req)
 {
-	struct memstick_dev *card = container_of(req->src_dev->dev.parent,
-						 struct memstick_dev,
-						 dev);
-	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct ms_block_data *msb = mtdx_get_drvdata(req->src_dev);
 
 	if (!msb->extra_pos) {
 		msb->extra_pos++;
@@ -2376,6 +2361,7 @@ static int ms_block_probe(struct memstick_dev *card)
 	if (!msb->mdev)
 		goto err_out_free;
 
+	mtdx_set_drvdata(msb->mdev, msb);
 	msb->mdev->new_request = ms_block_mtdx_new_request;
 	msb->mdev->get_request = ms_block_get_request;
 	msb->mdev->end_request = ms_block_end_request;
