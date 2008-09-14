@@ -90,16 +90,19 @@ struct ms_block_idi {
 	unsigned short track_size;
 	unsigned short sector_size;
 	unsigned short sectors_per_track;
-	unsigned short msw;
-	unsigned short lsw;
+	unsigned short total_sectors_msw;
+	unsigned short total_sectors_lsw;
 	unsigned short reserved1;
 	unsigned char  serial_number[20];
 	unsigned short buffer_type;
 	unsigned short buffer_size_increments;
 	unsigned short long_command_ecc;
-	unsigned char  firmware_version[28];
-	unsigned char  model_name[18];
-	unsigned short reserved2[5];
+	unsigned char  firmware_version[8];
+	unsigned char  model_name[40];
+	unsigned short reserved2;
+	unsigned short dual_word;
+	unsigned short dma_transfer;
+	unsigned short reserved3;
 	unsigned short pio_mode_number;
 	unsigned short dma_mode_number;
 	unsigned short field_validity;
@@ -111,7 +114,7 @@ struct ms_block_idi {
 	unsigned int   addressable_sectors;
 	unsigned short single_word_dma;
 	unsigned short multi_word_dma;
-	unsigned char  reserved3[128];
+	unsigned char  reserved4[128];
 } __attribute__((packed));
 
 struct ms_block_boot_ref {
@@ -456,72 +459,81 @@ static ssize_t ms_block_idi_show(struct device *dev,
 				      + MS_BLOCK_CIS_SIZE);
 
 	rc += scnprintf(buf, PAGE_SIZE, "general_config: %x\n",
-			idi->general_config);
+			le16_to_cpu(idi->general_config));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "logical_cylinders: %x\n",
-			idi->logical_cylinders);
+			le16_to_cpu(idi->logical_cylinders));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "logical_heads: %x\n",
-			idi->logical_heads);
+			le16_to_cpu(idi->logical_heads));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "track_size: %x\n",
-			idi->track_size);
+			le16_to_cpu(idi->track_size));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "sector_size: %x\n",
-			idi->sector_size);
+			le16_to_cpu(idi->sector_size));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "sectors_per_track: %x\n",
-			idi->sectors_per_track);
-	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "msw: %x\n", idi->msw);
-	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "lsw: %x\n", idi->lsw);
+			le16_to_cpu(idi->sectors_per_track));
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "total_sectors_msw: %x\n",
+			le16_to_cpu(idi->total_sectors_msw));
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "total_sectors_lsw: %x\n",
+			le16_to_cpu(idi->total_sectors_lsw));
 
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "serial_number: '");
-	for (cnt = 0; cnt < 20; ++cnt)
-		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%c",
+	for (cnt = 0; cnt < sizeof(idi->serial_number); cnt += 2)
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%c%c",
+				idi->serial_number[cnt + 1],
 				idi->serial_number[cnt]);
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "'\n");
 
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "buffer_type: %x\n",
-			idi->buffer_type);
+			le16_to_cpu(idi->buffer_type));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
 			"buffer_size_increments: %x\n",
-			idi->buffer_size_increments);
+			le16_to_cpu(idi->buffer_size_increments));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "long_command_ecc: %x\n",
-			idi->long_command_ecc);
+			le16_to_cpu(idi->long_command_ecc));
 
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "firmware_version: '");
-	for (cnt = 0; cnt < 28; ++cnt)
-		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%c",
+	for (cnt = 0; cnt < sizeof(idi->firmware_version); cnt += 2)
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%c%c",
+				idi->firmware_version[cnt + 1],
 				idi->firmware_version[cnt]);
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "'\n");
 
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "model_name: '");
-	for (cnt = 0; cnt < 18; ++cnt)
-		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%c",
+	for (cnt = 0; cnt < sizeof(idi->model_name); cnt += 2)
+		rc += scnprintf(buf + rc, PAGE_SIZE - rc, "%c%c",
+				idi->model_name[cnt + 1],
 				idi->model_name[cnt]);
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "'\n");
 
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "dual_word: %x\n",
+			le16_to_cpu(idi->dual_word));
+	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "dma_transfer: %x\n",
+			le16_to_cpu(idi->dma_transfer));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "pio_mode_number: %x\n",
-			idi->pio_mode_number);
+			le16_to_cpu(idi->pio_mode_number));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "dma_mode_number: %x\n",
-			idi->dma_mode_number);
+			le16_to_cpu(idi->dma_mode_number));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "field_validity: %x\n",
-			idi->field_validity);
+			le16_to_cpu(idi->field_validity));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
 			"current_logical_cylinders: %x\n",
-			idi->current_logical_cylinders);
+			le16_to_cpu(idi->current_logical_cylinders));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "current_logical_heads: %x\n",
-			idi->current_logical_heads);
+			le16_to_cpu(idi->current_logical_heads));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
 			"current_sectors_per_track: %x\n",
-			idi->current_sectors_per_track);
+			le16_to_cpu(idi->current_sectors_per_track));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
 			"current_sector_capacity: %x\n",
-			idi->current_sector_capacity);
+			le32_to_cpu(idi->current_sector_capacity));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc,
 			"mutiple_sector_setting: %x\n",
-			idi->mutiple_sector_setting);
+			le16_to_cpu(idi->mutiple_sector_setting));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "addressable_sectors: %x\n",
-			idi->addressable_sectors);
+			le32_to_cpu(idi->addressable_sectors));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "single_word_dma: %x\n",
-			idi->single_word_dma);
+			le16_to_cpu(idi->single_word_dma));
 	rc += scnprintf(buf + rc, PAGE_SIZE - rc, "multi_word_dma: %x\n",
-			idi->multi_word_dma);
+			le16_to_cpu(idi->multi_word_dma));
 
 	return rc;
 }
@@ -599,7 +611,7 @@ static int ms_block_format(void *data)
 	}
 
 	while (!kthread_should_stop()
-	       && (msb->src_block < 10 /*msb->geo.phy_block_cnt*/)) {
+	       && (msb->src_block < msb->geo.phy_block_cnt)) {
 		if (s_block_pos != &s_blocks) {
 			if (list_entry(s_block_pos, struct mtdx_page_info,
 				       node)->phy_block == msb->src_block) {
@@ -1847,10 +1859,12 @@ static int ms_block_get_boot_values(struct ms_block_data *msb,
 			b_ref->cis_idi = b_ref->data + off;
 			idi = (struct ms_block_idi *)(b_ref->cis_idi
 						      + MS_BLOCK_CIS_SIZE);
-			b_ref->hd_geo.heads = idi->current_logical_heads;
-			b_ref->hd_geo.sectors = idi->current_sectors_per_track;
+			b_ref->hd_geo.heads
+				= le16_to_cpu(idi->current_logical_heads);
+			b_ref->hd_geo.sectors
+				= le16_to_cpu(idi->current_sectors_per_track);
 			b_ref->hd_geo.cylinders
-				= idi->current_logical_cylinders;
+				= le16_to_cpu(idi->current_logical_cylinders);
 		}
 	}
 
@@ -1864,6 +1878,24 @@ out:
 	}
 
 	return rc;
+}
+
+static void ms_block_adjust_log_cnt(struct ms_block_data *msb)
+{
+	struct ms_block_idi *idi;
+	unsigned int s_count;
+
+	if (msb->boot_blocks[0].cis_idi)
+		idi = (struct ms_block_idi *)(msb->boot_blocks[0].cis_idi
+            				      + MS_BLOCK_CIS_SIZE);
+	else if (msb->boot_blocks[1].cis_idi)
+		idi = (struct ms_block_idi *)(msb->boot_blocks[1].cis_idi
+            				      + MS_BLOCK_CIS_SIZE);
+	else
+		return;
+
+	s_count = le32_to_cpu(idi->addressable_sectors);
+	msb->geo.log_block_cnt = s_count / msb->geo.page_cnt;
 }
 
 static int ms_block_init_card(struct memstick_dev *card)
@@ -1979,8 +2011,10 @@ static int ms_block_init_card(struct memstick_dev *card)
 		rcx = ms_block_get_boot_values(msb, &msb->boot_blocks[1]);
 
 	dev_dbg(&card->dev, "init_card status 2 %d:%d\n", rc, rcx);
-	if (!rc || !rcx)
+	if (!rc || !rcx) {
+		ms_block_adjust_log_cnt(msb);
 		rc = 0;
+	}
 
 out:
 	kfree(header);
