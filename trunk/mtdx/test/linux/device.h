@@ -33,5 +33,7 @@ static inline void dev_set_drvdata(struct device *dev, void *data)
 
 #define dev_dbg(dev, format, arg...)            \
         printf("%s: "format, (dev)->bus_id, ## arg)
-
+#define dev_emerg(dev, format, arg...)            \
+        printf("%s: "format, (dev)->bus_id, ## arg)
+	
 #endif

@@ -17,9 +17,6 @@
 #include <linux/fs.h>
 #include <linux/delay.h>
 
-#undef dev_dbg
-#define dev_dbg dev_emerg
-
 #define DRIVER_NAME "memstick"
 
 static unsigned int cmd_retries = 3;

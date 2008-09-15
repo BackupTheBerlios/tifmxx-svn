@@ -21,6 +21,9 @@
 #define MTDX_BLOCK_MAX_SEGS  32
 #define MTDX_BLOCK_MAX_PAGES 0x7ffffff
 
+#undef dev_dbg
+#define dev_dbg dev_emerg
+
 static int major;
 module_param(major, int, 0644);
 
@@ -122,6 +125,7 @@ static void mtdx_block_end_request(struct mtdx_request *req, int error,
 	struct mtdx_block_data *mbd = mtdx_get_drvdata(req->src_dev);
 	unsigned int flags;
 
+	dev_dbg(&req->src_dev->dev, "end_request %x, %d\n", count, error);
 	spin_lock_irqsave(&mbd->q_lock, flags);
 
 	if (count)
@@ -137,17 +141,13 @@ static void mtdx_block_end_request(struct mtdx_request *req, int error,
 
 	spin_unlock_irqrestore(&mbd->q_lock, flags);
 }
-int pxx_cnt = 0;
+
 static struct mtdx_request *mtdx_block_get_request(struct mtdx_dev *mdev)
 {
 	struct mtdx_block_data *mbd = mtdx_get_drvdata(mdev);
 	struct mtdx_request *rv = NULL;
 	sector_t t_sec;
 	unsigned int flags;
-	if (pxx_cnt)
-		return NULL;
-	
-	pxx_cnt++;
 	
 	spin_lock_irqsave(&mbd->q_lock, flags);
 try_again:
@@ -162,6 +162,10 @@ try_again:
 			mbd->req_out.log_block = t_sec;
 			mbd->req_out.length = blk_rq_cur_bytes(mbd->block_req);
 			mbd->req_out.phy_block = MTDX_INVALID_BLOCK;
+
+			dev_dbg(&mdev->dev, "req: log_block %x, offset %x, "
+				"length %x\n", mbd->req_out.log_block,
+				mbd->req_out.offset, mbd->req_out.length);
 
 			mbd->req_out.cmd = rq_data_dir(mbd->block_req) == READ
 					   ? MTDX_CMD_READ_DATA
@@ -188,6 +192,7 @@ try_again:
 	goto try_again;
 out:
 	spin_unlock_irqrestore(&mbd->q_lock, flags);
+	dev_dbg(&mdev->dev, "get request %p\n", rv);
 	return rv;
 }
 
@@ -195,6 +200,9 @@ static int mtdx_block_get_data_buf_sg(struct mtdx_request *req,
 				      struct scatterlist *sg)
 {
 	struct mtdx_block_data *mbd = mtdx_get_drvdata(req->src_dev);
+
+	dev_dbg(&req->src_dev->dev, "get_data_buf_sg pos %d of %d\n",
+		mbd->sg_pos, mbd->sg_len);
 
 	if (mbd->sg_pos >= mbd->sg_len)
 		return -EAGAIN;
@@ -226,6 +234,7 @@ static void mtdx_block_submit_req(struct request_queue *q)
 	mbd->chunk = 0;
 	while (1) {
 		rc = parent->new_request(parent, mdev);
+		dev_dbg(&mdev->dev, "parent->new_request %d\n", rc);
 		if (!rc)
 			break;
 		else {
@@ -369,6 +378,7 @@ static int mtdx_block_probe(struct mtdx_dev *mdev)
 	mdev->get_data_buf_sg = mtdx_block_get_data_buf_sg;
 
 	rc = mtdx_block_init_disk(mdev);
+	dev_dbg(&mdev->dev, "init_disk %d\n", rc);
 	if (!rc)
 		return 0;
 

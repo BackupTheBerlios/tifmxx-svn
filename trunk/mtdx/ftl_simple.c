@@ -20,6 +20,9 @@
 #define DRIVER_NAME "ftl_simple"
 #define fsd_dev(fsd) (fsd->req_out.src_dev->dev)
 
+#undef dev_dbg
+#define dev_dbg dev_emerg
+
 #define FUNC_START_DBG(fsd) dev_dbg(&fsd_dev(fsd), "%s begin\n", __func__)
 
 struct zone_data {
@@ -353,7 +356,11 @@ static int ftl_simple_lookup_block(struct ftl_simple_data *fsd)
 static void ftl_simple_clear_useful(struct ftl_simple_data *fsd)
 {
 	unsigned int b_block = fsd->zone << fsd->geo.zone_size_log;
-	unsigned int pos = find_first_bit(fsd->zones[fsd->zone]->useful_blocks,
+	unsigned int pos;
+	dev_dbg(&fsd_dev(fsd), "clear_useful %x, %x, %x, %p\n",
+		fsd->zone, b_block, fsd->zone_phy_cnt, fsd->zones[fsd->zone]);
+
+	/*unsigned int*/ pos = find_first_bit(fsd->zones[fsd->zone]->useful_blocks,
 					  fsd->zone_phy_cnt);
 
 	while (pos < fsd->zone_phy_cnt) {
@@ -1118,7 +1125,10 @@ static int ftl_simple_fill_data(struct ftl_simple_data *fsd)
 	unsigned int length = fsd->b_len;
 	int rc = 0;
 
+	FUNC_START_DBG(fsd);
 	while (length) {
+		dev_dbg(&fsd_dev(fsd), "b_len %x, sg_len %x, sg_off %x\n",
+			length, fsd->req_sg.length, fsd->sg_off);
 		if (fsd->req_sg.length <= fsd->sg_off) {
 			fsd->sg_off = 0;
 			rc = mtdx_get_data_buf_sg(fsd->req_in, &fsd->req_sg);
@@ -1127,6 +1137,8 @@ static int ftl_simple_fill_data(struct ftl_simple_data *fsd)
 		}
 		length -= fill_sg(&fsd->req_sg, &fsd->sg_off,
 				  fsd->geo.fill_value, length);
+		dev_dbg(&fsd_dev(fsd), "fill_sg b_len %x, sg_off %x\n",
+			length, fsd->sg_off);
 	}
 
 	fsd->t_count += fsd->b_len - length;
@@ -1143,6 +1155,7 @@ static int ftl_simple_fill_data(struct ftl_simple_data *fsd)
 static void ftl_simple_end_read_data(struct ftl_simple_data *fsd, int error,
 				     unsigned int count)
 {
+	FUNC_START_DBG(fsd);
 	if (!error && count != fsd->b_len)
 		error = -EIO;
 
@@ -1244,7 +1257,7 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 		}
 
 		dev_dbg(&this_dev->dev, "processing stopped %d, %p\n", rc,
-			req_fn);
+			fsd->req_in);
 		ftl_simple_pop_all_req_fn(fsd);
 
 		if (fsd->req_in) {
@@ -1393,7 +1406,7 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 			zone_cnt = 1;
 
 		fsd = kzalloc(sizeof(struct ftl_simple_data)
-			      + sizeof(struct zone_data) * zone_cnt,
+			      + sizeof(struct zone_data *) * zone_cnt,
 			      GFP_KERNEL);
 		if (!fsd)
 			return -ENOMEM;
@@ -1405,8 +1418,8 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 	fsd->zone_phy_cnt = min(fsd->geo.phy_block_cnt,
 				1U << fsd->geo.zone_size_log);
 	fsd->block_size = fsd->geo.page_cnt * fsd->geo.page_size;
-	dev_dbg(&mdev->dev, "zone_cnt %x, zone_phy_cnt %x\n",
-		fsd->zone_cnt, fsd->zone_phy_cnt);
+	dev_dbg(&mdev->dev, "zone_cnt %x, zone_phy_cnt %x, oob_size %x\n",
+		fsd->zone_cnt, fsd->zone_phy_cnt, fsd->geo.oob_size);
 
 	spin_lock_init(&fsd->lock);
 	INIT_LIST_HEAD(&fsd->c_queue);
