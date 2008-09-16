@@ -183,7 +183,7 @@ static void rand_peb_alloc_free(struct mtdx_peb_alloc *bal)
 }
 
 struct mtdx_peb_alloc *mtdx_rand_peb_alloc(unsigned int zone_size_log,
-					      unsigned int block_cnt)
+					   unsigned int block_cnt)
 {
 	struct rand_peb_alloc *rb = kzalloc(sizeof(struct rand_peb_alloc),
 					    GFP_KERNEL);

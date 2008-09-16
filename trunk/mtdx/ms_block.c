@@ -1577,34 +1577,39 @@ static int h_ms_block_set_param_addr_init(struct memstick_dev *card,
 static int ms_block_complete_req(struct memstick_dev *card, int error)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
+	struct mtdx_request *req_in = NULL;
+	unsigned int t_length = 0;
 	unsigned long flags;
 
 	spin_lock_irqsave(&msb->lock, flags);
 	dev_dbg(&card->dev, "complete %p, %d\n", msb->req_in, error);
+	req_in = msb->req_in;
+	msb->req_in = NULL;
+	t_length = msb->t_count * msb->geo.page_size;
+	spin_unlock_irqrestore(&msb->lock, flags);
 
-	if (msb->req_in) {
-		/* Nothing to do - not really an error */
+	if (req_in) {
 		if (error == -EAGAIN)
 			error = 0;
+		mtdx_complete_request(req_in, error, t_length);
 
-		mtdx_complete_request(msb->req_in, error,
-				      msb->t_count * msb->geo.page_size);
-		msb->req_in = NULL;
-		card->next_request = h_ms_block_req_init;
-
-		ms_block_set_req_in(msb);
-
-		if (!msb->req_in)
-			error = -EAGAIN;
+		error = 0;
+		spin_lock_irqsave(&msb->lock, flags);
+		if (!msb->req_in) {
+			card->next_request = h_ms_block_req_init;
+			ms_block_set_req_in(msb);
+			if (msb->req_in)
+				memstick_new_req(card->host);
+			else
+				error = -EAGAIN;
+		}
+		spin_unlock_irqrestore(&msb->lock, flags);
 	} else if (!error)
 		error = -EAGAIN;
 
-	if (!error)
-		memstick_new_req(card->host);
-	else
+	if (error)
 		complete_all(&card->mrq_complete);
 
-	spin_unlock_irqrestore(&msb->lock, flags);
 	return error;
 }
 

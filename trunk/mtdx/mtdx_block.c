@@ -164,8 +164,10 @@ try_again:
 			mbd->req_out.phy_block = MTDX_INVALID_BLOCK;
 
 			dev_dbg(&mdev->dev, "req: log_block %x, offset %x, "
-				"length %x\n", mbd->req_out.log_block,
-				mbd->req_out.offset, mbd->req_out.length);
+				"length %x, peb_size %x\n",
+				mbd->req_out.log_block,
+				mbd->req_out.offset, mbd->req_out.length,
+				mbd->peb_size);
 
 			mbd->req_out.cmd = rq_data_dir(mbd->block_req) == READ
 					   ? MTDX_CMD_READ_DATA
@@ -200,14 +202,19 @@ static int mtdx_block_get_data_buf_sg(struct mtdx_request *req,
 				      struct scatterlist *sg)
 {
 	struct mtdx_block_data *mbd = mtdx_get_drvdata(req->src_dev);
+	unsigned long flags;
 
+	spin_lock_irqsave(&mbd->q_lock, flags);
 	dev_dbg(&req->src_dev->dev, "get_data_buf_sg pos %d of %d\n",
 		mbd->sg_pos, mbd->sg_len);
 
-	if (mbd->sg_pos >= mbd->sg_len)
+	if (mbd->sg_pos >= mbd->sg_len) {
+		spin_unlock_irqrestore(&mbd->q_lock, flags);
 		return -EAGAIN;
+	}
 
 	memcpy(sg, &mbd->req_sg[mbd->sg_pos++], sizeof(struct scatterlist));
+	spin_unlock_irqrestore(&mbd->q_lock, flags);
 	return 0;
 }
 
@@ -334,6 +341,7 @@ static int mtdx_block_init_disk(struct mtdx_dev *mdev)
 	capacity = mbd->geo.log_block_cnt;
 	capacity *= mbd->geo.page_cnt;
 	capacity *= mbd->geo.page_size;
+	capacity >>= 9;
 
 	set_capacity(mbd->disk, capacity);
 	dev_dbg(&mdev->dev, "capacity set %ld\n", capacity);

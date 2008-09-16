@@ -38,6 +38,7 @@ typedef int (req_fn_t)(struct ftl_simple_data *fsd);
 
 struct ftl_simple_data {
 	spinlock_t            lock;
+	unsigned long         l_flags;
 	struct list_head      c_queue;
 
 	/* Device geometry */
@@ -151,6 +152,19 @@ static void ftl_simple_release_req_dev(struct ftl_simple_data *fsd)
 static int ftl_simple_lookup_block(struct ftl_simple_data *fsd);
 static int ftl_simple_setup_request(struct ftl_simple_data *fsd);
 
+static void ftl_simple_complete_req(struct ftl_simple_data *fsd, int error)
+{
+	unsigned int t_count = fsd->t_count;
+	struct mtdx_request *req_in = fsd->req_in;
+
+	fsd->req_in = NULL;
+	ftl_simple_pop_all_req_fn(fsd);
+
+	spin_unlock_irqrestore(&fsd->lock, fsd->l_flags);
+	mtdx_complete_request(req_in, error, t_count);
+	spin_lock_irqsave(&fsd->lock, fsd->l_flags);
+}
+
 static void ftl_simple_end_abort(struct ftl_simple_data *fsd, int error,
 				 int free_dst)
 {
@@ -161,9 +175,7 @@ static void ftl_simple_end_abort(struct ftl_simple_data *fsd, int error,
 		fsd->dst_block = MTDX_INVALID_BLOCK;
 	}
 
-	mtdx_complete_request(fsd->req_in, error, fsd->t_count);
-	ftl_simple_pop_all_req_fn(fsd);
-	fsd->req_in = NULL;
+	ftl_simple_complete_req(fsd, error);
 }
 
 static void ftl_simple_end_resolve(struct ftl_simple_data *fsd, int error,
@@ -356,11 +368,7 @@ static int ftl_simple_lookup_block(struct ftl_simple_data *fsd)
 static void ftl_simple_clear_useful(struct ftl_simple_data *fsd)
 {
 	unsigned int b_block = fsd->zone << fsd->geo.zone_size_log;
-	unsigned int pos;
-	dev_dbg(&fsd_dev(fsd), "clear_useful %x, %x, %x, %p\n",
-		fsd->zone, b_block, fsd->zone_phy_cnt, fsd->zones[fsd->zone]);
-
-	/*unsigned int*/ pos = find_first_bit(fsd->zones[fsd->zone]->useful_blocks,
+	unsigned int pos = find_first_bit(fsd->zones[fsd->zone]->useful_blocks,
 					  fsd->zone_phy_cnt);
 
 	while (pos < fsd->zone_phy_cnt) {
@@ -442,13 +450,18 @@ static int ftl_simple_get_data_buf_sg(struct mtdx_request *req,
 {
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(req->src_dev);
 
-	if (!fsd->sg_length)
+	spin_lock_irqsave(&fsd->lock, fsd->l_flags);
+
+	if (!fsd->sg_length) {
+		spin_unlock_irqrestore(&fsd->lock, fsd->l_flags);
 		return -EAGAIN;
+	}
 
 	if (fsd->sg_off >= fsd->req_sg.length) {
 		int rc = mtdx_get_data_buf_sg(fsd->req_in, &fsd->req_sg);
 		if (rc) {
 			fsd->sg_length = 0;
+			spin_unlock_irqrestore(&fsd->lock, fsd->l_flags);
 			return rc;
 		}
 		fsd->sg_off = 0;
@@ -460,36 +473,41 @@ static int ftl_simple_get_data_buf_sg(struct mtdx_request *req,
 	fsd->sg_off += sg->length;
 	fsd->sg_length -= sg->length;
 
+	spin_unlock_irqrestore(&fsd->lock, fsd->l_flags);
 	return 0;
 }
 
 static char *ftl_simple_get_oob_buf(struct mtdx_request *req)
 {
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(req->src_dev);
+	char *rv = NULL;
 
+	spin_lock_irqsave(&fsd->lock, fsd->l_flags);
 	dev_dbg(&req->src_dev->dev, "ftl get oob buf\n");
 	if (!fsd->oob_pos) {
 		fsd->oob_pos += fsd->geo.oob_size;
-		return fsd->oob_buf;
+		rv = fsd->oob_buf;
 	} else
-		return &fsd->oob_buf[fsd->oob_pos];
+		rv = &fsd->oob_buf[fsd->oob_pos];
+
+	spin_unlock_irqrestore(&fsd->lock, fsd->l_flags);
+	return rv;
 }
 
 static int ftl_simple_get_tmp_buf_sg(struct mtdx_request *req,
 				     struct scatterlist *sg)
 {
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(req->src_dev);
-	unsigned long flags;
 	int rc = 0;
 
-	spin_lock_irqsave(&fsd->lock, flags);
+	spin_lock_irqsave(&fsd->lock, fsd->l_flags);
 	if (fsd->sg_length) {
 		sg_set_buf(sg, fsd->block_buf + fsd->tmp_off, fsd->sg_length);
 		fsd->sg_length = 0;
 	} else
 		rc = -EAGAIN;
 
-	spin_unlock_irqrestore(&fsd->lock, flags);
+	spin_unlock_irqrestore(&fsd->lock, fsd->l_flags);
 	return rc;
 }
 
@@ -588,11 +606,8 @@ static void ftl_simple_advance(struct ftl_simple_data *fsd)
 out:
 	dev_dbg(&fsd_dev(fsd), "advance out %x, req %x\n", fsd->t_count,
 		fsd->req_in->length);
-	if (fsd->t_count >=  fsd->req_in->length) {
-		mtdx_complete_request(fsd->req_in, 0, fsd->t_count);
-		ftl_simple_pop_all_req_fn(fsd);
-		fsd->req_in = NULL;
-	}
+	if (fsd->t_count >=  fsd->req_in->length)
+		ftl_simple_complete_req(fsd, 0);
 }
 
 static void ftl_simple_end_invalidate_dst(struct ftl_simple_data *fsd,
@@ -1143,11 +1158,8 @@ static int ftl_simple_fill_data(struct ftl_simple_data *fsd)
 
 	fsd->t_count += fsd->b_len - length;
 
-	if (rc || fsd->t_count >= fsd->req_in->length) {
-		mtdx_complete_request(fsd->req_in, rc, fsd->t_count);
-		ftl_simple_pop_all_req_fn(fsd);
-		fsd->req_in = NULL;
-	}
+	if (rc || fsd->t_count >= fsd->req_in->length)
+		ftl_simple_complete_req(fsd, rc);
 
 	return rc ? rc : -EAGAIN;
 }
@@ -1161,11 +1173,8 @@ static void ftl_simple_end_read_data(struct ftl_simple_data *fsd, int error,
 
 	fsd->t_count += count;
 
-	if (error || (fsd->t_count >= fsd->req_in->length)) {
-		mtdx_complete_request(fsd->req_in, error, fsd->t_count);
-		ftl_simple_pop_all_req_fn(fsd);
-		fsd->req_in = NULL;
-	}
+	if (error || (fsd->t_count >= fsd->req_in->length))
+		ftl_simple_complete_req(fsd, error);
 }
 
 static int ftl_simple_read_data(struct ftl_simple_data *fsd)
@@ -1205,12 +1214,11 @@ static void ftl_simple_end_request(struct mtdx_request *req, int error,
 				   unsigned int count)
 {
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(req->src_dev);
-	unsigned long flags;
 
-	spin_lock_irqsave(&fsd->lock, flags);
+	spin_lock_irqsave(&fsd->lock, fsd->l_flags);
 	if (fsd->end_req_fn)
 		fsd->end_req_fn(fsd, error, count);
-	spin_unlock_irqrestore(&fsd->lock, flags);
+	spin_unlock_irqrestore(&fsd->lock, fsd->l_flags);
 }
 
 static int ftl_simple_setup_request(struct ftl_simple_data *fsd)
@@ -1227,11 +1235,6 @@ static int ftl_simple_setup_request(struct ftl_simple_data *fsd)
 	} else
 		rc = -EINVAL;
 
-	if (rc) {
-		mtdx_complete_request(fsd->req_in, rc, fsd->t_count);
-		ftl_simple_pop_all_req_fn(fsd);
-		fsd->req_in = NULL;
-	}
 	return rc;
 }
 
@@ -1240,10 +1243,9 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(this_dev);
 	req_fn_t *req_fn;
 	int rc;
-	unsigned long flags;
 
 	dev_dbg(&this_dev->dev, "ftl get request\n");
-	spin_lock_irqsave(&fsd->lock, flags);
+	spin_lock_irqsave(&fsd->lock, fsd->l_flags);
 
 	while (1) {
 		rc = 0;
@@ -1261,13 +1263,12 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 		ftl_simple_pop_all_req_fn(fsd);
 
 		if (fsd->req_in) {
-			if (rc) {
-				mtdx_complete_request(fsd->req_in,
-						      rc == -EAGAIN ? 0 : rc,
-						      fsd->t_count);
-				fsd->req_in = NULL;
-			} else
+			if (!rc)
 				rc = ftl_simple_setup_request(fsd);
+
+			if (rc)
+				ftl_simple_complete_req(fsd,
+							rc == -EAGAIN ? 0 : rc);
 		}
 
 		if (!fsd->req_in) {
@@ -1295,7 +1296,7 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 		}
 	}
 out:
-	spin_unlock_irqrestore(&fsd->lock, flags);
+	spin_unlock_irqrestore(&fsd->lock, fsd->l_flags);
 
 	return !rc ? &fsd->req_out : NULL;
 }
@@ -1312,10 +1313,9 @@ static int ftl_simple_new_request(struct mtdx_dev *this_dev,
 	struct mtdx_dev *parent = container_of(this_dev->dev.parent,
 					       struct mtdx_dev, dev);
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(this_dev);
-	unsigned long flags;
 	int rc = 0;
 
-	spin_lock_irqsave(&fsd->lock, flags);
+	spin_lock_irqsave(&fsd->lock, fsd->l_flags);
 	rc = mtdx_append_dev_list(&fsd->c_queue, req_dev);
 
 	if (!rc) {
@@ -1325,7 +1325,7 @@ static int ftl_simple_new_request(struct mtdx_dev *this_dev,
 			INIT_LIST_HEAD(&req_dev->queue_node);
 		}
 	}
-	spin_unlock_irqrestore(&fsd->lock, flags);
+	spin_unlock_irqrestore(&fsd->lock, fsd->l_flags);
 	return rc;
 }
 
@@ -1543,20 +1543,19 @@ err_out:
 static void ftl_simple_remove(struct mtdx_dev *mdev)
 {
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(mdev);
-	unsigned long flags;
 
 	mdev->new_request = ftl_simple_dummy_new_request;
 
 	/* Just wait for everybody to go away! */
 	while (1) {
-		spin_lock_irqsave(&fsd->lock, flags);
+		spin_lock_irqsave(&fsd->lock, fsd->l_flags);
 		if (list_empty(&fsd->c_queue) && list_empty(&mdev->queue_node))
 			break;
 
-		spin_unlock_irqrestore(&fsd->lock, flags);
+		spin_unlock_irqrestore(&fsd->lock, fsd->l_flags);
 		msleep_interruptible(1);
 	};
-	spin_unlock_irqrestore(&fsd->lock, flags);
+	spin_unlock_irqrestore(&fsd->lock, fsd->l_flags);
 
 	mtdx_drop_children(mdev);
 	mtdx_set_drvdata(mdev, NULL);
