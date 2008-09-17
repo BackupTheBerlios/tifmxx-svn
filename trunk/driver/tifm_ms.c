@@ -539,11 +539,10 @@ static void tifm_ms_abort(unsigned long data)
 
 	dev_dbg(&host->dev->dev, "status %x\n",
 		readl(host->dev->addr + SOCK_MS_STATUS));
-	printk(KERN_ERR
-	       "%s : card failed to respond for a long period of time "
-	       "(%x, %x)\n",
-	       host->dev->dev.bus_id, host->req ? host->req->tpc : 0,
-	       host->cmd_flags);
+	dev_err(&host->dev->dev,
+		"card failed to respond for a long period of time (%x, %x)\n",
+		host->req ? host->req->tpc : 0,
+		host->cmd_flags);
 
 	tifm_eject(host->dev);
 }
@@ -556,8 +555,7 @@ static int tifm_ms_probe(struct tifm_dev *sock)
 
 	if (!(TIFM_SOCK_STATE_OCCUPIED
 	      & readl(sock->addr + SOCK_PRESENT_STATE))) {
-		printk(KERN_WARNING "%s : card gone, unexpectedly\n",
-		       sock->dev.bus_id);
+		dev_warn(&sock->dev, "card gone, unexpectedly\n");
 		return rc;
 	}
 
