@@ -4,31 +4,39 @@
 #include <linux/bio.h>
 #include <linux/scatterlist.h>
 
-#define mtdx_data_is_buf(m_data) (((m_data)->dptr & 3UL) == 0)
-#define mtdx_data_is_bio(m_data) (((m_data)->dptr & 3UL) == 1)
+struct bio_fwd_iter {
+	unsigned int iter_pos; /* absolute position in the referenced bio */
+	unsigned int seg_pos;  /* position of current segment             */
+	unsigned int vec_pos;  /* position of current bio_vec             */
+	unsigned int idx;      /* current bio_vec index                   */
+	struct bio   *seg;     /* current segment                         */
+};
+
+void bio_set_fwd_iter(struct bio *b_head, struct bio_fwd_iter *iter,
+		      unsigned int pos);
+void bio_inc_fwd_iter(struct bio_fwd_iter *iter, unsigned int off);
+
+static inline void bio_copy_fwd_iter(struct bio_fwd_iter *dst,
+				     const struct bio_fwd_iter *src)
+{
+	memcpy(dst, src, sizeof(struct bio_fwd_iter));
+}
 
 struct mtdx_data {
-	void *dptr;
+	union {
+		char       *data;
+		struct bio *d_bio;
+	};
+	struct bio   *b_seg; /* if this is NULL, raw data is assumed */
+	unsigned int bv_idx;
 	unsigned int b_off;
 	unsigned int b_len;
 	unsigned int c_off;
-	unsigned int bv_idx;
-	struct bio *b_seg;
 };
 
-static inline char *mtdx_data_get_buf(struct mtdx_data *m_data)
-{
-	return mtdx_data_is_buf(m_data) ? m_data->dptr & ~3UL : NULL;
-}
-
-static inline struct bio *mtdx_data_get_bio(struct mtdx_data *m_data)
-{
-	return mtdx_data_is_bio(m_data) ? m_data->dptr & ~3UL : NULL;
-}
-
-void mtdx_data_set_buf(struct mtdx_data *m_data, char *buf,
+void mtdx_data_set_buf(struct mtdx_data *m_data, char *data,
 		       unsigned int offset, unsigned int length);
-void mtdx_data_set_bio(struct mtdx_data *m_data, struct *bio,
+void mtdx_data_set_bio(struct mtdx_data *m_data, struct bio *d_bio,
 		       unsigned int offset, unsigned int length);
 
 void mtdx_data_subset(struct mtdx_data *m_data, struct mtdx_data *sub_data,
@@ -51,27 +59,38 @@ void mtdx_data_get_sg(struct mtdx_data *m_data, struct scatterlist *sg,
 void mtdx_data_get_bvec(struct mtdx_data *m_data, struct bio_vec *bvec,
 			unsigned int offset, unsigned int length);
 
-/*
- *
- */
-#define MTDX_OOB_MODE_ALL 0
-#define MTDX_OOB_MODE_ONE 1
-#define MTDX_OOB_MODE_TWO 2
-
 struct mtdx_oob {
-	char         *dptr;
-	unsigned int pos;
+	char         *data;
+	unsigned int count;
 	unsigned int inc;
+	unsigned int pos;
 };
 
-static inline void mtdx_oob_rewind(struct mtdx_oob *m_oob)
+static inline void mtdx_oob_init(struct mtdx_oob *m_oob, char *data,
+				 unsigned int num_entries, unsigned int inc)
 {
+	m_oob->data = data;
+	m_oob->count = num_entries * inc;
+	m_oob->inc = inc;
 	m_oob->pos = 0;
 }
 
-void mtdx_oob_init(struct mtdx_oob *m_oob, char *o_buf, unsigned int mode,
-		   unsigned int inc);
-char *mtdx_oob_get_entry(struct mtdx_oob *m_oob, unsigned int idx);
-char *mtdx_oob_get_next(struct mtdx_oob *m_oob);
+static inline char *mtdx_oob_get_entry(struct mtdx_oob *m_oob, unsigned int idx)
+{
+	if ((m_oob->inc * idx) < m_oob->count)
+		return &m_oob->data[m_oob->inc * idx];
+	else
+		return &m_oob->data[m_oob->count - m_oob->inc];
+}
+
+static inline char *mtdx_oob_get_next(struct mtdx_oob *m_oob)
+{
+	char *rv = &m_oob->data[m_oob->pos];
+
+	if ((m_oob->pos + m_oob->inc) < m_oob->count)
+		m_oob->pos += m_oob->inc;
+
+	return rv;
+}
 
 #endif

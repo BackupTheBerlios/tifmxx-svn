@@ -1613,6 +1613,21 @@ static int ms_block_complete_req(struct memstick_dev *card, int error)
 	return error;
 }
 
+static int ms_block_reset_card(struct memstick_dev *card)
+{
+	struct ms_block_data *msb = memstick_get_drvdata(card);
+	enum memstick_command cmd = MS_CMD_RESET;
+
+	card->next_request = h_ms_block_internal_req_init;
+	msb->mrq_handler = h_ms_block_default;
+	memstick_init_req(&card->current_mrq, MS_TPC_SET_CMD, &cmd, 1);
+	card->current_mrq.need_card_int = 0;
+	memstick_new_req(card->host);
+	wait_for_completion(&card->mrq_complete);
+
+	return card->current_mrq.error;
+}
+
 static int ms_block_switch_to_parallel(struct memstick_dev *card)
 {
 	struct memstick_host *host = card->host;
@@ -1624,6 +1639,7 @@ static int ms_block_switch_to_parallel(struct memstick_dev *card)
 		.cp = MEMSTICK_CP_BLOCK,
 		.page_address = 0
 	};
+	int rc;
 
 	card->next_request = h_ms_block_internal_req_init;
 	msb->mrq_handler = h_ms_block_default;
@@ -1631,27 +1647,39 @@ static int ms_block_switch_to_parallel(struct memstick_dev *card)
 			  sizeof(param));
 	memstick_new_req(card->host);
 	wait_for_completion(&card->mrq_complete);
+	rc = card->current_mrq.error;
 
-	if (card->current_mrq.error) {
-		msb->system &= ~MEMSTICK_SYS_PAM;
-		return card->current_mrq.error;
-	}
+	if (rc)
+		return rc;
 
 	host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_PAR4);
+	msb->system = param.system;
 
 	card->next_request = h_ms_block_internal_req_init;
 	msb->mrq_handler = h_ms_block_default;
 	memstick_init_req(&card->current_mrq, MS_TPC_GET_INT, NULL, 1);
 	memstick_new_req(host);
 	wait_for_completion(&card->mrq_complete);
+	rc = card->current_mrq.error;
 
-	if (card->current_mrq.error) {
-		msb->system &= ~MEMSTICK_SYS_PAM;
+	if (rc) {
+		dev_warn(&card->dev,
+			 "interface error, trying to fall back to serial\n");
+		msb->system = MEMSTICK_SYS_BAMD;
+		host->set_param(host, MEMSTICK_POWER, MEMSTICK_POWER_OFF);
+		msleep(10);
+		host->set_param(host, MEMSTICK_POWER, MEMSTICK_POWER_ON);
 		host->set_param(host, MEMSTICK_INTERFACE, MEMSTICK_SERIAL);
-		return card->current_mrq.error;
+
+		rc = ms_block_reset_card(card);
+		if (rc)
+			return rc;
+
+		ms_block_reg_addr_set(card, &ms_block_r_stat_w_param);
+		rc = memstick_set_rw_addr(card);
 	}
 
-	return 0;
+	return rc;
 }
 
 unsigned int ms_block_find_boot_block(struct memstick_dev *card,
@@ -1909,7 +1937,6 @@ static int ms_block_init_card(struct memstick_dev *card)
 	struct memstick_host *host = card->host;
 	struct ms_block_boot_header *header = NULL;
 	int rc, rcx;
-	enum memstick_command cmd = MS_CMD_RESET;
 
 	msb->caps = host->caps;
 	msb->boot_blocks[0].phy_block = MTDX_INVALID_BLOCK;
@@ -1917,34 +1944,19 @@ static int ms_block_init_card(struct memstick_dev *card)
 	msb->geo.page_size = sizeof(struct ms_block_boot_header);
 	msb->system = MEMSTICK_SYS_BAMD;
 
-	card->next_request = h_ms_block_internal_req_init;
-	msb->mrq_handler = h_ms_block_default;
-	memstick_init_req(&card->current_mrq, MS_TPC_SET_CMD, &cmd, 1);
-	card->current_mrq.need_card_int = 0;
-	memstick_new_req(card->host);
-	wait_for_completion(&card->mrq_complete);
+	rc = ms_block_reset_card(card);
+	if (rc)
+		return rc;
 
-	if (card->current_mrq.error)
-		return -ENODEV;
-
-	if (ms_block_reg_addr_cmp(card, &ms_block_r_stat_w_param)) {
-		card->next_request = h_ms_block_internal_req_init;;
-		msb->mrq_handler = h_ms_block_default;
-		memstick_init_req(&card->current_mrq, MS_TPC_SET_RW_REG_ADRS,
-				  &ms_block_r_stat_w_param,
-				  sizeof(ms_block_r_stat_w_param));
-		memstick_new_req(card->host);
-		wait_for_completion(&card->mrq_complete);
-		if (card->current_mrq.error)
-			return card->current_mrq.error;
-
-		ms_block_reg_addr_set(card, &ms_block_r_stat_w_param);
-	}
+	ms_block_reg_addr_set(card, &ms_block_r_stat_w_param);
+	rc = memstick_set_rw_addr(card);
+	if (rc)
+		return rc;
 
 	if (host->caps & MEMSTICK_CAP_PAR4) {
 		if (ms_block_switch_to_parallel(card))
-			printk(KERN_WARNING "%s: could not switch to "
-			       "parallel interface\n", card->dev.bus_id);
+			dev_warn(&card->dev, "could not switch to "
+				 "parallel interface\n");
 	}
 
 	if (msb->system & MEMSTICK_SYS_PAM)
