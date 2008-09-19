@@ -4,60 +4,84 @@
 #include <linux/bio.h>
 #include <linux/scatterlist.h>
 
-struct bio_fwd_iter {
-	unsigned int iter_pos; /* absolute position in the referenced bio */
+struct mtdx_data_iter;
+
+struct mtdx_data_iter_ops {
+	void (*set_iter)(struct mtdx_data_iter *iter, unsigned int pos);
+	void (*inc_iter)(struct mtdx_data_iter *iter, unsigned int off);
+	void (*fill_iter)(struct mtdx_data_iter *iter, int c,
+			  unsigned int count);
+	void (*get_sg)(struct mtdx_data_iter *iter,
+		       struct scatterlist *sg, unsigned int length);
+	void (*get_bvec)(struct mtdx_data_iter *iter,
+			 struct bio_vec *bvec, unsigned int length);
+};
+
+struct mtdx_buf_iter {
+	char         *data;
+	unsigned int length;
+};
+
+struct mtdx_bio_iter {
+	struct bio   *head;    /* start of bio                            */
+	struct bio   *seg;     /* current segment                         */
 	unsigned int seg_pos;  /* position of current segment             */
 	unsigned int vec_pos;  /* position of current bio_vec             */
 	unsigned int idx;      /* current bio_vec index                   */
-	struct bio   *seg;     /* current segment                         */
 };
 
-void bio_set_fwd_iter(struct bio *b_head, struct bio_fwd_iter *iter,
-		      unsigned int pos);
-void bio_inc_fwd_iter(struct bio_fwd_iter *iter, unsigned int off);
+struct mtdx_data_iter {
+	const struct mtdx_data_iter_ops *ops;
+	unsigned int iter_pos; /* absolute position in the referenced bio */
+	union {
+		struct mtdx_buf_iter r_buf;
+		struct mtdx_bio_iter r_bio;
+	};
+};
 
-static inline void bio_copy_fwd_iter(struct bio_fwd_iter *dst,
-				     const struct bio_fwd_iter *src)
+void mtdx_data_iter_init_buf(struct mtdx_data_iter *iter, char *data,
+			     unsigned int length);
+void mtdx_data_iter_init_bio(struct mtdx_data_iter *iter, struct bio *bio);
+
+static inline void mtdx_data_iter_set(struct mtdx_data_iter *iter,
+				      unsigned int pos)
 {
-	memcpy(dst, src, sizeof(struct bio_fwd_iter));
+	iter->ops->set_iter(iter, pos);
 }
 
-struct mtdx_data {
-	union {
-		char       *data;
-		struct bio *d_bio;
-	};
-	struct bio   *b_seg; /* if this is NULL, raw data is assumed */
-	unsigned int bv_idx;
-	unsigned int b_off;
-	unsigned int b_len;
-	unsigned int c_off;
-};
+static inline void mtdx_data_iter_inc(struct mtdx_data_iter *iter,
+				      unsigned int off)
+{
+	iter->ops->inc_iter(iter, off);
+}
 
-void mtdx_data_set_buf(struct mtdx_data *m_data, char *data,
-		       unsigned int offset, unsigned int length);
-void mtdx_data_set_bio(struct mtdx_data *m_data, struct bio *d_bio,
-		       unsigned int offset, unsigned int length);
-
-void mtdx_data_subset(struct mtdx_data *m_data, struct mtdx_data *sub_data,
-		      unsigned int offset, unsigned int length);
-
-void mtdx_data_fill(struct mtdx_data *m_data, int c, unsigned int offset,
-		    unsigned int length);
+static inline void mtdx_data_iter_fill(struct mtdx_data_iter *iter,
+				       int c, unsigned int count)
+{
+	iter->ops->fill_iter(iter, c, count);
+}
 
 /*
  * Get a single scatterlist entry spanning at most 'length' bytes and starting
  * at the specified 'offset'.
  */
-void mtdx_data_get_sg(struct mtdx_data *m_data, struct scatterlist *sg,
-		      unsigned int offset, unsigned int length);
+static inline void mtdx_data_iter_get_sg(struct mtdx_data_iter *iter,
+					 struct scatterlist *sg,
+					 unsigned int length)
+{
+	iter->ops->get_sg(iter, sg, length);
+}
 
 /*
  * Same as above, but fills a bio_vec entry. If highmem page is encountered,
  * the entry will not cross page boundaries.
  */
-void mtdx_data_get_bvec(struct mtdx_data *m_data, struct bio_vec *bvec,
-			unsigned int offset, unsigned int length);
+static inline void mtdx_data_iter_get_bvec(struct mtdx_data_iter *iter,
+					   struct bio_vec *bvec,
+					   unsigned int length)
+{
+	iter->ops->get_bvec(iter, bvec, length);
+}
 
 struct mtdx_oob {
 	char         *data;

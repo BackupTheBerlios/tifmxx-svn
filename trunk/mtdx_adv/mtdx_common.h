@@ -180,8 +180,8 @@ struct mtdx_request {
 	struct mtdx_dev      *src_dev;  /* originating device              */
 	enum mtdx_command    cmd;       /* command to execute              */
 	unsigned int         logical;   /* logical block address           */
-	struct mtdx_pos      dst;       /* request target physical address */
-	struct mtdx_pos      src;       /* request copy source address     */
+	struct mtdx_pos      phy;       /* request target physical address */
+	struct mtdx_pos      copy;      /* request copy source address     */
 	unsigned int         length;    /* request data length             */
 	struct mtdx_data     *req_data; /* optional - request data         */
 	struct mtdx_oob      *req_oob;  /* optional - request extra data   */
