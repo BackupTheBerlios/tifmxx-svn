@@ -177,14 +177,14 @@ struct mtdx_pos {
 };
 
 struct mtdx_request {
-	struct mtdx_dev      *src_dev;  /* originating device              */
-	enum mtdx_command    cmd;       /* command to execute              */
-	unsigned int         logical;   /* logical block address           */
-	struct mtdx_pos      phy;       /* request target physical address */
-	struct mtdx_pos      copy;      /* request copy source address     */
-	unsigned int         length;    /* request data length             */
-	struct mtdx_data     *req_data; /* optional - request data         */
-	struct mtdx_oob      *req_oob;  /* optional - request extra data   */
+	struct mtdx_dev       *src_dev;  /* originating device              */
+	enum mtdx_command     cmd;       /* command to execute              */
+	unsigned int          logical;   /* logical block address           */
+	struct mtdx_pos       phy;       /* request target physical address */
+	struct mtdx_pos       copy;      /* request copy source address     */
+	unsigned int          length;    /* request data length             */
+	struct mtdx_data_iter *req_data; /* optional - request data         */
+	struct mtdx_oob       *req_oob;  /* optional - request extra data   */
 };
 
 struct mtdx_dev {
@@ -200,33 +200,14 @@ struct mtdx_dev {
 	struct mtdx_request  *(*get_request)(struct mtdx_dev *this_dev);
 
 	/* complete an active request                                 */
-	void                 (*end_request)(struct mtdx_request *req,
-					    int error, unsigned int count);
+	void                 (*end_request)(struct mtdx_request *req, int error,
+					    unsigned int count);
 
-	/* Get data buffers associated with request. Each buffer should contain
-	 * integral number of pages. Can be called several times, to obtain all
-	 * buffer chunks.
-	 */
-	char                 *(*get_data_buf)(struct mtdx_request *req,
-					      unsigned int *count);
-	int                  (*get_data_buf_sg)(struct mtdx_request *req,
-					        struct scatterlist *sg);
-
-	/* Get and put source address associated with copy command.
-	 * Put_copy_source can be optionally called to inform the child that
-	 * there's problem with source block (destination block problems are
-	 * reported through end_request.
-	 */
+	/* Copy support                                                */
 	int                  (*get_copy_source)(struct mtdx_request *req,
-						unsigned int *phy_block,
-						unsigned int *offset);
+						struct mtdx_pos *src_pos);
 	void                 (*put_copy_source)(struct mtdx_request *req,
 						int src_error);
-
-	/* Get oob buffer (size is agreed upon in advance). Should be called
-	 * once for each page accessed.
-	 */
-	char                 *(*get_oob_buf)(struct mtdx_request *req);
 
 	/* Translate opaque oob blob to/from generic block decription. */
 	int                  (*oob_to_info)(struct mtdx_dev *this_dev,
@@ -235,11 +216,6 @@ struct mtdx_dev {
 	int                  (*info_to_oob)(struct mtdx_dev *this_dev,
 					    void *oob,
 					    struct mtdx_page_info *p_info);
-
-	/* Split logical block address into zone and zone offset.      */
-	unsigned int         (*log_to_zone)(struct mtdx_dev *this_dev,
-					    unsigned int log_block,
-					    unsigned int *zone_off);
 
 	/* Get/set device metadata.                                   */
 	int                  (*get_param)(struct mtdx_dev *this_dev,
@@ -279,28 +255,17 @@ static inline void mtdx_complete_request(struct mtdx_request *req, int error,
 	req->src_dev->end_request(req, error, count);
 }
 
-static inline int mtdx_get_data_buf_sg(struct mtdx_request *req,
-				       struct scatterlist *sg)
-{
-	return req->src_dev->get_data_buf_sg(req, sg);
-}
-
 static inline int mtdx_get_copy_source(struct mtdx_request *req,
-				       unsigned int *phy_block,
-				       unsigned int *offset)
+				       struct mtdx_pos *src_pos)
+
 {
-	return req->src_dev->get_copy_source(req, phy_block, offset);
+	return req->src_dev->get_copy_source(req, src_pos);
 }
 
 static inline void mtdx_put_copy_source(struct mtdx_request *req,
 					int src_error)
 {
 	req->src_dev->put_copy_source(req, src_error);
-}
-
-static inline char *mtdx_get_oob_buf(struct mtdx_request *req)
-{
-	return req->src_dev->get_oob_buf(req);
 }
 
 static inline void *mtdx_get_drvdata(struct mtdx_dev *mdev)

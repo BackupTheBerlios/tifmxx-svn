@@ -9,6 +9,7 @@ struct mtdx_data_iter;
 struct mtdx_data_iter_ops {
 	void (*set_iter)(struct mtdx_data_iter *iter, unsigned int pos);
 	void (*inc_iter)(struct mtdx_data_iter *iter, unsigned int off);
+	void (*dec_iter)(struct mtdx_data_iter *iter, unsigned int off);
 	void (*fill_iter)(struct mtdx_data_iter *iter, int c,
 			  unsigned int count);
 	void (*get_sg)(struct mtdx_data_iter *iter,
@@ -53,6 +54,12 @@ static inline void mtdx_data_iter_inc(struct mtdx_data_iter *iter,
 				      unsigned int off)
 {
 	iter->ops->inc_iter(iter, off);
+}
+
+static inline void mtdx_data_iter_dec(struct mtdx_data_iter *iter,
+				      unsigned int off)
+{
+	iter->ops->dec_iter(iter, off);
 }
 
 static inline void mtdx_data_iter_fill(struct mtdx_data_iter *iter,

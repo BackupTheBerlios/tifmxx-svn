@@ -25,6 +25,13 @@ static void mtdx_data_iter_buf_inc(struct mtdx_data_iter *iter,
 	mtdx_data_iter_buf_set(iter, iter->iter_pos);
 }
 
+static void mtdx_data_iter_buf_dec(struct mtdx_data_iter *iter,
+				   unsigned int off)
+{
+	iter->iter_pos -= min(iter->iter_pos, off);
+	mtdx_data_iter_buf_set(iter, iter->iter_pos);
+}
+
 static void mtdx_data_iter_buf_fill(struct mtdx_data_iter *iter, int c,
 				    unsigned int count)
 {
@@ -70,6 +77,7 @@ static void mtdx_data_iter_buf_get_bvec(struct mtdx_data_iter *iter,
 static struct mtdx_data_iter_ops mtdx_data_iter_buf_ops = {
 	.set_iter  = mtdx_data_iter_buf_set,
 	.inc_iter  = mtdx_data_iter_buf_inc,
+	.dec_iter  = mtdx_data_iter_buf_dec,
 	.fill_iter = mtdx_data_iter_buf_fill,
 	.get_sg    = mtdx_data_iter_buf_get_sg,
 	.get_bvec  = mtdx_data_iter_buf_get_bvec
@@ -136,6 +144,15 @@ static void mtdx_data_iter_bio_inc(struct mtdx_data_iter *iter,
 	}
 
 	iter->iter_pos = b_iter->vec_pos;
+}
+
+static void mtdx_data_iter_bio_dec(struct mtdx_data_iter *iter,
+				   unsigned int off)
+{
+	struct mtdx_bio_iter *b_iter = &iter->r_bio;
+	unsigned int dec;
+
+#error implement
 }
 
 static void mtdx_data_iter_bio_fill(struct mtdx_data_iter *iter, int c,
@@ -224,6 +241,7 @@ static void mtdx_data_iter_bio_get_bvec(struct mtdx_data_iter *iter,
 static struct mtdx_data_iter_ops mtdx_data_iter_bio_ops = {
 	.set_iter  = mtdx_data_iter_bio_set,
 	.inc_iter  = mtdx_data_iter_bio_inc,
+	.dec_iter  = mtdx_data_iter_bio_dec,
 	.fill_iter = mtdx_data_iter_bio_fill,
 	.get_sg    = mtdx_data_iter_bio_get_sg,
 	.get_bvec  = mtdx_data_iter_bio_get_bvec

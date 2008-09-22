@@ -59,8 +59,7 @@ struct ms_param_register {
 #define MEMSTICK_SYS_PAM  0x08
 #define MEMSTICK_SYS_BAMD 0x80
 
-	unsigned char block_address_msb;
-	unsigned short block_address;
+	unsigned char block_address[3];
 	unsigned char cp;
 #define MEMSTICK_CP_BLOCK     0x00
 #define MEMSTICK_CP_PAGE      0x20
@@ -69,6 +68,14 @@ struct ms_param_register {
 
 	unsigned char page_address;
 } __attribute__((packed));
+
+static inline void ms_param_set_addr(struct ms_param_register *param,
+				     unsigned int b_addr)
+{
+	param->block_address[2] = b_addr & 0xff;
+	param->block_address[1] = (b_addr >> 8) & 0xff;
+	param->block_address[0] = (b_addr >> 16) & 0xff;
+}
 
 struct ms_extra_data_register {
 	unsigned char  overwrite_flag;
