@@ -40,7 +40,7 @@ struct mtdx_data_iter {
 	};
 };
 
-void mtdx_data_iter_init_buf(struct mtdx_data_iter *iter, char *data,
+void mtdx_data_iter_init_buf(struct mtdx_data_iter *iter, void *data,
 			     unsigned int length);
 void mtdx_data_iter_init_bio(struct mtdx_data_iter *iter, struct bio *bio);
 
@@ -97,7 +97,7 @@ struct mtdx_oob {
 	unsigned int pos;
 };
 
-static inline void mtdx_oob_init(struct mtdx_oob *m_oob, char *data,
+static inline void mtdx_oob_init(struct mtdx_oob *m_oob, void *data,
 				 unsigned int num_entries, unsigned int inc)
 {
 	m_oob->data = data;

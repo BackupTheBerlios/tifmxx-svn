@@ -83,7 +83,7 @@ static struct mtdx_data_iter_ops mtdx_data_iter_buf_ops = {
 	.get_bvec  = mtdx_data_iter_buf_get_bvec
 };
 
-void mtdx_data_iter_init_buf(struct mtdx_data_iter *iter, char *data,
+void mtdx_data_iter_init_buf(struct mtdx_data_iter *iter, void *data,
 			     unsigned int length)
 {
 	memset(iter, 0, sizeof(struct mtdx_data_iter));
@@ -150,9 +150,18 @@ static void mtdx_data_iter_bio_dec(struct mtdx_data_iter *iter,
 				   unsigned int off)
 {
 	struct mtdx_bio_iter *b_iter = &iter->r_bio;
-	unsigned int dec;
+	unsigned int pos = iter->iter_pos - min(iter->iter_pos, off);
 
-#error implement
+	if (b_iter->seg_pos <= pos) {
+		while (b_iter->vec_pos > pos) {
+			iter->iter_pos -= iter->iter_pos - b_iter->vec_pos;
+			b_iter->idx--;
+			b_iter->vec_pos -= b_iter->seg->bi_io_vec[b_iter->idx]
+						       .bv_len;
+		}
+		iter->iter_pos = pos; 
+	} else
+		mtdx_data_iter_bio_set(iter, pos);
 }
 
 static void mtdx_data_iter_bio_fill(struct mtdx_data_iter *iter, int c,

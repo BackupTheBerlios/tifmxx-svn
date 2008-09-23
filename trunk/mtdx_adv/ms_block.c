@@ -141,17 +141,13 @@ struct ms_block_data {
 	unsigned char            cmd_flags;
 #define MS_BLOCK_FLG_DATA     0x01
 #define MS_BLOCK_FLG_EXTRA    0x02
-#define MS_BLOCK_FLG_OV       0x04
-#define MS_BLOCK_FLG_PAGE_INC 0x08
-#define MS_BLOCK_FLG_COPY     0x10
-#define MS_BLOCK_FLG_WRITE    0x20
+#define MS_BLOCK_FLG_PAGE_INC 0x04
+#define MS_BLOCK_FLG_COPY     0x08
+#define MS_BLOCK_FLG_WRITE    0x10
 
 	struct ms_block_boot_ref boot_blocks[2];
 	struct mtdx_geo          geo;
 	struct task_struct       *f_thread;
-
-	struct ms_extra_data_register extra[2];
-	unsigned int             extra_pos;
 
 	struct list_head         c_queue;
 	wait_queue_head_t        req_wq;
@@ -1049,8 +1045,6 @@ static int ms_block_setup_write(struct memstick_dev *card,
 static int h_ms_block_copy_write(struct memstick_dev *card,
 				 struct memstick_request **mrq)
 {
-	struct ms_block_data *msb = memstick_get_drvdata(card);
-
 	if ((*mrq)->error)
 		return ms_block_complete_multi(card, mrq, (*mrq)->error);
 
@@ -1108,7 +1102,7 @@ static int h_ms_block_read_status(struct memstick_dev *card,
 			 */
 			struct scatterlist sg;
 
-			mtdx_data_iter_get_sg(msb->req_in, &sg,
+			mtdx_data_iter_get_sg(msb->req_in->req_data, &sg,
 					      msb->geo.page_size);
 			memstick_init_req_sg(*mrq, MS_TPC_READ_LONG_DATA, &sg);
 			card->next_request = h_ms_block_copy_read;
@@ -1169,12 +1163,9 @@ static int h_ms_block_trans_extra(struct memstick_dev *card,
 		return ms_block_complete_multi(card, mrq, (*mrq)->error);
 
 	if (!(msb->cmd_flags & MS_BLOCK_FLG_WRITE)) {
-		oob_buf = mtdx_get_oob_buf(msb->req_in);
-		if (!oob_buf)
-			return ms_block_complete_multi(card, mrq, -ENOMEM);
+		oob_buf = mtdx_oob_get_next(msb->req_in->req_oob);
 
-		memcpy(oob_buf, (*mrq)->data,
-		       sizeof(struct ms_extra_data_register));
+		memcpy(oob_buf, (*mrq)->data, msb->geo.oob_size);
 	}
 
 	if (msb->cmd_flags & MS_BLOCK_FLG_DATA) {
@@ -1297,7 +1288,6 @@ static int h_ms_block_trans_data(struct memstick_dev *card,
 
 	msb->dst_page++;
 	msb->t_count++;
-	msb->sg_offset += msb->geo.page_size;
 
 	memstick_init_req(*mrq, MS_TPC_GET_INT, NULL, 1);
 	card->next_request = h_ms_block_data_get_int;
@@ -1395,32 +1385,9 @@ static int h_ms_block_set_extra_addr_w(struct memstick_dev *card,
 
 	ms_block_reg_addr_set(card, &ms_block_r_stat_w_extra);
 
-	if (msb->cmd_flags & MS_BLOCK_FLG_OV) {
-		struct ms_extra_data_register extra = {0xff, 0xff, 0xffff};
-
-		switch (msb->req_in->cmd) {
-		case MTDX_CMD_SELECT:
-			extra.overwrite_flag &= ~MEMSTICK_OVERWRITE_UDST;
-			break;
-		case MTDX_CMD_INVALIDATE:
-			extra.overwrite_flag &= ~MEMSTICK_OVERWRITE_BKST;
-			break;
-		default:
-			(*mrq)->error = -EINVAL;
-			return ms_block_complete_req(card, (*mrq)->error);
-		}
-
-		memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG,
-				  &extra, sizeof(extra));
-	} else {
-		char *oob_buf = mtdx_get_oob_buf(msb->req_in);
-
-		if (!oob_buf)
-			return ms_block_complete_multi(card, mrq, -ENOMEM);
-
-		memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, oob_buf,
-				  sizeof(struct ms_extra_data_register));
-	}
+	memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG,
+			  mtdx_oob_get_next(msb->req_in->req_oob),
+			  sizeof(struct ms_extra_data_register));
 
 	card->next_request = h_ms_block_trans_extra;
 	return 0;
@@ -1447,11 +1414,10 @@ static int h_ms_block_set_param_addr_init(struct memstick_dev *card,
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct ms_param_register param = {
 		.system = msb->system,
-		.block_address_msb = (msb->req_in->phy.b_addr >> 16) & 0xff,
-		.block_address = cpu_to_be16(msb->req_in->phy.b_addr & 0xffff),
 		.cp = MEMSTICK_CP_BLOCK,
 		.page_address = msb->req_in->phy.offset / msb->geo.page_size
 	};
+	ms_param_set_addr(&param, msb->req_in->phy.b_addr);
 
 	if ((*mrq)->error)
 		return ms_block_complete_req(card, (*mrq)->error);
@@ -1459,12 +1425,10 @@ static int h_ms_block_set_param_addr_init(struct memstick_dev *card,
 	ms_block_reg_addr_set(card, &ms_block_r_stat_w_param);
 
 	msb->cmd_flags = 0;
-	msb->sg_offset = 0;
 	msb->dst_page = param.page_address;
 	msb->page_count = msb->req_in->length / msb->geo.page_size;
 	msb->t_count = 0;
 	msb->trans_err = 0;
-	msb->extra_pos = 0;
 
 	dev_dbg(&card->dev, "init request %x, %x, %x:%x\n", msb->req_in->cmd,
 		msb->req_in->phy.b_addr, msb->req_in->phy.offset,
@@ -1512,7 +1476,7 @@ static int h_ms_block_set_param_addr_init(struct memstick_dev *card,
 
 		msb->src_pos.offset /= msb->geo.page_size;
 
-		ms_param_set_addr(&param, src_pos.b_addr);
+		ms_param_set_addr(&param, msb->src_pos.b_addr);
 		param.cp = MEMSTICK_CP_PAGE | MEMSTICK_CP_EXTRA;
 		param.page_address = msb->src_pos.offset;
 		break;
@@ -1588,8 +1552,7 @@ static int ms_block_switch_to_parallel(struct memstick_dev *card)
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct ms_param_register param = {
 		.system = msb->system | MEMSTICK_SYS_PAM,
-		.block_address_msb = 0,
-		.block_address = 0,
+		.block_address = { 0, 0, 0},
 		.cp = MEMSTICK_CP_BLOCK,
 		.page_address = 0
 	};
@@ -1642,6 +1605,9 @@ unsigned int ms_block_find_boot_block(struct memstick_dev *card,
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	unsigned int b_cnt;
+	struct mtdx_data_iter r_data;
+	struct ms_extra_data_register extra;
+	struct mtdx_oob r_oob;
 
 	struct mtdx_request m_req = {
 		.src_dev = msb->mdev,
@@ -1651,19 +1617,20 @@ unsigned int ms_block_find_boot_block(struct memstick_dev *card,
 			.b_addr = MTDX_INVALID_BLOCK,
 			.offset = 0
 		},
-		.length = sizeof(struct ms_block_boot_header)
+		.length = sizeof(struct ms_block_boot_header),
+		.req_data = &r_data,
+		.req_oob = &r_oob
 	};
 
 	for (b_cnt = start_addr; b_cnt < MS_BLOCK_MAX_BOOT_ADDR; ++b_cnt) {
 		m_req.phy.b_addr = b_cnt;
 		msb->req_dev = msb->mdev;
 		msb->req_in = &m_req;
-		sg_set_buf(&msb->req_sg, header, m_req.length);
-		memset(&msb->extra, 0xff, sizeof(msb->extra));
+		mtdx_data_iter_init_buf(&r_data, header, m_req.length);
+		mtdx_oob_init(&r_oob, &extra, 1, sizeof(extra));
+		memset(&extra, 0xff, sizeof(extra));
 
-		dev_dbg(&card->dev, "find block %x, %p, %x:%x\n", b_cnt,
-			sg_page(&msb->req_sg), msb->req_sg.offset,
-			msb->req_sg.length);
+		dev_dbg(&card->dev, "find block %x\n", b_cnt);
 
 		card->next_request = h_ms_block_req_init;
 		memstick_new_req(card->host);
@@ -1682,12 +1649,12 @@ unsigned int ms_block_find_boot_block(struct memstick_dev *card,
 		}
 
 		dev_dbg(&card->dev, "block %x, ov_flag %x\n",
-			b_cnt, msb->extra[0].overwrite_flag);
+			b_cnt, extra.overwrite_flag);
 
-		if (!(msb->extra[0].overwrite_flag & MEMSTICK_OVERWRITE_BKST))
+		if (!(extra.overwrite_flag & MEMSTICK_OVERWRITE_BKST))
 			continue;
 
-		if (!(msb->extra[0].overwrite_flag
+		if (!(extra.overwrite_flag
 		      & (MEMSTICK_OVERWRITE_PGST0 | MEMSTICK_OVERWRITE_PGST1)))
 			continue;
 
@@ -1705,6 +1672,9 @@ static int ms_block_read_boot_block(struct memstick_dev *card,
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	unsigned int page_size = be16_to_cpu(header->info.page_size);
 	unsigned int p1, p2, p_sum = 0;
+	struct ms_extra_data_register *extra = NULL;
+	struct mtdx_data_iter r_data;
+	struct mtdx_oob r_oob;
 	int rc;
 	struct mtdx_request m_req = {
 		.src_dev = msb->mdev,
@@ -1714,7 +1684,9 @@ static int ms_block_read_boot_block(struct memstick_dev *card,
 			.b_addr = b_ref->phy_block,
 			.offset = 0
 		},
-		.length = 0
+		.length = 0,
+		.req_data = &r_data,
+		.req_oob = &r_oob
 	};
 
 	if (page_size != msb->geo.page_size) {
@@ -1736,6 +1708,14 @@ static int ms_block_read_boot_block(struct memstick_dev *card,
 	if ((p_sum * page_size) < p1)
 		p_sum++;
 
+	extra = kmalloc(p_sum * msb->geo.oob_size, GFP_KERNEL);
+	if (!extra) {
+		rc = -ENOMEM;
+		goto out;
+	}
+	memset(extra, msb->geo.fill_value, p_sum * msb->geo.oob_size);
+	mtdx_oob_init(&r_oob, extra, p_sum, msb->geo.oob_size);
+
 	b_ref->data = kmalloc(p_sum * page_size, GFP_KERNEL);
 	if (!b_ref->data) {
 		rc = -ENOMEM;
@@ -1747,12 +1727,10 @@ static int ms_block_read_boot_block(struct memstick_dev *card,
 
 	msb->req_dev = msb->mdev;
 	msb->req_in = &m_req;
-	sg_set_buf(&msb->req_sg, b_ref->data, b_ref->size);
-	memset(&msb->extra, 0xff, sizeof(msb->extra));
+	mtdx_data_iter_init_buf(&r_data, b_ref->data, b_ref->size);
 
-	dev_dbg(&card->dev, "read block %x, %p, %x:%x\n", b_ref->phy_block,
-		sg_page(&msb->req_sg), msb->req_sg.offset,
-		msb->req_sg.length);
+	dev_dbg(&card->dev, "read block addr %x, buf %p, size %x\n",
+		b_ref->phy_block, b_ref->data, b_ref->size);
 
 	card->next_request = h_ms_block_req_init;
 	memstick_new_req(card->host);
@@ -1769,12 +1747,12 @@ static int ms_block_read_boot_block(struct memstick_dev *card,
 		goto out;
 	}
 
-	if (!(msb->extra[0].overwrite_flag & MEMSTICK_OVERWRITE_BKST)) {
+	if (!(extra[0].overwrite_flag & MEMSTICK_OVERWRITE_BKST)) {
 		rc = -EFAULT;
 		goto out;
 	}
 
-	if (!(msb->extra[0].overwrite_flag
+	if (!(extra[0].overwrite_flag
 	      & (MEMSTICK_OVERWRITE_PGST0 | MEMSTICK_OVERWRITE_PGST1))) {
 		rc = -EFAULT;
 		goto out;
@@ -1786,6 +1764,7 @@ out:
 		b_ref->data = NULL;
 		b_ref->size = 0;
 	}
+	kfree(extra);
 
 	return rc;
 }
@@ -1889,6 +1868,41 @@ static void ms_block_adjust_log_cnt(struct ms_block_data *msb)
 	msb->geo.log_block_cnt = s_count / msb->geo.page_cnt;
 }
 
+/* Logical block assignment in MemoryStick is fixed and predefined */
+static unsigned int ms_block_log_to_zone(struct mtdx_geo *geo,
+					 unsigned int log_addr,
+					 unsigned int *log_off)
+{
+	if (log_addr < 494) {
+		*log_off = log_addr;
+		return 0;
+	} else {
+		unsigned int zone;
+
+		log_addr -= 494;
+		zone = log_addr / 496;
+		*log_off = log_addr % 496;
+		return zone + 1;
+	}
+}
+
+static unsigned int ms_block_zone_to_log(struct mtdx_geo *geo,
+					 unsigned int zone,
+					 unsigned int log_off)
+{
+	if (!zone) {
+		if (log_off < 494)
+			return log_off;
+		else
+			return MTDX_INVALID_BLOCK;
+	} else {
+		if (log_off < 496) {
+			return 494 + (zone - 1) * 496 + log_off;
+		} else
+			return MTDX_INVALID_BLOCK;
+	}
+}
+
 static int ms_block_init_card(struct memstick_dev *card)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
@@ -1939,6 +1953,12 @@ static int ms_block_init_card(struct memstick_dev *card)
 	if (!header)
 		return -ENOMEM;
 
+	msb->geo.zone_size_log = 9;
+	msb->geo.oob_size = sizeof(struct ms_extra_data_register);
+	msb->geo.fill_value = 0xff;
+	msb->geo.log_to_zone = ms_block_log_to_zone;
+	msb->geo.zone_to_log = ms_block_zone_to_log;
+
 	msb->boot_blocks[0].phy_block = ms_block_find_boot_block(card, header,
 								 0);
 
@@ -1950,15 +1970,12 @@ static int ms_block_init_card(struct memstick_dev *card)
 	dev_dbg(&card->dev, "first boot block: %x\n",
 		msb->boot_blocks[0].phy_block);
 
-	msb->geo.zone_size_log = 9;
 	msb->geo.log_block_cnt
 		= be16_to_cpu(header->info.number_of_effective_blocks);
 	msb->geo.phy_block_cnt = be16_to_cpu(header->info.number_of_blocks);
 	msb->geo.page_size = be16_to_cpu(header->info.page_size);
 	msb->geo.page_cnt = (be16_to_cpu(header->info.block_size) << 10)
 			    / msb->geo.page_size;
-	msb->geo.oob_size = sizeof(struct ms_extra_data_register);
-	msb->geo.fill_value = 0xff;
 
 	dev_dbg(&card->dev, "read first boot block\n");
 	rc = ms_block_read_boot_block(card, header, &msb->boot_blocks[0]);
@@ -2178,24 +2195,6 @@ static int ms_block_mtdx_info_to_oob(struct mtdx_dev *this_dev,
 	return 0;
 }
 
-/* Logical block assignment in MemoryStick is fixed and predefined */
-static unsigned int ms_block_log_to_zone(struct mtdx_dev *this_dev,
-					 unsigned int log_block,
-					 unsigned int *zone_off)
-{
-	if (log_block < 494) {
-		*zone_off = log_block;
-		return 0;
-	} else {
-		unsigned int zone;
-
-		log_block -= 494;
-		zone = log_block / 496;
-		*zone_off = log_block % 496;
-		return zone + 1;
-	}
-}
-
 static int ms_block_mtdx_get_param(struct mtdx_dev *this_dev,
 				   enum mtdx_param param, void *val)
 {
@@ -2303,30 +2302,6 @@ static void ms_block_end_request(struct mtdx_request *req, int error,
 	msb->t_count = count;
 }
 
-static int ms_block_get_data_buf_sg(struct mtdx_request *req,
-				    struct scatterlist *sg)
-{
-	struct ms_block_data *msb = mtdx_get_drvdata(req->src_dev);
-
-	dev_dbg(&msb->card->dev, "internal get_data, %x\n", msb->sg_offset);
-
-	if (msb->sg_offset)
-		return -EAGAIN;
-	else
-		return 0;
-}
-
-static char* ms_block_get_oob_buf(struct mtdx_request *req)
-{
-	struct ms_block_data *msb = mtdx_get_drvdata(req->src_dev);
-
-	if (!msb->extra_pos) {
-		msb->extra_pos++;
-		return (char *)&msb->extra[0];
-	} else
-		return (char *)&msb->extra[1];
-}
-
 static void ms_block_data_free(struct ms_block_data *msb)
 {
 	int cnt;
@@ -2374,12 +2349,9 @@ static int ms_block_probe(struct memstick_dev *card)
 	msb->mdev->new_request = ms_block_mtdx_new_request;
 	msb->mdev->get_request = ms_block_get_request;
 	msb->mdev->end_request = ms_block_end_request;
-	msb->mdev->get_data_buf_sg = ms_block_get_data_buf_sg;
-	msb->mdev->get_oob_buf = ms_block_get_oob_buf;
 
 	msb->mdev->oob_to_info = ms_block_mtdx_oob_to_info;
 	msb->mdev->info_to_oob = ms_block_mtdx_info_to_oob;
-	msb->mdev->log_to_zone = ms_block_log_to_zone;
 	msb->mdev->get_param = ms_block_mtdx_get_param;
 
 	rc = ms_block_init_card(card);

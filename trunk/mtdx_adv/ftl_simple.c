@@ -42,7 +42,7 @@ struct ftl_simple_data {
 	struct list_head      c_queue;
 
 	/* Device geometry */
-	struct mtdx_dev_geo   geo;
+	struct mtdx_geo       geo;
 	unsigned int          zone_cnt;
 	unsigned int          zone_phy_cnt;
 	unsigned int          block_size;
@@ -193,8 +193,8 @@ static void ftl_simple_end_resolve(struct ftl_simple_data *fsd, int error,
 		error = parent->oob_to_info(parent, &p_info, fsd->oob_buf);
 
 	if (!error) {
-		zone = parent->log_to_zone(parent, p_info.log_block,
-					   &z_log_block);
+		zone = mtdx_geo_log_to_zone(&fsd->geo, p_info.log_block,
+					    &z_log_block);
 		if (zone != fsd->zone)
 			error = -ERANGE;
 	}
@@ -1336,8 +1336,8 @@ static int ftl_simple_get_param(struct mtdx_dev *this_dev,
 
 	switch (param) {
 	case MTDX_PARAM_GEO: {
-		struct mtdx_dev_geo *geo = (struct mtdx_dev_geo *)val;
-		geo->zone_size_log = sizeof(unsigned int);
+		struct mtdx_geo *geo = (struct mtdx_dev_geo *)val;
+		geo->zone_size_log = sizeof(unsigned int) * 8;
 		geo->log_block_cnt = fsd->geo.log_block_cnt;
 		geo->phy_block_cnt = 0;
 		geo->page_cnt = fsd->geo.page_cnt;
@@ -1394,16 +1394,15 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 	int rc;
 
 	{
-		struct mtdx_dev_geo geo;
+		struct mtdx_geo geo;
 		unsigned int zone_cnt;
 
 		rc = parent->get_param(parent, MTDX_PARAM_GEO, &geo);
 		if (rc)
 			return rc;
 
-		zone_cnt = geo.phy_block_cnt >> geo.zone_size_log;
-		if (!zone_cnt)
-			zone_cnt = 1;
+		zone_cnt = mtdx_geo_phy_to_zone(&geo, geo.phy_block_cnt - 1,
+						NULL) + 1;
 
 		fsd = kzalloc(sizeof(struct ftl_simple_data)
 			      + sizeof(struct zone_data *) * zone_cnt,

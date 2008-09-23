@@ -1337,7 +1337,7 @@ static int ftl_simple_get_param(struct mtdx_dev *this_dev,
 	switch (param) {
 	case MTDX_PARAM_GEO: {
 		struct mtdx_dev_geo *geo = (struct mtdx_dev_geo *)val;
-		geo->zone_size_log = sizeof(unsigned int);
+		geo->zone_size_log = sizeof(unsigned int) * 8;
 		geo->log_block_cnt = fsd->geo.log_block_cnt;
 		geo->phy_block_cnt = 0;
 		geo->page_cnt = fsd->geo.page_cnt;

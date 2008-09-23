@@ -82,6 +82,11 @@ static inline unsigned int mtdx_geo_log_to_zone(struct mtdx_geo *geo,
 						unsigned int log_addr,
 						unsigned int *log_off)
 {
+	unsigned int l_off;
+
+	if (!log_off)
+		log_off = &l_off;
+
 	if (geo->log_to_zone)
 		return geo->log_to_zone(geo, log_addr, log_off);
 	else {
@@ -112,6 +117,11 @@ static inline unsigned int mtdx_geo_phy_to_zone(struct mtdx_geo *geo,
 						unsigned int phy_addr,
 						unsigned int *phy_off)
 {
+	unsigned int p_off;
+
+	if (!phy_off)
+		phy_off = &p_off;
+
 	if (!geo->phy_to_zone) {
 		*phy_off = phy_addr & ((1 << geo->zone_size_log) - 1);
 		return phy_addr >> geo->zone_size_log;
