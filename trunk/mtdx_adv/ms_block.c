@@ -737,35 +737,6 @@ static ssize_t ms_block_format_store(struct device *dev,
 
 static DEVICE_ATTR(format, 0644, ms_block_format_show, ms_block_format_store);
 
-static void ms_block_release_req_dev(struct ms_block_data *msb)
-{
-	if (msb->req_dev) {
-		list_del(&msb->req_dev->queue_node);
-		INIT_LIST_HEAD(&msb->req_dev->queue_node);
-		msb->req_dev = NULL;
-	}
-}
-
-static void ms_block_set_req_in(struct ms_block_data *msb)
-{
-	while (!msb->req_in) {
-		if (msb->req_dev)
-			msb->req_in = msb->req_dev->get_request(msb->req_dev);
-
-		if (!msb->req_in) {
-			ms_block_release_req_dev(msb);
-			if (!list_empty(&msb->c_queue))
-				msb->req_dev = mtdx_queue_entry(msb->c_queue
-								    .next);
-		 	else {
-				wake_up_all(&msb->req_wq);
-				break;
-			}
-		}
-	}
-
-}
-
 /*
  * All sequences start from CLEAR_BUF command and optional SET_RW_REG_ADDR tpc.
  *
@@ -862,7 +833,7 @@ static int h_ms_block_req_init(struct memstick_dev *card,
 	*mrq = &card->current_mrq;
 
 	spin_lock_irqsave(&msb->lock, flags);
-	ms_block_set_req_in(msb);
+	msb->req_in = mtdx_get_request(msb->mdev);
 	spin_unlock_irqrestore(&msb->lock, flags);
 
 	if (!msb->req_in) {
@@ -1515,7 +1486,7 @@ static int ms_block_complete_req(struct memstick_dev *card, int error)
 		spin_lock_irqsave(&msb->lock, flags);
 		if (!msb->req_in) {
 			card->next_request = h_ms_block_req_init;
-			ms_block_set_req_in(msb);
+			msb->req_in = mtdx_get_request(msb->mdev);
 			if (msb->req_in)
 				memstick_new_req(card->host);
 			else
@@ -2418,17 +2389,6 @@ static void ms_block_remove(struct memstick_dev *card)
 
 	if (f_thread)
 		kthread_stop(f_thread);
-
-	while (1) {
-		spin_lock_irqsave(&msb->lock, flags);
-		if (list_empty(&msb->c_queue)
-		    && list_empty(&msb->mdev->queue_node))
-			break;
-
-		spin_unlock_irqrestore(&msb->lock, flags);
-		msleep_interruptible(1);
-	};
-	spin_unlock_irqrestore(&msb->lock, flags);
 
 	dev_dbg(&card->dev, "mtdx drop\n");
 	mtdx_drop_children(msb->mdev);

@@ -305,7 +305,7 @@ struct mtdx_dev *mtdx_alloc_dev(struct device *parent,
 	mdev->dev.bus = &mtdx_bus_type;
 	mdev->dev.release = mtdx_free_dev;
 	mdev->dev.type = &mtdx_type;
-	INIT_LIST_HEAD(&mdev->queue_node);
+	klist_iter_init(&mdev->dev.klist_children, &mdev->source);
 
 	snprintf(mdev->dev.bus_id, sizeof(mdev->dev.bus_id),
 		 "mtdx%d", mdev->ord);
@@ -396,22 +396,32 @@ void mtdx_page_list_free(struct list_head *head)
 }
 EXPORT_SYMBOL(mtdx_page_list_free);
 
-int mtdx_append_dev_list(struct list_head *head, struct mtdx_dev *r_dev)
+struct mtdx_request *mtdx_get_request(struct mtdx_dev *mdev)
 {
-	struct list_head *pos;
+	struct klist_node *src = mdev->source.i_cur;
+	struct device *cdev;
+	struct mtdx_dev *m_cdev;
+	struct mtdx_request *rv = NULL;
 
-	__list_for_each(pos, head) {
-		if (mtdx_queue_entry(pos) == r_dev)
-			return 0;
-	}
+	do {
+		if (src) {
+			cdev = container_of(src, struct device, knode_parent);
+			if (cdev->type == &mtdx_type) {
+				m_cdev = container_of(cdev, struct mtdx_dev,
+						      dev);
+				rv = m_cdev->get_request(m_cdev);
+				if (rv)
+					return rv;
+			}
+		}
 
-	if (!list_empty(&r_dev->queue_node))
-		return -EBUSY;
-
-	list_add_tail(&r_dev->queue_node, head);
-	return 0;
+		src = klist_next(&mdev->source);
+	} while (src);
+	klist_iter_exit(&mdev->source);
+	klist_iter_init(&mdev->dev.klist_children, &mdev->source);
+	return NULL;
 }
-EXPORT_SYMBOL(mtdx_append_dev_list);
+EXPORT_SYMBOL(mtdx_get_request);
 
 int bitmap_region_empty(unsigned long *bitmap, unsigned int offset,
 			unsigned int length)

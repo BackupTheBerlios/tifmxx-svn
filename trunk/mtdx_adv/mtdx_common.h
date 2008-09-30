@@ -200,7 +200,7 @@ struct mtdx_request {
 struct mtdx_dev {
 	struct mtdx_device_id id;
 	unsigned int          ord;
-	struct list_head      queue_node;
+	struct klist_iter     source;
 
 	/* notify device of pending requests                          */
 	int                  (*new_request)(struct mtdx_dev *this_dev,
@@ -259,6 +259,8 @@ void mtdx_drop_children(struct mtdx_dev *mdev);
 int mtdx_page_list_append(struct list_head *head, struct mtdx_page_info *info);
 void mtdx_page_list_free(struct list_head *head);
 
+struct mtdx_request *mtdx_get_request(struct mtdx_dev *mdev);
+
 static inline void mtdx_complete_request(struct mtdx_request *req, int error,
 					 unsigned int count)
 {
@@ -286,11 +288,6 @@ static inline void *mtdx_get_drvdata(struct mtdx_dev *mdev)
 static inline void mtdx_set_drvdata(struct mtdx_dev *mdev, void *data)
 {
 	dev_set_drvdata(&mdev->dev, data);
-}
-
-static inline struct mtdx_dev *mtdx_queue_entry(struct list_head *head)
-{
-	return container_of(head, struct mtdx_dev, queue_node);
 }
 
 int mtdx_append_dev_list(struct list_head *head, struct mtdx_dev *r_dev);
