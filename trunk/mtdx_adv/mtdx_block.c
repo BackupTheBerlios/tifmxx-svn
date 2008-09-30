@@ -34,17 +34,13 @@ struct mtdx_block_data {
 	struct request_queue  *queue;
 	struct request        *block_req;
 	struct mtdx_request   req_out;
+	struct mtdx_data_iter req_data;
 	spinlock_t            q_lock;
-	struct mtdx_dev_geo   geo;
+	struct mtdx_geo       geo;
 	unsigned int          peb_size;
 	struct hd_geometry    hd_geo;
-	struct scatterlist    req_sg[MTDX_BLOCK_MAX_SEGS];
-	unsigned int          sg_len;
-	unsigned int          sg_pos;
 	unsigned int          read_only:1,
-			      eject:1,
-			      has_request:1,
-			      chunk:1;
+			      eject:1;
 };
 
 static DEFINE_MUTEX(mtdx_block_disk_lock);
@@ -134,10 +130,11 @@ static void mtdx_block_end_request(struct mtdx_request *req, int error,
 		if (!error)
 			error = -EIO;
 
-		count = blk_rq_cur_bytes(mbd->block_req);
+		count = blk_rq_bytes(mbd->block_req);
 	}
 
-	mbd->chunk = __blk_end_request(mbd->block_req, error, count);
+	blk_end_request(mbd->block_req, error, count);
+	mbd->block_req = NULL;
 
 	spin_unlock_irqrestore(&mbd->q_lock, flags);
 }
@@ -145,77 +142,41 @@ static void mtdx_block_end_request(struct mtdx_request *req, int error,
 static struct mtdx_request *mtdx_block_get_request(struct mtdx_dev *mdev)
 {
 	struct mtdx_block_data *mbd = mtdx_get_drvdata(mdev);
-	struct mtdx_request *rv = NULL;
 	sector_t t_sec;
 	unsigned int flags;
-	
+
 	spin_lock_irqsave(&mbd->q_lock, flags);
 try_again:
-	while (mbd->chunk) {
-		mbd->sg_pos = 0;
-		mbd->sg_len = blk_rq_map_sg(mbd->block_req->q, mbd->block_req,
-					    mbd->req_sg);
+	if (mbd->block_req) {
+		t_sec = mbd->block_req->sector << 9;
+		mbd->req_out.phy.b_addr = MTDX_INVALID_BLOCK;
+		mbd->req_out.phy.offset = sector_div(t_sec, mbd->peb_size);
+		mbd->req_out.logical = t_sec;
+		mbd->req_out.length = blk_rq_bytes(mbd->block_req);
 
-		if (mbd->sg_len) {
-			t_sec = mbd->block_req->sector << 9;
-			mbd->req_out.offset = sector_div(t_sec, mbd->peb_size);
-			mbd->req_out.log_block = t_sec;
-			mbd->req_out.length = blk_rq_cur_bytes(mbd->block_req);
-			mbd->req_out.phy_block = MTDX_INVALID_BLOCK;
+		dev_dbg(&mdev->dev, "req: logical %x, offset %x, length %x, "
+			"peb_size %x\n", mbd->req_out.logical,
+			mbd->req_out.phy.offset,
+			mbd->req_out.length, mbd->peb_size);
 
-			dev_dbg(&mdev->dev, "req: log_block %x, offset %x, "
-				"length %x, peb_size %x\n",
-				mbd->req_out.log_block,
-				mbd->req_out.offset, mbd->req_out.length,
-				mbd->peb_size);
+		mbd->req_out.cmd = rq_data_dir(mbd->block_req) == READ
+				   ? MTDX_CMD_READ
+				   : MTDX_CMD_WRITE;
 
-			mbd->req_out.cmd = rq_data_dir(mbd->block_req) == READ
-					   ? MTDX_CMD_READ_DATA
-					   : MTDX_CMD_WRITE_DATA;
-			rv = &mbd->req_out;
-			goto out;
-		}
-
-		mbd->chunk = __blk_end_request(mbd->block_req, -ENOMEM,
-					blk_rq_cur_bytes(mbd->block_req));
-	}
-
-	dev_dbg(&mdev->dev, "elv_next\n");
-	mbd->block_req = elv_next_request(mbd->queue);
-	if (!mbd->block_req) {
-		dev_dbg(&mdev->dev, "issue end\n");
-		mbd->has_request = 0;
-		rv = NULL;
-		goto out;
-	}
-
-	dev_dbg(&mdev->dev, "trying again\n");
-	mbd->chunk = 1;
-	goto try_again;
-out:
-	spin_unlock_irqrestore(&mbd->q_lock, flags);
-	dev_dbg(&mdev->dev, "get request %p\n", rv);
-	return rv;
-}
-
-static int mtdx_block_get_data_buf_sg(struct mtdx_request *req,
-				      struct scatterlist *sg)
-{
-	struct mtdx_block_data *mbd = mtdx_get_drvdata(req->src_dev);
-	unsigned long flags;
-
-	spin_lock_irqsave(&mbd->q_lock, flags);
-	dev_dbg(&req->src_dev->dev, "get_data_buf_sg pos %d of %d\n",
-		mbd->sg_pos, mbd->sg_len);
-
-	if (mbd->sg_pos >= mbd->sg_len) {
+		mtdx_data_iter_init_bio(&mbd->req_data, mbd->block_req->bio);
+		mbd->req_out.req_data = &mbd->req_data;
 		spin_unlock_irqrestore(&mbd->q_lock, flags);
-		return -EAGAIN;
+		return &mbd->req_out;
+	} else {
+		dev_dbg(&mdev->dev, "elv_next\n");
+		mbd->block_req = elv_next_request(mbd->queue);
+		if (!mbd->block_req) {
+			dev_dbg(&mdev->dev, "issue end\n");
+			spin_unlock_irqrestore(&mbd->q_lock, flags);
+			return NULL;
+		}
 	}
-
-	memcpy(sg, &mbd->req_sg[mbd->sg_pos++], sizeof(struct scatterlist));
-	spin_unlock_irqrestore(&mbd->q_lock, flags);
-	return 0;
+	goto try_again;
 }
 
 static void mtdx_block_submit_req(struct request_queue *q)
@@ -227,7 +188,7 @@ static void mtdx_block_submit_req(struct request_queue *q)
 	struct request *req = NULL;
 	int rc;
 
-	if (mbd->has_request)
+	if (mbd->block_req)
 		return;
 
 	if (mbd->eject) {
@@ -237,8 +198,6 @@ static void mtdx_block_submit_req(struct request_queue *q)
 		return;
 	}
 
-	mbd->has_request = 1;
-	mbd->chunk = 0;
 	while (1) {
 		rc = parent->new_request(parent, mdev);
 		dev_dbg(&mdev->dev, "parent->new_request %d\n", rc);
@@ -248,10 +207,8 @@ static void mtdx_block_submit_req(struct request_queue *q)
 			req = elv_next_request(q);
 			if (req)
 				end_queued_request(req, rc);
-			else {
-				mbd->has_request = 0;
+			else
 				break;
-			}
 		}
 	}
 }
@@ -383,7 +340,6 @@ static int mtdx_block_probe(struct mtdx_dev *mdev)
 	mbd->req_out.src_dev = mdev;
 	mdev->get_request = mtdx_block_get_request;
 	mdev->end_request = mtdx_block_end_request;
-	mdev->get_data_buf_sg = mtdx_block_get_data_buf_sg;
 
 	rc = mtdx_block_init_disk(mdev);
 	dev_dbg(&mdev->dev, "init_disk %d\n", rc);

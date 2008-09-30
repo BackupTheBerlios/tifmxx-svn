@@ -723,7 +723,7 @@ static int mspro_block_complete_req(struct memstick_dev *card, int error)
 	struct mspro_block_data *msb = memstick_get_drvdata(card);
 	int chunk, cnt;
 	unsigned int t_len = 0;
-	unsigned int flags;
+	unsigned long flags;
 
 	spin_lock_irqsave(&msb->q_lock, flags);
 	dev_dbg(&card->dev, "complete %d, %d\n", msb->has_request ? 1 : 0,
@@ -1131,7 +1131,6 @@ static int mspro_block_init_card(struct memstick_dev *card)
 		return -EIO;
 
 	msb->caps = host->caps;
-
 
 	msleep(150);
 	rc = mspro_block_wait_for_ced(card);

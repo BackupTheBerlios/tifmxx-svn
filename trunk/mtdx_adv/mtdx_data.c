@@ -263,3 +263,4 @@ void mtdx_data_iter_init_bio(struct mtdx_data_iter *iter, struct bio *bio)
 	iter->r_bio.head = bio;
 	iter->r_bio.seg = bio;
 }
+EXPORT_SYMBOL(mtdx_data_iter_init_bio);
