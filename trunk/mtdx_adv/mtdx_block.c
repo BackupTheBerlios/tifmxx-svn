@@ -115,27 +115,28 @@ static struct block_device_operations mtdx_block_bdops = {
 	.owner   = THIS_MODULE
 };
 
-static void mtdx_block_end_request(struct mtdx_request *req, int error,
-				   unsigned int count)
+static void mtdx_block_end_request(struct mtdx_dev *this_dev,
+				   struct mtdx_request *req,
+				   unsigned int count,
+				   int dst_error, int src_error)
 {
-	struct mtdx_block_data *mbd = mtdx_get_drvdata(req->src_dev);
+	struct mtdx_block_data *mbd = mtdx_get_drvdata(this_dev);
 	unsigned int flags;
 
-	dev_dbg(&req->src_dev->dev, "end_request %x, %d\n", count, error);
+	dev_dbg(&this_dev->dev, "end_request %x, %d\n", count, dst_error);
 	spin_lock_irqsave(&mbd->q_lock, flags);
 
 	if (count)
-		error = 0;
+		dst_error = 0;
 	else {
-		if (!error)
-			error = -EIO;
+		if (!dst_error)
+			dst_error = -EIO;
 
 		count = blk_rq_bytes(mbd->block_req);
 	}
 
-	blk_end_request(mbd->block_req, error, count);
+	blk_end_request(mbd->block_req, dst_error, count);
 	mbd->block_req = NULL;
-
 	spin_unlock_irqrestore(&mbd->q_lock, flags);
 }
 
@@ -186,7 +187,6 @@ static void mtdx_block_submit_req(struct request_queue *q)
 					       struct mtdx_dev, dev);
 	struct mtdx_block_data *mbd = mtdx_get_drvdata(mdev);
 	struct request *req = NULL;
-	int rc;
 
 	if (mbd->block_req)
 		return;
@@ -198,19 +198,7 @@ static void mtdx_block_submit_req(struct request_queue *q)
 		return;
 	}
 
-	while (1) {
-		rc = parent->new_request(parent, mdev);
-		dev_dbg(&mdev->dev, "parent->new_request %d\n", rc);
-		if (!rc)
-			break;
-		else {
-			req = elv_next_request(q);
-			if (req)
-				end_queued_request(req, rc);
-			else
-				break;
-		}
-	}
+	parent->new_request(parent, mdev);
 }
 
 static int mtdx_block_prepare_req(struct request_queue *q, struct request *req)
@@ -337,7 +325,6 @@ static int mtdx_block_probe(struct mtdx_dev *mdev)
 	parent->get_param(parent, MTDX_PARAM_HD_GEO, &mbd->hd_geo);
 
 	mbd->peb_size = mbd->geo.page_cnt * mbd->geo.page_size;
-	mbd->req_out.src_dev = mdev;
 	mdev->get_request = mtdx_block_get_request;
 	mdev->end_request = mtdx_block_end_request;
 

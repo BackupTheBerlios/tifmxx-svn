@@ -187,7 +187,6 @@ struct mtdx_pos {
 };
 
 struct mtdx_request {
-	struct mtdx_dev       *src_dev;  /* originating device              */
 	enum mtdx_command     cmd;       /* command to execute              */
 	unsigned int          logical;   /* logical block address           */
 	struct mtdx_pos       phy;       /* request target physical address */
@@ -200,24 +199,20 @@ struct mtdx_request {
 struct mtdx_dev {
 	struct mtdx_device_id id;
 	unsigned int          ord;
-	struct klist_iter     source;
+	struct list_head      q_node;
 
 	/* notify device of pending requests                          */
-	int                  (*new_request)(struct mtdx_dev *this_dev,
+	void                 (*new_request)(struct mtdx_dev *this_dev,
 					    struct mtdx_dev *req_dev);
 
 	/* get any available requests from device                     */
 	struct mtdx_request  *(*get_request)(struct mtdx_dev *this_dev);
 
 	/* complete an active request                                 */
-	void                 (*end_request)(struct mtdx_request *req, int error,
-					    unsigned int count);
-
-	/* Copy support                                                */
-	int                  (*get_copy_source)(struct mtdx_request *req,
-						struct mtdx_pos *src_pos);
-	void                 (*put_copy_source)(struct mtdx_request *req,
-						int src_error);
+	void                 (*end_request)(struct mtdx_dev *this_dev,
+					    struct mtdx_request *req,
+					    unsigned int count,
+					    int dst_error, int src_error);
 
 	/* Translate opaque oob blob to/from generic block decription. */
 	int                  (*oob_to_info)(struct mtdx_dev *this_dev,
@@ -236,6 +231,11 @@ struct mtdx_dev {
 					  unsigned long val);
 
 	struct device         dev;
+};
+
+struct mtdx_dev_queue {
+	spinlock_t       lock;
+	struct list_head head;
 };
 
 struct mtdx_driver {
@@ -259,26 +259,15 @@ void mtdx_drop_children(struct mtdx_dev *mdev);
 int mtdx_page_list_append(struct list_head *head, struct mtdx_page_info *info);
 void mtdx_page_list_free(struct list_head *head);
 
-struct mtdx_request *mtdx_get_request(struct mtdx_dev *mdev);
-
-static inline void mtdx_complete_request(struct mtdx_request *req, int error,
-					 unsigned int count)
+static inline void mtdx_dev_queue_init(struct mtdx_dev_queue *devq)
 {
-	req->src_dev->end_request(req, error, count);
+	spin_lock_init(&devq->lock);
+	INIT_LIST_HEAD(&devq->head);
 }
 
-static inline int mtdx_get_copy_source(struct mtdx_request *req,
-				       struct mtdx_pos *src_pos)
-
-{
-	return req->src_dev->get_copy_source(req, src_pos);
-}
-
-static inline void mtdx_put_copy_source(struct mtdx_request *req,
-					int src_error)
-{
-	req->src_dev->put_copy_source(req, src_error);
-}
+void mtdx_dev_queue_push_back(struct mtdx_dev_queue *devq,
+			      struct mtdx_dev *mdev);
+struct mtdx_dev *mtdx_dev_queue_pop_front(struct mtdx_dev_queue *devq);
 
 static inline void *mtdx_get_drvdata(struct mtdx_dev *mdev)
 {
