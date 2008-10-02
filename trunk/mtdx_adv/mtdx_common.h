@@ -268,6 +268,7 @@ static inline void mtdx_dev_queue_init(struct mtdx_dev_queue *devq)
 void mtdx_dev_queue_push_back(struct mtdx_dev_queue *devq,
 			      struct mtdx_dev *mdev);
 struct mtdx_dev *mtdx_dev_queue_pop_front(struct mtdx_dev_queue *devq);
+int mtdx_dev_queue_empty(struct mtdx_dev_queue *devq);
 
 static inline void *mtdx_get_drvdata(struct mtdx_dev *mdev)
 {

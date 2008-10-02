@@ -399,10 +399,16 @@ EXPORT_SYMBOL(mtdx_page_list_free);
 void mtdx_dev_queue_push_back(struct mtdx_dev_queue *devq,
                               struct mtdx_dev *mdev)
 {
+	struct list_head *p;
 	unsigned long flags;
 
 	spin_lock_irqsave(&devq->lock, flags);
+	__list_for_each(p, &devq->head) {
+		if (p == &mdev->q_node)
+			goto out;
+	}
 	list_add_tail(&mdev->q_node, &devq->head);
+out:
 	spin_unlock_irqrestore(&devq->lock, flags);
 }
 EXPORT_SYMBOL(mtdx_dev_queue_push_back);
@@ -422,6 +428,18 @@ struct mtdx_dev *mtdx_dev_queue_pop_front(struct mtdx_dev_queue *devq)
 	return rv;
 }
 EXPORT_SYMBOL(mtdx_dev_queue_pop_front);
+
+int mtdx_dev_queue_empty(struct mtdx_dev_queue *devq)
+{
+	unsigned long flags;
+	int rc;
+
+	spin_lock_irqsave(&devq->lock, flags);
+	rc = list_empty(&devq->head);
+	spin_unlock_irqrestore(&devq->lock, flags);
+	return rc;
+}
+EXPORT_SYMBOL(mtdx_dev_queue_empty);
 
 int bitmap_region_empty(unsigned long *bitmap, unsigned int offset,
 			unsigned int length)

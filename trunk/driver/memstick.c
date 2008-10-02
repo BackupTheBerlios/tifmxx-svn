@@ -257,6 +257,15 @@ void memstick_new_req(struct memstick_host *host)
 }
 EXPORT_SYMBOL(memstick_new_req);
 
+void memstick_reset_req(struct memstick_host *host)
+{
+	if (host->card) {
+		host->retries = cmd_retries;
+		INIT_COMPLETION(host->card->mrq_complete);
+	}
+}
+EXPORT_SYMBOL(memstick_reset_req);
+
 /**
  * memstick_init_req_sg - set request fields needed for bulk data transfer
  * @mrq - request to use
