@@ -16,7 +16,7 @@ struct btm_oob {
 	enum mtdx_page_status status;
 };
 
-struct mtdx_dev_geo btm_geo = {
+struct mtdx_geo btm_geo = {
 	.zone_size_log = 10,
 	.log_block_cnt = 2000,
 	.phy_block_cnt = 2048,
@@ -34,12 +34,12 @@ struct btm_oob *pages;
 int btm_trans_data(struct mtdx_request *req, int dir)
 {
 	struct scatterlist sg;
-	unsigned int c_pos = req->phy_block
+	unsigned int c_pos = req->phy.b_addr
 			     * (btm_geo.page_cnt * btm_geo.page_size);
 	unsigned int t_len, r_len = req->length;
 	int rc;
 
-	c_pos += req->offset;
+	c_pos += req->phy.offset;
 
 	while (!(rc = btm_req_dev->get_data_buf_sg(req, &sg))) {
 		t_len = min(sg.length, r_len);
@@ -61,11 +61,11 @@ int btm_trans_data(struct mtdx_request *req, int dir)
 
 int btm_trans_oob(struct mtdx_request *req, int dir)
 {
-	unsigned int c_pos = req->phy_block * btm_geo.page_cnt;
+	unsigned int c_pos = req->phy.b_addr * btm_geo.page_cnt;
 	unsigned int cnt = req->length / btm_geo.page_size;
 	char *oob_buf;
 
-	c_pos += req->offset / btm_geo.page_size;
+	c_pos += req->phy.offset / btm_geo.page_size;
 
 	for (; cnt; --cnt) {
 		oob_buf = btm_req_dev->get_oob_buf(req);
@@ -118,15 +118,15 @@ void *request_thread(void *data)
 		printf("rt: got request dev\n");
 		while ((req = btm_req_dev->get_request(btm_req_dev))) {
 			printf("rt: req cmd %x, block %x, %x:%x\n", req->cmd,
-			       req->phy_block, req->offset, req->length);
-			if ((req->offset % btm_geo.page_size)
+			       req->phy.b_addr, req->phy.offset, req->length);
+			if ((req->phy.offset % btm_geo.page_size)
 			    || (req->length % btm_geo.page_size)) {
 				printf("rt: unaligned offset/length!\n");
 				exit(1);
 			}
-			if ((req->offset
+			if ((req->phy.offset
 			     > (btm_geo.page_cnt * btm_geo.page_size))
-			    || ((req->offset + req->length)
+			    || ((req->phy.offset + req->length)
 				> (btm_geo.page_cnt * btm_geo.page_size))) {
 				printf("rt: invalid offset/length!\n");
 				exit(2);
@@ -140,24 +140,24 @@ void *request_thread(void *data)
 
 				btm_complete_req(req, rc, req->length);
 				break;
-			case MTDX_CMD_READ_DATA:
+			case MTDX_CMD_READ:
 				rc = btm_trans_data(req, 0);
 
 				btm_complete_req(req, rc, req->length);
 				break;
-			case MTDX_CMD_READ_OOB:
+			case MTDX_CMD_READ:
 				rc = btm_trans_oob(req, 0);
 
 				printf("rt: read oob, %x, %d\n", req->length, rc);
 				btm_complete_req(req, rc, req->length);
 				break;
 			case MTDX_CMD_ERASE:
-				printf("rt: erase %x\n", req->phy_block);
+				printf("rt: erase %x\n", req->phy.b_addr);
 				memset(trans_space
-				       + req->phy_block * block_size,
+				       + req->phy.b_addr * block_size,
 				       btm_geo.fill_value, block_size);
-				for (cnt = req->phy_block * btm_geo.page_cnt;
-				     cnt < ((req->phy_block + 1)
+				for (cnt = req->phy.b_addr * btm_geo.page_cnt;
+				     cnt < ((req->phy.b_addr + 1)
 					    * btm_geo.page_cnt);
 				     ++cnt) {
 					pages[cnt].status = MTDX_PAGE_ERASED;
@@ -175,31 +175,31 @@ void *request_thread(void *data)
 				printf("rt: write oob %d\n", rc);
 				btm_complete_req(req, rc, req->length);
 				break;
-			case MTDX_CMD_WRITE_DATA:
+			case MTDX_CMD_WRITE:
 				rc = btm_trans_data(req, 1);
 
 				btm_complete_req(req, rc, req->length);
 				break;
-			case MTDX_CMD_WRITE_OOB:
+			case MTDX_CMD_WRITE:
 				rc = btm_trans_oob(req, 1);
 
 				btm_complete_req(req, rc, req->length);
 				break;
 			case MTDX_CMD_SELECT:
 				printf("rt: select block %x, stat %x\n",
-				       req->phy_block,
-				       pages[req->phy_block * btm_geo.page_cnt]
+				       req->phy.b_addr,
+				       pages[req->phy.b_addr * btm_geo.page_cnt]
 					    .status);
-				pages[req->phy_block * btm_geo.page_cnt].status
+				pages[req->phy.b_addr * btm_geo.page_cnt].status
 					= MTDX_PAGE_SMAPPED;
 				btm_complete_req(req, 0, 0);
 				break;
 			case MTDX_CMD_INVALIDATE:
 				printf("rt: invalidate block %x, stat %x\n",
-				       req->phy_block,
-				       pages[req->phy_block * btm_geo.page_cnt]
+				       req->phy.b_addr,
+				       pages[req->phy.b_addr * btm_geo.page_cnt]
 					    .status);
-				pages[req->phy_block * btm_geo.page_cnt].status
+				pages[req->phy.b_addr * btm_geo.page_cnt].status
 					= MTDX_PAGE_INVALID;
 				btm_complete_req(req, 0, 0);
 				break;
@@ -210,8 +210,8 @@ void *request_thread(void *data)
 					btm_complete_req(req, rc, 0);
 
 				memcpy(trans_space
-				       + req->phy_block * block_size +
-				       req->offset,
+				       + req->phy.b_addr * block_size +
+				       req->phy.offset,
 				       trans_space + src_blk * block_size
 				       + src_off,
 				       req->length);
@@ -372,8 +372,8 @@ struct mtdx_dev top_dev = {
 };
 
 struct mtdx_request top_req = {
-	.src_dev = &top_dev,
-	.phy_block = MTDX_INVALID_BLOCK
+//	.src_dev = &top_dev,
+//	.phy_block = MTDX_INVALID_BLOCK
 };
 
 static struct mtdx_request *top_get_request(struct mtdx_dev *mdev)
@@ -467,13 +467,13 @@ int main(int argc, char **argv)
 		RAND_bytes(data_w, top_size);
 		data_r = calloc(1, top_size);
 
-		top_req.log_block = off / btm_geo.page_cnt;
-		top_req.offset = (off % btm_geo.page_cnt)
-				 * btm_geo.page_size;
+		top_req.logical = off / btm_geo.page_cnt;
+		top_req.phy.offset = (off % btm_geo.page_cnt)
+				     * btm_geo.page_size;
 		top_req.length = top_size;
 
 		top_pos = 0;
-		top_req.cmd = MTDX_CMD_WRITE_DATA;
+		top_req.cmd = MTDX_CMD_WRITE;
 		top_data_buf = data_w;
 		top_req_done = 0;
 
@@ -489,7 +489,7 @@ int main(int argc, char **argv)
 
 		printf("Write signalled %d\n", top_req_done);
 		top_pos = 0;
-		top_req.cmd = MTDX_CMD_READ_DATA;
+		top_req.cmd = MTDX_CMD_READ;
 		top_data_buf = data_r;
 		top_req_done = 0;
 
