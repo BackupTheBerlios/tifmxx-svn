@@ -10,7 +10,6 @@ rmmod jmb38x_ms.ko
 rmmod ms_block.ko
 rmmod mtdx_block.ko
 rmmod ftl_simple.ko
-rmmod sg_bounce.ko
 rmmod rand_peb_alloc.ko
 rmmod long_map.ko
 rmmod mtdx_core.ko

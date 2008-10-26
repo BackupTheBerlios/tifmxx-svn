@@ -582,6 +582,13 @@ static int h_ms_block_internal_req_init(struct memstick_dev *card,
 	return 0;
 }
 
+static int h_ms_block_internal_end(struct memstick_dev *card,
+				   struct memstick_request **mrq)
+{
+	complete_all(&card->mrq_complete);
+	return (*mrq)->error;
+}
+
 static int ms_block_format(void *data)
 {
 	struct memstick_dev *card = data;
@@ -619,6 +626,8 @@ static int ms_block_format(void *data)
 			}
 		}
 
+		msb->req_dev = msb->mdev;
+		get_device(&msb->mdev->dev);
 		msb->cmd = MS_CMD_BLOCK_ERASE;
 		param.system = msb->system;
 		param.cp = MEMSTICK_CP_BLOCK;
@@ -871,13 +880,6 @@ static int h_ms_block_req_init(struct memstick_dev *card,
 	memstick_init_req(*mrq, MS_TPC_SET_CMD, &c_cmd, 1);
 	card->next_request = h_ms_block_clear_buf;
 	return 0;
-}
-
-static int h_ms_block_default(struct memstick_dev *card,
-			      struct memstick_request **mrq)
-{
-	ms_block_complete_req(card, (*mrq)->error);
-	return (*mrq)->error;
 }
 
 static int ms_block_set_req_data(struct ms_block_data *msb,
@@ -1526,6 +1528,7 @@ static void ms_block_complete_req(struct memstick_dev *card, int error)
 	msb->page_count = 0;
 	msb->cmd_flags = 0;
 	card->next_request = h_ms_block_req_init;
+	
 	spin_unlock_irqrestore(&msb->lock, flags);
 }
 
@@ -1535,7 +1538,7 @@ static int ms_block_reset_card(struct memstick_dev *card)
 	enum memstick_command cmd = MS_CMD_RESET;
 
 	card->next_request = h_ms_block_internal_req_init;
-	msb->mrq_handler = h_ms_block_default;
+	msb->mrq_handler = h_ms_block_internal_end;
 	memstick_init_req(&card->current_mrq, MS_TPC_SET_CMD, &cmd, 1);
 	card->current_mrq.need_card_int = 0;
 	memstick_new_req(card->host);
@@ -1557,7 +1560,7 @@ static int ms_block_switch_to_parallel(struct memstick_dev *card)
 	int rc;
 
 	card->next_request = h_ms_block_internal_req_init;
-	msb->mrq_handler = h_ms_block_default;
+	msb->mrq_handler = h_ms_block_internal_end;
 	memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, &param,
 			  sizeof(param));
 	memstick_new_req(card->host);
@@ -1571,7 +1574,7 @@ static int ms_block_switch_to_parallel(struct memstick_dev *card)
 	msb->system = param.system;
 
 	card->next_request = h_ms_block_internal_req_init;
-	msb->mrq_handler = h_ms_block_default;
+	msb->mrq_handler = h_ms_block_internal_end;
 	memstick_init_req(&card->current_mrq, MS_TPC_GET_INT, NULL, 1);
 	memstick_new_req(host);
 	wait_for_completion(&card->mrq_complete);
@@ -1935,7 +1938,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 		msb->caps |= MEMSTICK_CAP_AUTO_GET_INT;
 
 	card->next_request = h_ms_block_internal_req_init;
-	msb->mrq_handler = h_ms_block_default;
+	msb->mrq_handler = h_ms_block_internal_end;
 	memstick_init_req(&card->current_mrq, MS_TPC_READ_REG, NULL,
 			  sizeof(struct ms_status_register));
 	memstick_new_req(card->host);

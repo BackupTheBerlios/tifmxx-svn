@@ -21,7 +21,7 @@ rand_peb_alloc.o: ../rand_peb_alloc.c
 long_map.o: ../long_map.c
 	gcc $(CFLAGS) -c $^
 
-sg_bounce.o: ../sg_bounce.c
+mtdx_data.o: ../mtdx_data.c
 	gcc $(CFLAGS) -c $^
 
 clean:
