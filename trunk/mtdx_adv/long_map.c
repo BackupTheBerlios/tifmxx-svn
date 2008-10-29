@@ -12,6 +12,7 @@
 #include <linux/module.h>
 #include <linux/rbtree.h>
 #include <linux/workqueue.h>
+#include <linux/err.h>
 #include "long_map.h"
 
 static int extra = 0;
@@ -27,18 +28,14 @@ struct map_node {
 };
 
 struct long_map {
-	unsigned int       page_cnt;
 	struct rb_root     useful_blocks;
 	struct rb_node     *retired_nodes;
 	struct map_node    *c_block;
-	unsigned int       target_count;
 	unsigned int       rnode_count;
 	spinlock_t         lock;
 	unsigned long      param;
 	long_map_alloc_t   *alloc_fn;
 	long_map_free_t    *free_fn;
-
-	struct work_struct allocator_work;
 };
 
 static void long_map_default_free(void *val_ptr, unsigned long param)
@@ -98,11 +95,8 @@ static struct map_node *long_map_get_node(struct long_map *map)
 {
 	struct map_node *b;
 
-	if (map->rnode_count < (map->target_count / 2))
-		schedule_work(&map->allocator_work);
-
 	if (!map->retired_nodes)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
 	b = rb_entry(map->retired_nodes, struct map_node, node);
 
@@ -123,9 +117,6 @@ static void long_map_put_node(struct long_map *map, struct map_node *b)
 	b->node.rb_right = map->retired_nodes;
 	map->retired_nodes = &b->node;
 	map->rnode_count++;
-
-	if (map->rnode_count > (2 * map->target_count))
-		schedule_work(&map->allocator_work);
 }
 
 static void long_map_put_tree(struct long_map *map)
@@ -150,58 +141,64 @@ static void long_map_put_tree(struct long_map *map)
 	map->useful_blocks.rb_node = NULL;
 }
 
-static void long_map_async_alloc(struct work_struct *work)
+struct long_map *long_map_create(long_map_alloc_t *alloc_fn,
+				 long_map_free_t *free_fn, unsigned long param)
 {
-	struct long_map *map = container_of(work, struct long_map,
-					    allocator_work);
+	struct long_map *map = kzalloc(sizeof(struct long_map), GFP_KERNEL);
+
+	if (!map)
+		return NULL;
+
+	spin_lock_init(&map->lock);
+
+	map->param = param;
+	map->alloc_fn = alloc_fn;
+	map->free_fn = free_fn;
+
+	if (alloc_fn && !free_fn)
+		map->free_fn = long_map_default_free;
+
+	return map;
+}
+EXPORT_SYMBOL(long_map_create);
+
+int long_map_prealloc(struct long_map *map, unsigned int count)
+{
 	struct map_node *b;
-	struct rb_node *h = NULL;
-	unsigned int cnt = 0;
+	struct rb_node *h;
+	unsigned int r_cnt;
 	unsigned long flags;
 
-	spin_lock_irqsave(&map->lock, flags);
-	while (map->rnode_count && (map->rnode_count > map->target_count)) {
-		b = rb_entry(map->retired_nodes, struct map_node,
-			     node);
-		map->retired_nodes = b->node.rb_right;
-		b->node.rb_right = h;
-		b->node.rb_left = NULL;
-		h = &b->node;
-		map->rnode_count--;
-	};
+	while (1) {
+		spin_lock_irqsave(&map->lock, flags);
+		if (map->rnode_count < count)
+			r_cnt = count - map->rnode_count;
+		else
+			r_cnt = 0;
+		spin_unlock_irqrestore(&map->lock, flags);
 
-	if (map->rnode_count < map->target_count)
-		cnt = map->target_count - map->rnode_count;
-	spin_unlock_irqrestore(&map->lock, flags);
+		if (!r_cnt)
+			return 0;
 
-	while (h) {
-		b = rb_entry(h, struct map_node, node);
-		h = b->node.rb_right;
-		if (map->free_fn)
-			map->free_fn(b->val_ptr, map->param);
+		h = NULL;
 
-		kfree(b);
-	}
+		while (r_cnt) {
+			b = kzalloc(sizeof(struct map_node), GFP_KERNEL);
+                	if (!b)
+				goto undo_last;
 
-	while (cnt) {
-		b = kzalloc(sizeof(struct map_node), GFP_KERNEL);
-		if (!b)
-			break;
-
-		if (map->alloc_fn) {
-			b->val_ptr = map->alloc_fn(map->param);
-			if (!b->val_ptr) {
-				kfree(b);
-				break;
+			if (map->alloc_fn) {
+				b->val_ptr = map->alloc_fn(map->param);
+				if (!b->val_ptr) {
+					kfree(b);
+					goto undo_last;
+				}
 			}
+			b->node.rb_right = h;
+			h = &b->node;
+			r_cnt--;
 		}
 
-		b->node.rb_right = h;
-		h = &b->node;
-		cnt--;
-	}
-
-	if (h) {
 		spin_lock_irqsave(&map->lock, flags);
 		while (h) {
 			b = rb_entry(h, struct map_node, node);
@@ -212,33 +209,18 @@ static void long_map_async_alloc(struct work_struct *work)
 		}
 		spin_unlock_irqrestore(&map->lock, flags);
 	}
+undo_last:
+	while (h) {
+		b = rb_entry(h, struct map_node, node);
+		h = b->node.rb_right;
+		if (map->free_fn)
+			map->free_fn(b->val_ptr, map->param);
+
+		kfree(b);
+	}
+	return -ENOMEM;
 }
-
-struct long_map *long_map_create(unsigned int nr, long_map_alloc_t *alloc_fn,
-				 long_map_free_t *free_fn, unsigned long param)
-{
-	struct long_map *map = kzalloc(sizeof(struct long_map), GFP_KERNEL);
-
-	if (!map)
-		return NULL;
-
-	map->target_count = nr + extra;
-	spin_lock_init(&map->lock);
-	INIT_WORK(&map->allocator_work, long_map_async_alloc);
-
-	map->param = param;
-	map->alloc_fn = alloc_fn;
-	map->free_fn = free_fn;
-
-	if (alloc_fn && !free_fn)
-		map->free_fn = long_map_default_free;
-
-	if (map)
-		long_map_async_alloc(&map->allocator_work);
-
-	return map;
-}
-EXPORT_SYMBOL(long_map_create);
+EXPORT_SYMBOL(long_map_prealloc);
 
 void long_map_destroy(struct long_map *map)
 {
@@ -247,7 +229,6 @@ void long_map_destroy(struct long_map *map)
 	if (!map)
 		return;
 
-	cancel_work_sync(&map->allocator_work);
 	long_map_put_tree(map);
 
 	while (map->retired_nodes) {
@@ -290,17 +271,20 @@ unsigned long *long_map_insert(struct long_map *map, unsigned long key)
 	spin_lock_irqsave(&map->lock, flags);
 	b = long_map_get_node(map);
 
-	if (b) {
+	if (!IS_ERR(b)) {
 		b->key = key;
-		if (long_map_add_useful(map, b))
-			long_map_put_node(map, b);
-		else {
+		rv = ERR_PTR(long_map_add_useful(map, b));
+
+		if (!IS_ERR(rv)) {
 			if (map->alloc_fn)
 				rv = b->val_ptr;
 			else
 				rv = &b->val;
-		}
-	}
+		} else
+			long_map_put_node(map, b);
+	} else
+		rv = ERR_CAST(b);
+
 	spin_unlock_irqrestore(&map->lock, flags);
 	return rv;
 }
@@ -327,10 +311,6 @@ void long_map_clear(struct long_map *map)
 
 	spin_lock_irqsave(&map->lock, flags);
 	long_map_put_tree(map);
-
-	if (map->rnode_count > (2 * map->target_count))
-		schedule_work(&map->allocator_work);
-
 	spin_unlock_irqrestore(&map->lock, flags);
 }
 EXPORT_SYMBOL(long_map_clear);
