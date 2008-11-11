@@ -1872,7 +1872,7 @@ static void ms_block_adjust_log_cnt(struct ms_block_data *msb)
 }
 
 /* Logical block assignment in MemoryStick is fixed and predefined */
-static unsigned int ms_block_log_to_zone(struct mtdx_geo *geo,
+static unsigned int ms_block_log_to_zone(const struct mtdx_geo *geo,
 					 unsigned int log_addr,
 					 unsigned int *log_off)
 {
@@ -1889,7 +1889,7 @@ static unsigned int ms_block_log_to_zone(struct mtdx_geo *geo,
 	}
 }
 
-static unsigned int ms_block_zone_to_log(struct mtdx_geo *geo,
+static unsigned int ms_block_zone_to_log(const struct mtdx_geo *geo,
 					 unsigned int zone,
 					 unsigned int log_off)
 {

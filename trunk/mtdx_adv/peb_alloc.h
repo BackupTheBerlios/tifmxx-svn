@@ -29,8 +29,7 @@
 #define MTDX_PEB_ALLOC_ALL 0xffffffff
 
 struct mtdx_peb_alloc {
-	unsigned int zone_size_log;
-	unsigned int block_cnt;
+	const struct mtdx_geo *geo;
 
 	unsigned int (*get_peb)(struct mtdx_peb_alloc *bal,
 				unsigned int zone, int *dirty);
@@ -65,7 +64,6 @@ static inline void mtdx_peb_alloc_free(struct mtdx_peb_alloc *bal)
 		bal->free(bal);
 }
 
-struct mtdx_peb_alloc *mtdx_rand_peb_alloc(unsigned int zone_size_log,
-					   unsigned int block_cnt);
+struct mtdx_peb_alloc *mtdx_rand_peb_alloc(const struct mtdx_geo *geo);
 
 #endif

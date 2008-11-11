@@ -68,19 +68,20 @@ static unsigned int rand_peb_alloc_get(struct mtdx_peb_alloc *bal,
 	struct rand_peb_alloc *rb = container_of(bal, struct rand_peb_alloc,
 						 mpa);
 	unsigned long *c_map;
-	unsigned int f_pos, c_pos;
+	unsigned int f_pos, c_pos, rand_pos;
 	int c_stat;
 
-	unsigned int zone_min = zone << bal->zone_size_log;
-	unsigned int zone_max = (zone + 1) << bal->zone_size_log;
-	/* Is random of any help here? */
-	unsigned int rand_pos = (((1 << bal->zone_size_log) - 1)
-				 & random32()) + zone_min;
+	unsigned int zone_min = mtdx_geo_zone_to_phy(bal->geo, zone, 0);
+	unsigned int zone_max = mtdx_geo_zone_to_phy(bal->geo, zone + 1, 0);
 
-	if (zone_max > bal->block_cnt)
-		zone_max = bal->block_cnt;
-	if (rand_pos > bal->block_cnt)
-		rand_pos = bal->block_cnt - 1;
+	if (zone_max == MTDX_INVALID_BLOCK)
+		zone_max = bal->geo->phy_block_cnt;
+
+	/* Is random of any help here? */
+	rand_pos = (random32() % (zone_max - zone_min)) + zone_min;
+
+	if (rand_pos > bal->geo->phy_block_cnt)
+		rand_pos = bal->geo->phy_block_cnt - 1;
 
 	c_map = test_bit(zone, zone_map(rb)) ? rb->map_b : rb->map_a;
 
@@ -134,7 +135,8 @@ static void rand_peb_alloc_put(struct mtdx_peb_alloc *bal, unsigned int peb,
 {
 	struct rand_peb_alloc *rb = container_of(bal, struct rand_peb_alloc,
 						 mpa);
-	unsigned int zone = peb >> bal->zone_size_log;
+	unsigned int z_off;
+	unsigned int zone = mtdx_geo_phy_to_zone(bal->geo, peb, &z_off);
 
 	if (test_bit(zone, zone_map(rb))) {
 		set_bit(peb, rb->map_b);
@@ -154,13 +156,18 @@ static void rand_peb_alloc_reset(struct mtdx_peb_alloc *bal, unsigned int zone)
 						 mpa);
 
 	if (zone == MTDX_PEB_ALLOC_ALL) {
-		bitmap_fill(rb->map_a, bal->block_cnt);
-		bitmap_fill(rb->map_b, bal->block_cnt);
-		bitmap_fill(rb->erase_map, bal->block_cnt);
+		bitmap_fill(rb->map_a, bal->geo->phy_block_cnt);
+		bitmap_fill(rb->map_b, bal->geo->phy_block_cnt);
+		bitmap_fill(rb->erase_map, bal->geo->phy_block_cnt);
 		bitmap_zero(zone_map(rb), rb->zone_cnt);
 	} else {
-		unsigned int z_off = zone << bal->zone_size_log;
-		unsigned int z_cnt = 1 << bal->zone_size_log;
+		unsigned int z_off = mtdx_geo_zone_to_phy(bal->geo, zone, 0);
+		unsigned int z_cnt = mtdx_geo_zone_to_phy(bal->geo, zone + 1,
+							  0);
+		if (z_cnt == MTDX_INVALID_BLOCK)
+			z_cnt = bal->geo->phy_block_cnt;
+
+		z_cnt -= z_off;
 
 		bitmap_set_region(rb->map_a, z_off, z_cnt);
 		bitmap_set_region(rb->map_b, z_off, z_cnt);
@@ -182,31 +189,29 @@ static void rand_peb_alloc_free(struct mtdx_peb_alloc *bal)
 	kfree(rb);
 }
 
-struct mtdx_peb_alloc *mtdx_rand_peb_alloc(unsigned int zone_size_log,
-					   unsigned int block_cnt)
+struct mtdx_peb_alloc *mtdx_rand_peb_alloc(const struct mtdx_geo *geo)
 {
 	struct rand_peb_alloc *rb = kzalloc(sizeof(struct rand_peb_alloc),
 					    GFP_KERNEL);
+	unsigned int z_off;
 
 	if (!rb)
 		return NULL;
 
-	rb->zone_cnt = block_cnt >> zone_size_log;
-	if (!rb->zone_cnt)
-		rb->zone_cnt = 1;
+	rb->mpa.geo = geo;
+	rb->zone_cnt = mtdx_geo_phy_to_zone(geo, geo->phy_block_cnt - 1,
+					    &z_off) + 1;
 
-	rb->mpa.zone_size_log = zone_size_log;
-	rb->mpa.block_cnt = block_cnt;
 	rb->mpa.get_peb = rand_peb_alloc_get;
 	rb->mpa.put_peb = rand_peb_alloc_put;
 	rb->mpa.reset = rand_peb_alloc_reset;
 	rb->mpa.free = rand_peb_alloc_free;
 
-	rb->map_a = kmalloc(BITS_TO_LONGS(block_cnt)
+	rb->map_a = kmalloc(BITS_TO_LONGS(geo->phy_block_cnt)
 			    * sizeof(unsigned long), GFP_KERNEL);
-	rb->map_b = kmalloc(BITS_TO_LONGS(block_cnt)
+	rb->map_b = kmalloc(BITS_TO_LONGS(geo->phy_block_cnt)
 			    * sizeof(unsigned long), GFP_KERNEL);
-	rb->erase_map = kmalloc(BITS_TO_LONGS(block_cnt)
+	rb->erase_map = kmalloc(BITS_TO_LONGS(geo->phy_block_cnt)
 				* sizeof(unsigned long), GFP_KERNEL);
 
 	if (rb->zone_cnt > BITS_PER_LONG) {

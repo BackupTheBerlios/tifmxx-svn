@@ -243,7 +243,7 @@ void long_map_destroy(struct long_map *map)
 }
 EXPORT_SYMBOL(long_map_destroy);
 
-unsigned long *long_map_find(struct long_map *map, unsigned long key)
+unsigned long *long_map_get(struct long_map *map, unsigned long key)
 {
 	struct map_node *b;
 	unsigned long flags;
@@ -260,7 +260,7 @@ unsigned long *long_map_find(struct long_map *map, unsigned long key)
 	spin_unlock_irqrestore(&map->lock, flags);
 	return rv;
 }
-EXPORT_SYMBOL(long_map_find);
+EXPORT_SYMBOL(long_map_get);
 
 unsigned long *long_map_insert(struct long_map *map, unsigned long key)
 {

@@ -64,21 +64,21 @@ struct mtdx_geo {
 	unsigned int page_size;     /* Size of page in bytes               */
 	unsigned int oob_size;      /* Size of oob in bytes                */
 	unsigned int fill_value;    /* default value in memory cells       */
-	unsigned int (*log_to_zone)(struct mtdx_geo *geo,
+	unsigned int (*log_to_zone)(const struct mtdx_geo *geo,
 				    unsigned int log_addr,
 				    unsigned int *log_off);
-	unsigned int (*zone_to_log)(struct mtdx_geo *geo,
+	unsigned int (*zone_to_log)(const struct mtdx_geo *geo,
 				    unsigned int zone,
 				    unsigned int log_off);
-	unsigned int (*phy_to_zone)(struct mtdx_geo *geo,
+	unsigned int (*phy_to_zone)(const struct mtdx_geo *geo,
 				    unsigned int phy_addr,
 				    unsigned int *phy_off);
-	unsigned int (*zone_to_phy)(struct mtdx_geo *geo,
+	unsigned int (*zone_to_phy)(const struct mtdx_geo *geo,
 				    unsigned int zone,
 				    unsigned int phy_off);
 };
 
-static inline unsigned int mtdx_geo_log_to_zone(struct mtdx_geo *geo,
+static inline unsigned int mtdx_geo_log_to_zone(const struct mtdx_geo *geo,
 						unsigned int log_addr,
 						unsigned int *log_off)
 {
@@ -99,7 +99,7 @@ static inline unsigned int mtdx_geo_log_to_zone(struct mtdx_geo *geo,
 	}
 }
 
-static inline unsigned int mtdx_geo_zone_to_log(struct mtdx_geo *geo,
+static inline unsigned int mtdx_geo_zone_to_log(const struct mtdx_geo *geo,
 						unsigned int zone,
 						unsigned int log_off)
 {
@@ -109,11 +109,14 @@ static inline unsigned int mtdx_geo_zone_to_log(struct mtdx_geo *geo,
 		unsigned int z_cnt = geo->log_block_cnt
 				     / (geo->phy_block_cnt
 					>> geo->zone_size_log);
-		return zone * z_cnt + log_off;
+		if (log_off < z_cnt)
+			return zone * z_cnt + log_off;
+		else
+			return MTDX_INVALID_BLOCK;
 	}
 }
 
-static inline unsigned int mtdx_geo_phy_to_zone(struct mtdx_geo *geo,
+static inline unsigned int mtdx_geo_phy_to_zone(const struct mtdx_geo *geo,
 						unsigned int phy_addr,
 						unsigned int *phy_off)
 {
@@ -129,12 +132,16 @@ static inline unsigned int mtdx_geo_phy_to_zone(struct mtdx_geo *geo,
 		return geo->phy_to_zone(geo, phy_addr, phy_off);
 }
 
-static inline unsigned int mtdx_geo_zone_to_phy(struct mtdx_geo *geo,
+static inline unsigned int mtdx_geo_zone_to_phy(const struct mtdx_geo *geo,
 						unsigned int zone,
 						unsigned int phy_off)
 {
 	if (!geo->zone_to_phy) {
-		return (zone << geo->zone_size_log) + phy_off;
+		unsigned int z_cnt = 1 << geo->zone_size_log;
+		if (phy_off < z_cnt)
+			return (zone << geo->zone_size_log) + phy_off;
+		else
+			return MTDX_INVALID_BLOCK;
 	} else
 		return geo->zone_to_phy(geo, zone, phy_off);
 }

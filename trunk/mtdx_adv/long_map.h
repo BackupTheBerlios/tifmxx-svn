@@ -11,7 +11,7 @@ struct long_map *long_map_create(long_map_alloc_t *alloc_fn,
 				 unsigned long param);
 int long_map_prealloc(struct long_map *map, unsigned int count);
 void long_map_destroy(struct long_map *map);
-unsigned long *long_map_find(struct long_map *map, unsigned long key);
+unsigned long *long_map_get(struct long_map *map, unsigned long key);
 unsigned long *long_map_insert(struct long_map *map, unsigned long key);
 void long_map_erase(struct long_map *map, unsigned long key);
 void long_map_clear(struct long_map *map);
