@@ -290,6 +290,24 @@ unsigned long *long_map_insert(struct long_map *map, unsigned long key)
 }
 EXPORT_SYMBOL(long_map_insert);
 
+void long_map_move(struct long_map *map, unsigned long dst_key,
+		   unsigned long src_key)
+{
+	struct map_node *b;
+	unsigned long flags;
+
+	spin_lock_irqsave(&map->lock, flags);
+	b = long_map_find_useful(map, src_key);
+	if (b) {
+		rb_erase(&b->node, &map->useful_blocks);
+		b->key = dst_key;
+		if (long_map_add_useful(map, b))
+			long_map_put_node(map, b);
+	}
+	spin_unlock_irqrestore(&map->lock, flags);
+}
+EXPORT_SYMBOL(long_map_move);
+
 void long_map_erase(struct long_map *map, unsigned long key)
 {
 	struct map_node *b;
