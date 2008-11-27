@@ -19,8 +19,10 @@
 
 #define DRIVER_NAME "ms_block"
 
-#undef dev_dbg
-#define dev_dbg dev_emerg
+//#undef dev_dbg
+//#define dev_dbg dev_emerg
+
+#define FUNC_START_DBG(card) dev_dbg(&(card)->dev, "%s start\n", __func__)
 
 struct ms_block_system_item {
 	unsigned int  start_addr;
@@ -163,6 +165,8 @@ struct ms_block_data {
 	unsigned int             t_count;
 	int                      trans_err;
 	int                      src_error;
+	int                      int_err;   /* internal request error */
+	unsigned int             int_count; /* internal request count */
 };
 
 static const struct ms_register_addr ms_block_r_stat_w_param = {
@@ -559,6 +563,8 @@ static int h_ms_block_trans_extra(struct memstick_dev *card,
 				  struct memstick_request **mrq);
 static int h_ms_block_data_get_int(struct memstick_dev *card,
 				   struct memstick_request **mrq);
+static int h_ms_block_set_cmd(struct memstick_dev *card,
+			      struct memstick_request **mrq);
 
 static int ms_block_reg_addr_cmp(struct memstick_dev *card,
 				 const struct ms_register_addr *addr)
@@ -586,7 +592,10 @@ static int h_ms_block_internal_end(struct memstick_dev *card,
 				   struct memstick_request **mrq)
 {
 	complete_all(&card->mrq_complete);
-	return (*mrq)->error;
+	if (!(*mrq)->error)
+		return -EAGAIN;
+	else
+		return (*mrq)->error;
 }
 
 static int ms_block_format(void *data)
@@ -821,6 +830,8 @@ static DEVICE_ATTR(format, 0644, ms_block_format_show, ms_block_format_store);
 static int h_ms_block_clear_buf(struct memstick_dev *card,
 				struct memstick_request **mrq)
 {
+	FUNC_START_DBG(card);
+
 	if ((*mrq)->error) {
 		ms_block_complete_req(card, (*mrq)->error);
 		return (*mrq)->error;
@@ -845,6 +856,8 @@ static int h_ms_block_req_init(struct memstick_dev *card,
 	int c_cmd = MS_CMD_CLEAR_BUF;
 	unsigned long flags;
 
+	FUNC_START_DBG(card);
+
 	*mrq = &card->current_mrq;
 
 	spin_lock_irqsave(&msb->lock, flags);
@@ -853,13 +866,17 @@ static int h_ms_block_req_init(struct memstick_dev *card,
 		return -EAGAIN;
 	}
 
+	dev_dbg(&card->dev, "1 dev %p, req %p\n", msb->req_dev, msb->req_in);
 	do {
 		if (msb->req_dev)
 			msb->req_in = msb->mdev->get_request(msb->req_dev);
 
+		dev_dbg(&card->dev, "2 dev %p, req %p\n", msb->req_dev, msb->req_in);
 		if (msb->req_in)
 			break;
 
+
+		dev_dbg(&card->dev, "3 dev %p, req %p\n", msb->req_dev, msb->req_in);
 		if (msb->req_dev) {
 			put_device(&msb->req_dev->dev);
 			msb->req_dev = NULL;
@@ -869,6 +886,7 @@ static int h_ms_block_req_init(struct memstick_dev *card,
 	} while (msb->req_dev);
 	spin_unlock_irqrestore(&msb->lock, flags);
 
+	dev_dbg(&card->dev, "4 dev %p, req %p\n", msb->req_dev, msb->req_in);
 	memstick_reset_req(card->host);
 
 	if (!msb->req_in) {
@@ -876,7 +894,7 @@ static int h_ms_block_req_init(struct memstick_dev *card,
 		complete_all(&card->mrq_complete);
 		return -EAGAIN;
 	}
-
+	dev_dbg(&card->dev, "5 dev %p, req %p\n", msb->req_dev, msb->req_in);
 	memstick_init_req(*mrq, MS_TPC_SET_CMD, &c_cmd, 1);
 	card->next_request = h_ms_block_clear_buf;
 	return 0;
@@ -931,7 +949,7 @@ static int ms_block_complete_multi(struct memstick_dev *card,
 		msb->trans_err = error;
 		msb->cmd = MS_CMD_BLOCK_END;
 		memstick_init_req(*mrq, MS_TPC_SET_CMD, &msb->cmd, 1);
-		card->next_request = h_ms_block_cmd_get_int;
+		card->next_request = h_ms_block_set_cmd;
 		return 0;
 	} else {
 		ms_block_complete_req(card, error);
@@ -943,6 +961,8 @@ static int ms_block_setup_read(struct memstick_dev *card,
 			       struct memstick_request **mrq)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
+
+	FUNC_START_DBG(card);
 
 	if (msb->cmd_flags & MS_BLOCK_FLG_EXTRA) {
 		memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
@@ -993,6 +1013,8 @@ static int ms_block_setup_write(struct memstick_dev *card,
 				struct memstick_request **mrq)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
+
+	FUNC_START_DBG(card);
 
 	if (msb->cmd_flags & MS_BLOCK_FLG_EXTRA) {
 		memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
@@ -1048,6 +1070,8 @@ static int ms_block_setup_write(struct memstick_dev *card,
 static int h_ms_block_copy_write(struct memstick_dev *card,
 				 struct memstick_request **mrq)
 {
+	FUNC_START_DBG(card);
+
 	if ((*mrq)->error)
 		return ms_block_complete_multi(card, mrq, (*mrq)->error);
 
@@ -1059,6 +1083,8 @@ static int h_ms_block_copy_read(struct memstick_dev *card,
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct scatterlist sg;
+
+	FUNC_START_DBG(card);
 
 	if ((*mrq)->error)
 		return ms_block_complete_multi(card, mrq, (*mrq)->error);
@@ -1076,6 +1102,8 @@ static int h_ms_block_read_status(struct memstick_dev *card,
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	struct ms_status_register *status;
+
+	FUNC_START_DBG(card);
 
 	if ((*mrq)->error)
 		return ms_block_complete_multi(card, mrq, (*mrq)->error);
@@ -1119,6 +1147,8 @@ static int h_ms_block_read_status(struct memstick_dev *card,
 static int h_ms_block_set_stat_addr_r(struct memstick_dev *card,
 				      struct memstick_request **mrq)
 {
+	FUNC_START_DBG(card);
+
 	if ((*mrq)->error)
 		return ms_block_complete_multi(card, mrq, (*mrq)->error);
 
@@ -1139,6 +1169,9 @@ static int h_ms_block_set_param_addr(struct memstick_dev *card,
 		.cp = MEMSTICK_CP_PAGE | MEMSTICK_CP_EXTRA,
 		.page_address = msb->dst_page
 	};
+
+	FUNC_START_DBG(card);
+
 	ms_param_set_addr(&param, msb->req_in->phy.b_addr);
 
 	if ((*mrq)->error) {
@@ -1163,6 +1196,8 @@ static int h_ms_block_trans_extra(struct memstick_dev *card,
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	char *oob_buf;
+
+	FUNC_START_DBG(card);
 
 	if ((*mrq)->error)
 		return ms_block_complete_multi(card, mrq, (*mrq)->error);
@@ -1214,6 +1249,8 @@ static int h_ms_block_trans_extra(struct memstick_dev *card,
 static int h_ms_block_set_extra_addr_r(struct memstick_dev *card,
 				       struct memstick_request **mrq)
 {
+	FUNC_START_DBG(card);
+
 	if ((*mrq)->error)
 		return ms_block_complete_multi(card, mrq, (*mrq)->error);
 
@@ -1287,6 +1324,8 @@ static int h_ms_block_trans_data(struct memstick_dev *card,
 				 struct memstick_request **mrq)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
+
+	FUNC_START_DBG(card);
 
 	if ((*mrq)->error)
 		return ms_block_complete_multi(card, mrq, (*mrq)->error);
@@ -1377,6 +1416,8 @@ static int h_ms_block_set_cmd(struct memstick_dev *card,
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 
+	FUNC_START_DBG(card);
+
 	if ((*mrq)->error) {
 		ms_block_complete_req(card, (*mrq)->error);
 		return (*mrq)->error;
@@ -1398,6 +1439,8 @@ static int h_ms_block_set_extra_addr_w(struct memstick_dev *card,
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 
+	FUNC_START_DBG(card);
+
 	if ((*mrq)->error) {
 		ms_block_complete_req(card, (*mrq)->error);
 		return (*mrq)->error;
@@ -1417,6 +1460,8 @@ static int h_ms_block_write_param(struct memstick_dev *card,
 				  struct memstick_request **mrq)
 {
 	struct ms_block_data *msb = memstick_get_drvdata(card);
+
+	FUNC_START_DBG(card);
 
 	if ((*mrq)->error) {
 		ms_block_complete_req(card, (*mrq)->error);
@@ -1439,6 +1484,9 @@ static int h_ms_block_set_param_addr_init(struct memstick_dev *card,
 		.cp = MEMSTICK_CP_BLOCK,
 		.page_address = msb->req_in->phy.offset / msb->geo.page_size
 	};
+
+	FUNC_START_DBG(card);
+
 	ms_param_set_addr(&param, msb->req_in->phy.b_addr);
 
 	if ((*mrq)->error) {
@@ -1632,6 +1680,8 @@ unsigned int ms_block_find_boot_block(struct memstick_dev *card,
 		mtdx_data_iter_init_buf(&r_data, header, m_req.length);
 		mtdx_oob_init(&r_oob, &extra, 1, sizeof(extra));
 		memset(&extra, 0xff, sizeof(extra));
+		msb->int_err = 0;
+		msb->int_count = 0;
 
 		dev_dbg(&card->dev, "find block %x\n", b_cnt);
 
@@ -1639,15 +1689,15 @@ unsigned int ms_block_find_boot_block(struct memstick_dev *card,
 		memstick_new_req(card->host);
 		wait_for_completion(&card->mrq_complete);
 
-		if (msb->trans_err) {
+		if (msb->int_err) {
 			dev_dbg(&card->dev, "transfer error %d\n",
-				msb->trans_err);
+				msb->int_err);
 			return MTDX_INVALID_BLOCK;
 		}
 
-		if (msb->t_count != m_req.length) {
+		if (msb->int_count != m_req.length) {
 			dev_dbg(&card->dev, "got %x bytes, expected %x\n",
-				msb->t_count, m_req.length);
+				msb->int_count, m_req.length);
 			return MTDX_INVALID_BLOCK;
 		}
 
@@ -1731,6 +1781,8 @@ static int ms_block_read_boot_block(struct memstick_dev *card,
 	msb->req_dev = msb->mdev;
 	msb->req_in = &m_req;
 	mtdx_data_iter_init_buf(&r_data, b_ref->data, b_ref->size);
+	msb->int_err = 0;
+	msb->int_count = 0;
 
 	dev_dbg(&card->dev, "read block addr %x, buf %p, size %x\n",
 		b_ref->phy_block, b_ref->data, b_ref->size);
@@ -1739,13 +1791,13 @@ static int ms_block_read_boot_block(struct memstick_dev *card,
 	memstick_new_req(card->host);
 	wait_for_completion(&card->mrq_complete);
 
-	dev_dbg(&card->dev, "end read block %d\n", msb->trans_err);
-	if (msb->trans_err) {
-		rc = msb->trans_err;
+	dev_dbg(&card->dev, "end read block %d\n", msb->int_err);
+	if (msb->int_err) {
+		rc = msb->int_err;
 		goto out;
 	}
 
-	if (msb->t_count != m_req.length) {
+	if (msb->int_count != m_req.length) {
 		rc = -EIO;
 		goto out;
 	}
@@ -1930,8 +1982,8 @@ static int ms_block_init_card(struct memstick_dev *card)
 
 	if (host->caps & MEMSTICK_CAP_PAR4) {
 		if (ms_block_switch_to_parallel(card))
-			dev_warn(&card->dev, "could not switch to "
-				 "parallel interface\n");
+			dev_err(&card->dev, "could not select media "
+				"interface\n");
 	}
 
 	if (msb->system & MEMSTICK_SYS_PAM)
@@ -2272,7 +2324,9 @@ static int ms_block_mtdx_get_param(struct mtdx_dev *this_dev,
 
 static struct mtdx_request *ms_block_get_request(struct mtdx_dev *this_dev)
 {
-	return NULL;
+	struct ms_block_data *msb = mtdx_get_drvdata(this_dev);
+
+	return msb->req_in;
 }
 
 static void ms_block_end_request(struct mtdx_dev *this_dev,
@@ -2282,9 +2336,8 @@ static void ms_block_end_request(struct mtdx_dev *this_dev,
 {
 	struct ms_block_data *msb = mtdx_get_drvdata(this_dev);
 
-	msb->trans_err = dst_error;
-	msb->src_error = src_error;
-	msb->t_count = count;
+	msb->int_err = dst_error;
+	msb->int_count = count;
 }
 
 static void ms_block_data_free(struct ms_block_data *msb)
@@ -2339,6 +2392,8 @@ static int ms_block_probe(struct memstick_dev *card)
 	msb->mdev->info_to_oob = ms_block_mtdx_info_to_oob;
 	msb->mdev->get_param = ms_block_mtdx_get_param;
 
+	msb->active = 1;
+
 	rc = ms_block_init_card(card);
 	dev_dbg(&card->dev, "init card %d\n", rc);
 	if (rc)
@@ -2349,8 +2404,8 @@ static int ms_block_probe(struct memstick_dev *card)
 	card->start = ms_block_start;
 
 
-	rc = device_register(&msb->mdev->dev);
-	dev_dbg(&card->dev, "dev register %d\n", rc);
+	rc = device_add(&msb->mdev->dev);
+	dev_dbg(&card->dev, "dev add %d\n", rc);
 	if (rc)
 		goto err_out_free_mdev;
 
@@ -2365,12 +2420,10 @@ static int ms_block_probe(struct memstick_dev *card)
 			MTDX_TYPE_FTL, MTDX_ID_FTL_SIMPLE
 		};
 
-		msb->active = 1;
-
 		/* Temporary hack to insert ftl */
 		cdev = mtdx_alloc_dev(&msb->mdev->dev, &c_id);
 		if (cdev) {
-			rc = device_register(&cdev->dev);
+			rc = device_add(&cdev->dev);
 			if (rc)
 				__mtdx_free_dev(cdev);
 		}
@@ -2453,6 +2506,7 @@ static int ms_block_resume(struct memstick_dev *card)
 
 	mutex_lock(&host->lock);
 	memstick_set_drvdata(card, new_msb);
+	new_msb->active = 1;
 
 	rc = ms_block_init_card(card);
 	if (rc)

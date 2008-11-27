@@ -216,7 +216,7 @@ static ssize_t mtdx_children_store(struct device *dev,
 	if (!mdev)
 		return -ENOMEM;
 
-	rc = device_register(&mdev->dev);
+	rc = device_add(&mdev->dev);
 	if (rc) {
 		__mtdx_free_dev(mdev);
 		return rc;
@@ -309,6 +309,7 @@ struct mtdx_dev *mtdx_alloc_dev(struct device *parent,
 
 	snprintf(mdev->dev.bus_id, sizeof(mdev->dev.bus_id),
 		 "mtdx%d", mdev->ord);
+	device_initialize(&mdev->dev);
 
 	return mdev;
 

@@ -7,7 +7,6 @@ insmod ./mtdx_core.ko
 #insmod ./ftl_simple.ko
 #insmod ./mtdx_block.ko
 insmod ./ms_block.ko
-#insmod ./ms_block.ko
 #insmod ../driver/jmb38x_ms.ko
 #insmod ./flash_bd.ko
 #insmod ./xd_card.ko

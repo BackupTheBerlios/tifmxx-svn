@@ -1452,7 +1452,7 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 		/* Temporary hack to insert block device */
 		cdev = mtdx_alloc_dev(&mdev->dev, &c_id);
 		if (cdev) {
-			rc = device_register(&cdev->dev);
+			rc = device_add(&cdev->dev);
 			if (rc)
 				__mtdx_free_dev(cdev);
 		}
