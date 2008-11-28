@@ -2008,7 +2008,6 @@ static int ms_block_init_card(struct memstick_dev *card)
 	if (!header)
 		return -ENOMEM;
 
-	msb->geo.zone_size_log = 9;
 	msb->geo.oob_size = sizeof(struct ms_extra_data_register);
 	msb->geo.fill_value = 0xff;
 	msb->geo.log_to_zone = ms_block_log_to_zone;
@@ -2028,6 +2027,7 @@ static int ms_block_init_card(struct memstick_dev *card)
 	msb->geo.log_block_cnt
 		= be16_to_cpu(header->info.number_of_effective_blocks);
 	msb->geo.phy_block_cnt = be16_to_cpu(header->info.number_of_blocks);
+	msb->geo.zone_cnt = msb->geo.phy_block_cnt / 512;
 	msb->geo.page_size = be16_to_cpu(header->info.page_size);
 	msb->geo.page_cnt = (be16_to_cpu(header->info.block_size) << 10)
 			    / msb->geo.page_size;

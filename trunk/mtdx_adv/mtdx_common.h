@@ -57,7 +57,7 @@ struct mtdx_device_id {
 };
 
 struct mtdx_geo {
-	unsigned int zone_size_log; /* Number of bits set aside for zoning */
+	unsigned int zone_cnt;      /* Number of allocation zones */
 	unsigned int log_block_cnt; /* Number of logical eraseblocks       */
 	unsigned int phy_block_cnt; /* Number of physical eraseblocks      */
 	unsigned int page_cnt;      /* Number of pages per eraseblock      */
@@ -90,11 +90,8 @@ static inline unsigned int mtdx_geo_log_to_zone(const struct mtdx_geo *geo,
 	if (geo->log_to_zone)
 		return geo->log_to_zone(geo, log_addr, log_off);
 	else {
-		unsigned int z_cnt = geo->log_block_cnt
-				     / (geo->phy_block_cnt
-					>> geo->zone_size_log);
-		unsigned int zone = log_addr / z_cnt;
-		*log_off = log_addr % z_cnt;
+		unsigned int zone = log_addr /geo->zone_cnt;
+		*log_off = log_addr % geo->zone_cnt;
 		return zone;
 	}
 }
@@ -106,11 +103,10 @@ static inline unsigned int mtdx_geo_zone_to_log(const struct mtdx_geo *geo,
 	if (geo->zone_to_log)
 		return geo->zone_to_log(geo, zone, log_off);
 	else {
-		unsigned int z_cnt = geo->log_block_cnt
-				     / (geo->phy_block_cnt
-					>> geo->zone_size_log);
-		if (log_off < z_cnt)
-			return zone * z_cnt + log_off;
+		unsigned int z_sz = geo->log_block_cnt / geo->zone_cnt;
+
+		if (log_off < z_sz)
+			return zone * z_sz + log_off;
 		else
 			return MTDX_INVALID_BLOCK;
 	}
@@ -126,8 +122,8 @@ static inline unsigned int mtdx_geo_phy_to_zone(const struct mtdx_geo *geo,
 		phy_off = &p_off;
 
 	if (!geo->phy_to_zone) {
-		*phy_off = phy_addr & ((1 << geo->zone_size_log) - 1);
-		return phy_addr >> geo->zone_size_log;
+		*phy_off = phy_addr % geo->zone_cnt;
+		return phy_addr / geo->zone_cnt;
 	} else
 		return geo->phy_to_zone(geo, phy_addr, phy_off);
 }
@@ -137,9 +133,9 @@ static inline unsigned int mtdx_geo_zone_to_phy(const struct mtdx_geo *geo,
 						unsigned int phy_off)
 {
 	if (!geo->zone_to_phy) {
-		unsigned int z_cnt = 1 << geo->zone_size_log;
-		if (phy_off < z_cnt)
-			return (zone << geo->zone_size_log) + phy_off;
+		unsigned int z_sz = geo->phy_block_cnt / geo->zone_cnt;
+		if (phy_off < z_sz)
+			return (zone * z_sz) + phy_off;
 		else
 			return MTDX_INVALID_BLOCK;
 	} else
