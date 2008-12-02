@@ -119,9 +119,63 @@ static inline void dev_set_drvdata(struct device *dev, void *data)
 	dev->driver_data = data;
 }
 
+static inline int driver_register(struct device_driver *drv)
+{
+	return 0;
+}
+
+static inline void driver_unregister(struct device_driver *drv)
+{
+}
+
 #define dev_dbg(dev, format, arg...)            \
         printf("%s: "format, (dev)->bus_id, ## arg)
 #define dev_emerg(dev, format, arg...)            \
         printf("%s: "format, (dev)->bus_id, ## arg)
-	
+#define dev_err(dev, format, arg...)            \
+        printf("%s: "format, (dev)->bus_id, ## arg)
+#define dev_info(dev, format, arg...)            \
+        printf("%s: "format, (dev)->bus_id, ## arg)
+
+static inline void get_device(struct device *dev)
+{
+}
+
+static inline void put_device(struct device *dev)
+{
+}
+
+static inline int add_uevent_var(struct kobj_uevent_env *env, const char *format, ...)
+{
+	return 0;
+}
+
+static inline int device_add(struct device *dev)
+{
+	return 0;
+}
+
+static inline void device_initialize(struct device *dev)
+{
+}
+
+static inline void device_unregister(struct device *dev)
+{
+}
+
+static inline int bus_register(struct bus_type *bus)
+{
+	return 0;
+}
+
+static inline void bus_unregister(struct bus_type *bus)
+{
+}
+
+static inline int device_for_each_child(struct device *dev, void *data,
+					int (*fn)(struct device *dev, void *data))
+{
+	return 0;
+}
+
 #endif

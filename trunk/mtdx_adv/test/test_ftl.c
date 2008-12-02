@@ -88,7 +88,7 @@ int btm_trans_oob(struct mtdx_request *req, int dir)
 void btm_complete_req(struct mtdx_request *req, int error, unsigned int count)
 {
 	pthread_mutex_unlock(&req_lock);
-	mtdx_complete_request(req, error, count);
+	btm_req_dev->end_request(btm_req_dev, req, count, error, 0);
 	pthread_mutex_lock(&req_lock);
 }
 
@@ -338,17 +338,6 @@ static struct mtdx_request *top_get_request(struct mtdx_dev *mdev)
 	printf("top get request %p\n", rv);
 	pthread_mutex_unlock(&top_lock);
 	return rv;
-}
-
-int mtdx_register_driver(struct mtdx_driver *drv)
-{
-	test_driver = drv;
-	printf("Loading module\n");
-	return 0;
-}
-
-void mtdx_unregister_driver(struct mtdx_driver *drv)
-{
 }
 
 unsigned int random32(void)

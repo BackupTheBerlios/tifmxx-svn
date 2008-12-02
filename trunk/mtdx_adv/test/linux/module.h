@@ -12,6 +12,7 @@
 #define GFP_KERNEL 0
 
 #define PAGE_SIZE 4096
+#define PAGE_MASK       (~(PAGE_SIZE-1))
 
 #define MODULE_LICENSE(x)
 #define MODULE_AUTHOR(x)
@@ -35,6 +36,8 @@ unsigned int random32(void);
 
 #define virt_to_page(x) (x)
 
+#define offset_in_page(p)       ((unsigned long)(p) & ~PAGE_MASK)
+
 #define container_of(ptr, type, member) ({                      \
 	const typeof( ((type *)0)->member ) *__mptr = (ptr);    \
 	(type *)( (char *)__mptr - offsetof(type,member) );})
@@ -45,16 +48,25 @@ typedef void (*exitcall_t)(void);
 #define module_param(x, y, z)
 
 /* Each module must use one module_init(), or one no_module_init */
+/*
 #define module_init(initfn)                                     \
 	static inline initcall_t __inittest(void)               \
 	{ return initfn; }                                      \
 	int init_module(void) __attribute__((alias(#initfn)));
-
+*/
 /* This is only required if you want to be unloadable. */
+/*
 #define module_exit(exitfn)                                     \
 	static inline exitcall_t __exittest(void)               \
 	{ return exitfn; }                                      \
 	void cleanup_module(void) __attribute__((alias(#exitfn)));
+*/
 
+#define module_init(x)
+#define module_exit(x)
+
+static inline void cleanup_module(void)
+{
+}
 
 #endif

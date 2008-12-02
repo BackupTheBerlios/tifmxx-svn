@@ -21,8 +21,5 @@ rand_peb_alloc.o: ../rand_peb_alloc.c
 long_map.o: ../long_map.c
 	gcc $(CFLAGS) -c $^
 
-mtdx_data.o: ../mtdx_data.c
-	gcc $(CFLAGS) -c $^
-
 clean:
 	rm -f *.o test_ftl

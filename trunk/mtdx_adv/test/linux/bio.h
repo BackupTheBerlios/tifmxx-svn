@@ -9,6 +9,11 @@ struct bio_vec {
 
 struct bio;
 
+#define bvec_to_phys(bv)        ((bv)->bv_page + (bv)->bv_offset)
+
+#define BIOVEC_PHYS_MERGEABLE(vec1, vec2)       \
+        ((bvec_to_phys((vec1)) + (vec1)->bv_len) == bvec_to_phys((vec2)))
+
 struct bio {
 	struct bio		*bi_next;	/* request queue link */
 
@@ -23,6 +28,10 @@ struct bio {
 static inline char *bvec_kmap_irq(struct bio_vec *bvec, unsigned long *flags)
 {
 	return bvec->bv_page + bvec->bv_offset;
+}
+
+static inline void bvec_kunmap_irq(char *buffer, unsigned long *flags)
+{
 }
 
 #endif /* __LINUX_BIO_H */

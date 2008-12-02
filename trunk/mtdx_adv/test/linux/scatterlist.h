@@ -20,5 +20,14 @@ static inline void sg_set_buf(struct scatterlist *sg, void *buf,
 	sg->length = buflen;
 }
 
+static inline void sg_set_page(struct scatterlist *sg, void *page,
+                               unsigned int len, unsigned int offset)
+{
+        sg->page = page;
+        sg->offset = offset;
+        sg->length = len;
+}
+
+
 #endif
 

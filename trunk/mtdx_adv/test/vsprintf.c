@@ -27,7 +27,6 @@
 #include <sys/types.h>
 #include <linux/div64.h>
 
-#define PAGE_SIZE 4096UL
 #define unlikely
 #define WARN_ON(x)
 
