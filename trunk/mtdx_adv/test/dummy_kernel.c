@@ -181,36 +181,6 @@ void msleep(unsigned int msecs)
 		memcpy(&ts, &rem, sizeof(ts));
 }
 
-void __mtdx_free_dev(struct mtdx_dev *mdev)
-{
-	free(mdev);
-}
-
-struct mtdx_dev *mtdx_alloc_dev(struct device *parent,
-				const struct mtdx_device_id *id)
-{
-	struct mtdx_dev *mdev = kzalloc(sizeof(struct mtdx_dev), GFP_KERNEL);
-	int rc;
-
-	if (!mdev)
-		return NULL;
-
-	memcpy(&mdev->id, id, sizeof(struct mtdx_device_id));
-	mdev->dev.parent = parent;
-//	mdev->dev.bus = &mtdx_bus_type;
-//	mdev->dev.release = mtdx_free_dev;
-//	mdev->dev.type = &mtdx_type;
-
-	snprintf(mdev->dev.bus_id, sizeof(mdev->dev.bus_id),
-		 "mtdx%d", mdev->ord);
-
-	return mdev;
-
-err_out_free:
-	kfree(mdev);
-	return NULL;
-}
-
 static void *work_thread(void *data)
 {
 	struct work_struct *work = data;
@@ -273,24 +243,4 @@ out:
 	printf("schedule out %d\n", work->state);
 	pthread_mutex_unlock(&work->lock);
 	return rc;
-}
-
-void mtdx_drop_children(struct mtdx_dev *mdev)
-{
-}
-
-int mtdx_append_dev_list(struct list_head *head, struct mtdx_dev *r_dev)
-{
-	struct list_head *pos;
-
-	__list_for_each(pos, head) {
-		if (mtdx_queue_entry(pos) == r_dev)
-			return 0;
-	}
-
-	if (!list_empty(&r_dev->queue_node))
-		return -EBUSY;
-
-	list_add_tail(&r_dev->queue_node, head);
-	return 0;
 }

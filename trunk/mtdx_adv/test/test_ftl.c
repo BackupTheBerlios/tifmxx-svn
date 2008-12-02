@@ -10,6 +10,7 @@ struct mtdx_driver *test_driver;
 pthread_mutex_t req_lock = PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP;
 wait_queue_head_t next_req_wq;
 struct mtdx_dev *btm_req_dev = NULL;
+struct mtdx_dev_queue btm_dev_queue;
 
 struct btm_oob {
 	unsigned int log_block;
@@ -17,7 +18,7 @@ struct btm_oob {
 };
 
 struct mtdx_geo btm_geo = {
-	.zone_size_log = 10,
+	.zone_cnt = 2,
 	.log_block_cnt = 2000,
 	.phy_block_cnt = 2048,
 	.page_cnt = 4,
@@ -31,32 +32,33 @@ char *trans_space;
 
 struct btm_oob *pages;
 
-int btm_trans_data(struct mtdx_request *req, int dir)
+void btm_trans_data(struct mtdx_request *req, int dir)
 {
 	struct scatterlist sg;
 	unsigned int c_pos = req->phy.b_addr
 			     * (btm_geo.page_cnt * btm_geo.page_size);
 	unsigned int t_len, r_len = req->length;
+	struct bio_vec b_vec;
 	int rc;
 
 	c_pos += req->phy.offset;
 
-	while (!(rc = btm_req_dev->get_data_buf_sg(req, &sg))) {
-		t_len = min(sg.length, r_len);
-
+	while (r_len) {
+		mtdx_data_iter_get_bvec(req->req_data, &b_vec, req->length);
 		if (dir)
-			memcpy(trans_space + c_pos, sg_virt(&sg), t_len);
+			memcpy(trans_space + c_pos,
+			       b_vec.bv_page + b_vec.bv_offset,
+			       b_vec.bv_len);
 		else
-			memcpy(sg_virt(&sg), trans_space + c_pos, t_len);
+			memcpy(b_vec.bv_page + b_vec.bv_offset,
+			       trans_space + c_pos,
+			       b_vec.bv_len);
 
-		r_len -= t_len;
-		c_pos += t_len;
+		r_len -= b_vec.bv_len;
+		c_pos += b_vec.bv_len;
 	}
-	printf("trans data end %d\n", rc);
-	if (rc == - EAGAIN)
-		rc = 0;
 
-	return rc;
+	printf("trans data end");
 }
 
 int btm_trans_oob(struct mtdx_request *req, int dir)
@@ -68,7 +70,7 @@ int btm_trans_oob(struct mtdx_request *req, int dir)
 	c_pos += req->phy.offset / btm_geo.page_size;
 
 	for (; cnt; --cnt) {
-		oob_buf = btm_req_dev->get_oob_buf(req);
+		oob_buf = mtdx_oob_get_next(req->req_oob);
 		if (!oob_buf)
 			return -ENOMEM;
 
@@ -81,15 +83,6 @@ int btm_trans_oob(struct mtdx_request *req, int dir)
 		c_pos++;
 	}
 	return 0;
-}
-
-unsigned int btm_log_to_zone(struct mtdx_dev *this_dev,
-			     unsigned int log_block,
-			     unsigned int *zone_off)
-{
-	unsigned int b_cnt = 1U << btm_geo.zone_size_log;
-	*zone_off = log_block % b_cnt;
-	return log_block / b_cnt;
 }
 
 void btm_complete_req(struct mtdx_request *req, int error, unsigned int count)
@@ -134,21 +127,12 @@ void *request_thread(void *data)
 
 			switch (req->cmd) {
 			case MTDX_CMD_READ:
-				rc = btm_trans_data(req, 0);
-				if (!rc)
-					rc = btm_trans_oob(req, 0);
+				if (req->req_data)
+					btm_trans_data(req, 0);
 
-				btm_complete_req(req, rc, req->length);
-				break;
-			case MTDX_CMD_READ:
-				rc = btm_trans_data(req, 0);
+				if (req->req_oob)
+					btm_trans_oob(req, 0);
 
-				btm_complete_req(req, rc, req->length);
-				break;
-			case MTDX_CMD_READ:
-				rc = btm_trans_oob(req, 0);
-
-				printf("rt: read oob, %x, %d\n", req->length, rc);
 				btm_complete_req(req, rc, req->length);
 				break;
 			case MTDX_CMD_ERASE:
@@ -167,47 +151,18 @@ void *request_thread(void *data)
 				btm_complete_req(req, 0, 0);
 				break;
 			case MTDX_CMD_WRITE:
-				rc = btm_trans_data(req, 1);
-				printf("rt: write data %d\n", rc);
-				if (!rc)
-					rc = btm_trans_oob(req, 1);
+				if (req->req_data)
+					btm_trans_data(req, 1);
+				printf("rt: write data\n");
+				if (req->req_oob)
+					btm_trans_oob(req, 1);
 
-				printf("rt: write oob %d\n", rc);
+				printf("rt: write oob\n");
 				btm_complete_req(req, rc, req->length);
-				break;
-			case MTDX_CMD_WRITE:
-				rc = btm_trans_data(req, 1);
-
-				btm_complete_req(req, rc, req->length);
-				break;
-			case MTDX_CMD_WRITE:
-				rc = btm_trans_oob(req, 1);
-
-				btm_complete_req(req, rc, req->length);
-				break;
-			case MTDX_CMD_SELECT:
-				printf("rt: select block %x, stat %x\n",
-				       req->phy.b_addr,
-				       pages[req->phy.b_addr * btm_geo.page_cnt]
-					    .status);
-				pages[req->phy.b_addr * btm_geo.page_cnt].status
-					= MTDX_PAGE_SMAPPED;
-				btm_complete_req(req, 0, 0);
-				break;
-			case MTDX_CMD_INVALIDATE:
-				printf("rt: invalidate block %x, stat %x\n",
-				       req->phy.b_addr,
-				       pages[req->phy.b_addr * btm_geo.page_cnt]
-					    .status);
-				pages[req->phy.b_addr * btm_geo.page_cnt].status
-					= MTDX_PAGE_INVALID;
-				btm_complete_req(req, 0, 0);
 				break;
 			case MTDX_CMD_COPY:
-				rc = btm_req_dev->get_copy_source(req, &src_blk,
-								  &src_off);
-				if (rc)
-					btm_complete_req(req, rc, 0);
+				src_blk = req->copy.b_addr;
+				src_off = req->copy.offset;
 
 				memcpy(trans_space
 				       + req->phy.b_addr * block_size +
@@ -221,7 +176,6 @@ void *request_thread(void *data)
 				btm_complete_req(req, -EINVAL, 0);
 			}
 		}
-		INIT_LIST_HEAD(&btm_req_dev->queue_node);
 		btm_req_dev = NULL;
 		printf("rt: x1\n");
 		pthread_mutex_unlock(&req_lock);
@@ -229,19 +183,12 @@ void *request_thread(void *data)
 	printf("rt: x2\n");
 }
 
-int btm_new_req(struct mtdx_dev *this_dev, struct mtdx_dev *req_dev)
+void btm_new_req(struct mtdx_dev *this_dev, struct mtdx_dev *req_dev)
 {
-	pthread_mutex_lock(&req_lock);
-	if (btm_req_dev) {
-		printf("crap\n");
-		pthread_mutex_unlock(&req_lock);
-		return -EBUSY;
-	}
-	btm_req_dev = req_dev;
-	pthread_mutex_unlock(&req_lock);
+	get_device(&req_dev->dev);
+	mtdx_dev_queue_push_back(&btm_dev_queue, req_dev);
 	printf("request set\n");
 	wake_up(&next_req_wq);
-	return 0;
 }
 
 int btm_oob_to_info(struct mtdx_dev *this_dev, struct mtdx_page_info *p_info,
@@ -304,7 +251,6 @@ struct mtdx_dev btm_dev = {
 	.new_request = btm_new_req,
 	.oob_to_info = btm_oob_to_info,
 	.info_to_oob = btm_info_to_oob,
-	.log_to_zone = btm_log_to_zone,
 	.get_param = btm_get_param
 };
 
@@ -344,11 +290,12 @@ static int top_get_data_buf_sg(struct mtdx_request *req,
 	return 0;
 }
 
-static void top_end_request(struct mtdx_request *req, int error,
-			    unsigned int count)
+static void top_end_request(struct mtdx_dev *this_dev, struct mtdx_request *req,
+			    unsigned int count, int dst_error,
+			    int src_error)
 {
 	pthread_mutex_lock(&top_lock);
-	printf("top end request, count %x, error %d\n", count, error);
+	printf("top end request, count %x, error %d\n", count, dst_error);
 
 	if (top_req_done != 1) {
 		printf("bad top_end_request %d\n", top_req_done);
@@ -365,7 +312,6 @@ static struct mtdx_request *top_get_request(struct mtdx_dev *mdev);
 struct mtdx_dev top_dev = {
 	.get_request = top_get_request,
 	.end_request = top_end_request,
-	.get_data_buf_sg = top_get_data_buf_sg,
 	.dev = {
 		.parent = &ftl_dev.dev
 	}
@@ -430,8 +376,7 @@ int main(int argc, char **argv)
 
 	init_waitqueue_head(&next_req_wq);
 	init_waitqueue_head(&top_cond_wq);
-	INIT_LIST_HEAD(&top_dev.queue_node);
-	INIT_LIST_HEAD(&btm_dev.queue_node);
+	mtdx_dev_queue_init(&btm_dev_queue);
 
 	rc = pthread_create(&req_t, NULL, request_thread, NULL);
 	if (rc)
@@ -479,11 +424,8 @@ int main(int argc, char **argv)
 
 		printf("Writing %x sectors at %x\n", size, off);
 
-		rc = ftl_dev.new_request(&ftl_dev, &top_dev);
-		if (rc) {
-			printf("could not issue, error %d\n", rc);
-			goto clean_up;
-		}
+		ftl_dev.new_request(&ftl_dev, &top_dev);
+		printf("top write issue\n");
 
 		wait_event_interruptible(top_cond_wq, top_req_done >= 2);
 
@@ -497,11 +439,8 @@ int main(int argc, char **argv)
 		       top_size);
 
 		printf("Reading %x sectors at %x\n", size, off);
-		rc = ftl_dev.new_request(&ftl_dev, &top_dev);
-		if (rc) {
-			printf("could not issue, error %d\n", rc);
-			goto clean_up;
-		}
+		ftl_dev.new_request(&ftl_dev, &top_dev);
+		printf("top read issue\n");
 
 		wait_event_interruptible(top_cond_wq, top_req_done >= 2);
 		printf("Read signalled %d\n", top_req_done);

@@ -1,6 +1,8 @@
 #ifndef _WAIT_H
 #define _WAIT_H
 
+#include "workqueue.h"
+
 typedef struct wait_queue_head {
 	pthread_mutex_t lock;
 	pthread_cond_t cond;

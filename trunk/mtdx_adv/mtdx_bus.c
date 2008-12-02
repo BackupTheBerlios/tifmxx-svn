@@ -133,8 +133,8 @@ static int mtdx_device_resume(struct device *dev)
 
 #else
 
-#define memstick_device_suspend NULL
-#define memstick_device_resume NULL
+#define mtdx_device_suspend NULL
+#define mtdx_device_resume NULL
 
 #endif /* CONFIG_PM */
 

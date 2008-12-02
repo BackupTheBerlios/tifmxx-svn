@@ -12,10 +12,10 @@
 #include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/wait.h>
+#include <linux/err.h>
 #include "mtdx_common.h"
 #include "peb_alloc.h"
 #include "long_map.h"
-#include "sg_bounce.h"
 
 #define DRIVER_NAME "ftl_simple"
 #define fsd_dev(fsd) (fsd->mdev->dev)
@@ -424,7 +424,7 @@ static int ftl_simple_setup_zone_scan(struct ftl_simple_data *fsd)
 	dev_dbg(&fsd_dev(fsd), "scanning zone %x\n", fsd->zone);
 	fsd->zone_scan_pos = mtdx_geo_phy_to_zone(&fsd->geo, fsd->zone, 0);
 	fsd->conflict_pos = MTDX_INVALID_BLOCK;
-	
+
 	ftl_simple_clear_zone(fsd);
 
 	__list_for_each(fsd->sp_block_pos, &fsd->special_blocks) {

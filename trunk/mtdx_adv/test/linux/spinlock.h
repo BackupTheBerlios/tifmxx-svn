@@ -3,6 +3,8 @@
 
 #include <pthread.h>
 
+#define DEFINE_MUTEX(x) pthread_mutex_t x = PTHREAD_MUTEX_INITIALIZER
+
 typedef struct {
 	pthread_mutex_t mutex;
 } spinlock_t;

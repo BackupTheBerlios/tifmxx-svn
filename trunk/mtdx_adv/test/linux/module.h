@@ -7,10 +7,11 @@
 #include <linux/bitmap.h>
 #include <linux/div64.h>
 
-
 #define __init
 #define __exit
 #define GFP_KERNEL 0
+
+#define PAGE_SIZE 4096
 
 #define MODULE_LICENSE(x)
 #define MODULE_AUTHOR(x)
@@ -31,6 +32,8 @@ void *kzalloc(size_t size, gfp_t flags);
 void *kmalloc(size_t size, gfp_t flags);
 
 unsigned int random32(void);
+
+#define virt_to_page(x) (x)
 
 #define container_of(ptr, type, member) ({                      \
 	const typeof( ((type *)0)->member ) *__mptr = (ptr);    \

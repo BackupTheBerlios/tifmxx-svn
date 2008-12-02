@@ -3,7 +3,7 @@ CFLAGS = -I../ -I. -g -fno-inline -D_GNU_SOURCE -DDEBUG
 
 test_ftl: test_ftl.o mtdx_bus.o mtdx_data.o ftl_simple.o rand_peb_alloc.o \
 	  long_map.o dummy_kernel.o rbtree.o bitmap.o find_next_bit.o \
-	  sg_bounce.o hweight.o vsprintf.o
+	  hweight.o vsprintf.o
 	gcc -mthreads -lcrypto -lrt -o $@ $^
 
 mtdx_bus.o: ../mtdx_bus.c
