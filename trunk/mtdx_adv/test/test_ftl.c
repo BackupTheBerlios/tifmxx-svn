@@ -177,6 +177,7 @@ void *request_thread(void *data)
 			}
 		}
 		btm_req_dev = NULL;
+		mtdx_dev_queue_pop_front(&btm_dev_queue);
 		printf("rt: x1\n");
 		pthread_mutex_unlock(&req_lock);
 	}
@@ -187,6 +188,7 @@ void btm_new_req(struct mtdx_dev *this_dev, struct mtdx_dev *req_dev)
 {
 	get_device(&req_dev->dev);
 	mtdx_dev_queue_push_back(&btm_dev_queue, req_dev);
+	btm_req_dev = req_dev;
 	printf("request set\n");
 	wake_up(&next_req_wq);
 }
@@ -353,6 +355,12 @@ int device_register(struct device *dev)
 	return 0;
 }
 
+int driver_register(struct device_driver *drv)
+{
+	test_driver = container_of(drv, struct mtdx_driver, driver);
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	unsigned int t_cnt, err_cnt = 0;
@@ -362,6 +370,7 @@ int main(int argc, char **argv)
 	char *data_w, *data_r;
 	pthread_t req_t;
 	int rc;
+	struct mtdx_data_iter req_data_iter;
 
 	init_waitqueue_head(&next_req_wq);
 	init_waitqueue_head(&top_cond_wq);
@@ -382,7 +391,7 @@ int main(int argc, char **argv)
 		pages[rc].status = MTDX_PAGE_UNMAPPED;
 
 	rc = 0;
-	init_module();
+	exp_mtdx_ftl_simple_init();
 	test_driver->probe(&ftl_dev);
 
 	for (t_cnt = 7; t_cnt; --t_cnt) {
@@ -406,9 +415,11 @@ int main(int argc, char **argv)
 				     * btm_geo.page_size;
 		top_req.length = top_size;
 
+		mtdx_data_iter_init_buf(&req_data_iter, data_w, top_size);
+		top_req.req_data = &req_data_iter;
+
 		top_pos = 0;
 		top_req.cmd = MTDX_CMD_WRITE;
-		top_data_buf = data_w;
 		top_req_done = 0;
 
 		printf("Writing %x sectors at %x\n", size, off);
@@ -421,8 +432,9 @@ int main(int argc, char **argv)
 		printf("Write signalled %d\n", top_req_done);
 		top_pos = 0;
 		top_req.cmd = MTDX_CMD_READ;
-		top_data_buf = data_r;
 		top_req_done = 0;
+		mtdx_data_iter_init_buf(&req_data_iter, data_r, top_size);
+		top_req.req_data = &req_data_iter;
 
 		memcpy(flat_space + (off * btm_geo.page_size), data_w,
 		       top_size);

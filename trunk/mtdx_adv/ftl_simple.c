@@ -264,7 +264,7 @@ static void ftl_simple_end_lookup_block(struct ftl_simple_data *fsd,
 		fsd->dst_error = 0;
 	}
 
-	zone = fsd->geo.log_to_zone(&fsd->geo, p_info.log_block, &z_log_block);
+	zone = mtdx_geo_log_to_zone(&fsd->geo, p_info.log_block, &z_log_block);
 	if (zone != fsd->zone) {
 		p_info.log_block = MTDX_INVALID_BLOCK;
 		p_info.status = MTDX_PAGE_UNMAPPED;
@@ -398,6 +398,8 @@ static void ftl_simple_clear_zone(struct ftl_simple_data *fsd)
 		fsd->block_table[log_min] = MTDX_INVALID_BLOCK;
 		if (fsd->b_map)
 			long_map_erase(fsd->b_map, phy_block);
+
+		log_min++;
 	}
 	mtdx_peb_alloc_reset(fsd->b_alloc, fsd->zone);
 }
@@ -953,7 +955,7 @@ static void ftl_simple_set_address(struct ftl_simple_data *fsd)
 
 	fsd->req_out.logical = fsd->req_in->logical;
 	fsd->req_out.logical += pos / fsd->block_size;
-	fsd->zone = fsd->geo.log_to_zone(&fsd->geo, fsd->req_out.logical,
+	fsd->zone = mtdx_geo_log_to_zone(&fsd->geo, fsd->req_out.logical,
 					 &fsd->z_log_block);
 	fsd->b_off = pos % fsd->block_size;
 	fsd->b_len = min(fsd->req_in->length - fsd->t_count,

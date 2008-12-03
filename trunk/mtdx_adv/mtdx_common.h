@@ -90,9 +90,9 @@ static inline unsigned int mtdx_geo_log_to_zone(const struct mtdx_geo *geo,
 	if (geo->log_to_zone)
 		return geo->log_to_zone(geo, log_addr, log_off);
 	else {
-		unsigned int zone = log_addr /geo->zone_cnt;
-		*log_off = log_addr % geo->zone_cnt;
-		return zone;
+		unsigned int z_sz = geo->log_block_cnt / geo->zone_cnt;
+		*log_off = log_addr % z_sz;
+		return log_addr / z_sz;
 	}
 }
 
@@ -122,8 +122,9 @@ static inline unsigned int mtdx_geo_phy_to_zone(const struct mtdx_geo *geo,
 		phy_off = &p_off;
 
 	if (!geo->phy_to_zone) {
-		*phy_off = phy_addr % geo->zone_cnt;
-		return phy_addr / geo->zone_cnt;
+		unsigned int z_sz = geo->phy_block_cnt / geo->zone_cnt;
+		*phy_off = phy_addr % z_sz;
+		return phy_addr / z_sz;
 	} else
 		return geo->phy_to_zone(geo, phy_addr, phy_off);
 }

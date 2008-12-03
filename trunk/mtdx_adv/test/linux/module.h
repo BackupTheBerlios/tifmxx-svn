@@ -47,6 +47,8 @@ typedef void (*exitcall_t)(void);
 
 #define module_param(x, y, z)
 
+#define module_init(x) int exp_##x() { return x(); }
+
 /* Each module must use one module_init(), or one no_module_init */
 /*
 #define module_init(initfn)                                     \
@@ -62,7 +64,6 @@ typedef void (*exitcall_t)(void);
 	void cleanup_module(void) __attribute__((alias(#exitfn)));
 */
 
-#define module_init(x)
 #define module_exit(x)
 
 static inline void cleanup_module(void)

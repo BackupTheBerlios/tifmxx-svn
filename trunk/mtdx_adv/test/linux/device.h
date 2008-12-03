@@ -119,10 +119,7 @@ static inline void dev_set_drvdata(struct device *dev, void *data)
 	dev->driver_data = data;
 }
 
-static inline int driver_register(struct device_driver *drv)
-{
-	return 0;
-}
+int driver_register(struct device_driver *drv);
 
 static inline void driver_unregister(struct device_driver *drv)
 {
