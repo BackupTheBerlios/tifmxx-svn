@@ -18,9 +18,9 @@ struct btm_oob {
 };
 
 struct mtdx_geo btm_geo = {
-	.zone_cnt = 2,
-	.log_block_cnt = 2000,
-	.phy_block_cnt = 2048,
+	.zone_cnt = 8,
+	.log_block_cnt = 48,
+	.phy_block_cnt = 64,
 	.page_cnt = 4,
 	.page_size = 512,
 	.oob_size = sizeof(struct btm_oob),
@@ -97,7 +97,6 @@ void *request_thread(void *data)
 	struct mtdx_request *req;
 	unsigned int cnt, src_off, src_blk;
 	unsigned int block_size = btm_geo.page_cnt * btm_geo.page_size;
-	int rc;
 
 	printf("rt: thread created\n");
 	while (1) {
@@ -133,7 +132,7 @@ void *request_thread(void *data)
 				if (req->req_oob)
 					btm_trans_oob(req, 0);
 
-				btm_complete_req(req, rc, req->length);
+				btm_complete_req(req, 0, req->length);
 				break;
 			case MTDX_CMD_ERASE:
 				printf("rt: erase %x\n", req->phy.b_addr);
@@ -158,7 +157,7 @@ void *request_thread(void *data)
 					btm_trans_oob(req, 1);
 
 				printf("rt: write oob\n");
-				btm_complete_req(req, rc, req->length);
+				btm_complete_req(req, 0, req->length);
 				break;
 			case MTDX_CMD_COPY:
 				src_blk = req->copy.b_addr;

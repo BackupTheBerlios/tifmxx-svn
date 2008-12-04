@@ -729,7 +729,7 @@ static ssize_t ms_block_format_store(struct device *dev,
 
 	f_thread = kthread_create(ms_block_format, card, "msb_format%d",
 				  card->host->id);
-	if (IS_ERR(f_thread))
+	if (!f_thread || IS_ERR(f_thread))
 		return count;
 
 	spin_lock_irqsave(&msb->lock, flags);

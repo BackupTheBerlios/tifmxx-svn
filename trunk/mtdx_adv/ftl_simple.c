@@ -52,7 +52,8 @@ struct ftl_simple_data {
 			      track_inc:1,
 			      clean_dst:1,
 			      req_active:1,
-			      req_suspend:1;
+			      req_suspend:1,
+			      req_partial:1;
 
 	/* Current request address */
 	unsigned int          zone;
@@ -224,7 +225,8 @@ static int ftl_simple_resolve(struct ftl_simple_data *fsd)
 	FUNC_START_DBG(fsd);
 
 	memset(fsd->oob_buf, fsd->geo.fill_value, fsd->geo.oob_size);
-	mtdx_oob_init(&fsd->req_oob, fsd->oob_buf, 1, fsd->geo.oob_size);
+	mtdx_oob_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
+		      fsd->geo.oob_size);
 
 	fsd->req_out.cmd = MTDX_CMD_READ;
 	fsd->req_out.phy.b_addr = fsd->conflict_pos;
@@ -370,7 +372,8 @@ static int ftl_simple_lookup_block(struct ftl_simple_data *fsd)
 	}
 
 	memset(fsd->oob_buf, fsd->geo.fill_value, fsd->geo.oob_size);
-	mtdx_oob_init(&fsd->req_oob, &fsd->oob_buf, 1, fsd->geo.oob_size);
+	mtdx_oob_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
+		      fsd->geo.oob_size);
 	fsd->req_out.cmd = MTDX_CMD_READ;
 	fsd->req_out.phy.b_addr = fsd->zone_scan_pos;
 	fsd->req_out.phy.offset = 0;
@@ -424,7 +427,7 @@ static int ftl_simple_setup_zone_scan(struct ftl_simple_data *fsd)
 	FUNC_START_DBG(fsd);
 
 	dev_dbg(&fsd_dev(fsd), "scanning zone %x\n", fsd->zone);
-	fsd->zone_scan_pos = mtdx_geo_phy_to_zone(&fsd->geo, fsd->zone, 0);
+	fsd->zone_scan_pos = mtdx_geo_zone_to_phy(&fsd->geo, fsd->zone, 0);
 	fsd->conflict_pos = MTDX_INVALID_BLOCK;
 
 	ftl_simple_clear_zone(fsd);
@@ -449,7 +452,7 @@ static int ftl_simple_can_merge(struct ftl_simple_data *fsd,
 {
 	FUNC_START_DBG(fsd);
 
-	if (IS_ERR(fsd->src_bmap_ref) || !count)
+	if (!fsd->src_bmap_ref || IS_ERR(fsd->src_bmap_ref) || !count)
 		return 0;
 
 	if (fsd->track_inc)
@@ -471,7 +474,7 @@ static void ftl_simple_advance(struct ftl_simple_data *fsd)
 	if (fsd->dst_block != fsd->src_block)
 		fsd->block_table[fsd->req_out.logical] = fsd->dst_block;
 
-	if (IS_ERR(fsd->src_bmap_ref))
+	if (!fsd->src_bmap_ref || IS_ERR(fsd->src_bmap_ref))
 		goto out;
 
 	tmp_off = fsd->b_off + fsd->b_len;
@@ -967,7 +970,7 @@ static void ftl_simple_make_useful(struct ftl_simple_data *fsd)
 	FUNC_START_DBG(fsd);
 
 	fsd->src_bmap_ref = long_map_insert(fsd->b_map, fsd->dst_block);
-	if (!IS_ERR(fsd->src_bmap_ref)) {
+	if (fsd->src_bmap_ref && !IS_ERR(fsd->src_bmap_ref)) {
 		if (fsd->track_inc)
 			*fsd->src_bmap_ref = 0;
 		else
@@ -996,9 +999,10 @@ static void ftl_simple_alloc_node(struct work_struct *work)
 
 		ftl_simple_make_useful(fsd);
 
-		if (!IS_ERR(fsd->src_bmap_ref))
+		if (fsd->src_bmap_ref && !IS_ERR(fsd->src_bmap_ref)) {
+			fsd->req_partial = 1;
 			break;
-		else
+		} else
 			spin_unlock_irqrestore(&fsd->lock, flags);
 	}
 	fsd->req_suspend = 0;
@@ -1013,6 +1017,9 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 	unsigned int tmp_off;
 	struct mtdx_page_info p_info = {};
 	int rc = 0;
+
+	if (fsd->req_partial)
+		goto partial_continue;
 
 	ftl_simple_set_address(fsd);
 
@@ -1098,14 +1105,16 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 
 				if (!fsd->src_bmap_ref) {
 					ftl_simple_make_useful(fsd);
-					if (IS_ERR(fsd->src_bmap_ref)) {
+					if (!fsd->src_bmap_ref
+					    || IS_ERR(fsd->src_bmap_ref)) {
 						fsd->req_suspend = 1;
 						schedule_work(&fsd
 							       ->b_map_alloc);
 						return 0;
 					}
 				}
-
+partial_continue:
+				fsd->req_partial = 0;
 				if (fsd->b_off)
 					memset(fsd->block_buf,
 					       fsd->geo.fill_value,
