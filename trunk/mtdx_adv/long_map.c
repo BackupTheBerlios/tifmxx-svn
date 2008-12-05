@@ -280,10 +280,12 @@ unsigned long *long_map_insert(struct long_map *map, unsigned long key)
 				rv = b->val_ptr;
 			else
 				rv = &b->val;
-		} else
+		} else {
 			long_map_put_node(map, b);
+			rv = NULL;
+		}
 	} else
-		rv = ERR_CAST(b);
+		rv = NULL;
 
 	spin_unlock_irqrestore(&map->lock, flags);
 	return rv;
