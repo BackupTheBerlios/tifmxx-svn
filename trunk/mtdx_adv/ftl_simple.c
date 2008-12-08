@@ -538,6 +538,7 @@ static void ftl_simple_advance(struct ftl_simple_data *fsd)
 out:
 	dev_dbg(&fsd_dev(fsd), "advance out %x, req %x\n", fsd->t_count,
 		fsd->req_in->length);
+	fsd->cur_bmap_key = MTDX_INVALID_BLOCK;
 	if (fsd->t_count >=  fsd->req_in->length)
 		ftl_simple_complete_req(fsd);
 }
@@ -1506,6 +1507,7 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 	fsd->mdev = mdev;
 	fsd->src_block = MTDX_INVALID_BLOCK;
 	fsd->dst_block = MTDX_INVALID_BLOCK;
+	fsd->cur_bmap_key = MTDX_INVALID_BLOCK;
 	mtdx_set_drvdata(mdev, fsd);
 	mdev->new_request = ftl_simple_new_request;
 	mdev->get_request = ftl_simple_get_request;
@@ -1516,7 +1518,7 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 		struct mtdx_dev *cdev;
 		struct mtdx_device_id c_id = {
 			MTDX_WMODE_NONE, MTDX_WMODE_PAGE, MTDX_RMODE_NONE,
-	  		MTDX_RMODE_PAGE, MTDX_TYPE_ADAPTER,
+			MTDX_RMODE_PAGE, MTDX_TYPE_ADAPTER,
 			MTDX_ID_ADAPTER_BLKDEV
 		};
 

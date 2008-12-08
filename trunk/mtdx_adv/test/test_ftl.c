@@ -207,6 +207,7 @@ int btm_info_to_oob(struct mtdx_dev *this_dev, void *oob,
 {
 	struct btm_oob *b_oob = oob;
 
+	printf("lookup oob\n");
 	b_oob->log_block = p_info->log_block;
 	b_oob->status = p_info->status;
 	return 0;
