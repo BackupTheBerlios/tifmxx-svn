@@ -15,6 +15,8 @@
 #include <linux/err.h>
 #include "long_map.h"
 
+//#include <stdio.h>
+
 static int extra = 0;
 module_param(extra, int, 0644);
 
@@ -61,8 +63,10 @@ static struct map_node* long_map_find_useful(struct long_map *map,
 			n = n->rb_left;
 		else if (key > rv->key)
 			n = n->rb_right;
-		else
+		else {
+			map->c_block = rv;
 			return rv;
+		}
 	}
 
 	return NULL;
@@ -169,6 +173,9 @@ int long_map_prealloc(struct long_map *map, unsigned int count)
 	unsigned int r_cnt;
 	unsigned long flags;
 
+	if (!map)
+		return -EINVAL;
+
 	while (1) {
 		spin_lock_irqsave(&map->lock, flags);
 		if (map->rnode_count < count)
@@ -187,6 +194,8 @@ int long_map_prealloc(struct long_map *map, unsigned int count)
                 	if (!b)
 				goto undo_last;
 
+
+			//printf("map: alloc %p\n", b);
 			if (map->alloc_fn) {
 				b->val_ptr = map->alloc_fn(map->param);
 				if (!b->val_ptr) {
@@ -216,6 +225,7 @@ undo_last:
 		if (map->free_fn)
 			map->free_fn(b->val_ptr, map->param);
 
+		//printf("map: free 1 %p\n", b);
 		kfree(b);
 	}
 	return -ENOMEM;
@@ -229,6 +239,7 @@ void long_map_destroy(struct long_map *map)
 	if (!map)
 		return;
 
+	map->c_block = NULL;
 	long_map_put_tree(map);
 
 	while (map->retired_nodes) {
@@ -237,6 +248,7 @@ void long_map_destroy(struct long_map *map)
 		if (map->free_fn)
 			map->free_fn(b->val_ptr, map->param);
 
+		//printf("map: free 2 %p\n", b);
 		kfree(b);
 	}
 	kfree(map);
@@ -248,6 +260,9 @@ unsigned long *long_map_get(struct long_map *map, unsigned long key)
 	struct map_node *b;
 	unsigned long flags;
 	unsigned long *rv = NULL;
+
+	if (!map)
+		return NULL;
 
 	spin_lock_irqsave(&map->lock, flags);
 	b = long_map_find_useful(map, key);
@@ -268,6 +283,9 @@ unsigned long *long_map_insert(struct long_map *map, unsigned long key)
 	unsigned long flags;
 	unsigned long *rv = NULL;
 
+	if (!map)
+		return NULL;
+
 	spin_lock_irqsave(&map->lock, flags);
 	b = long_map_get_node(map);
 
@@ -280,6 +298,8 @@ unsigned long *long_map_insert(struct long_map *map, unsigned long key)
 				rv = b->val_ptr;
 			else
 				rv = &b->val;
+
+			map->c_block = b;
 		} else {
 			long_map_put_node(map, b);
 			rv = NULL;
@@ -298,6 +318,9 @@ void long_map_move(struct long_map *map, unsigned long dst_key,
 	struct map_node *b;
 	unsigned long flags;
 
+	if (!map || dst_key == src_key)
+		return;
+
 	spin_lock_irqsave(&map->lock, flags);
 	b = long_map_find_useful(map, src_key);
 	if (b) {
@@ -315,6 +338,9 @@ void long_map_erase(struct long_map *map, unsigned long key)
 	struct map_node *b;
 	unsigned long flags;
 
+	if (!map)
+		return;
+
 	spin_lock_irqsave(&map->lock, flags);
 	b = long_map_find_useful(map, key);
 	if (b) {
@@ -329,7 +355,11 @@ void long_map_clear(struct long_map *map)
 {
 	unsigned long flags;
 
+	if (!map)
+		return;
+
 	spin_lock_irqsave(&map->lock, flags);
+	map->c_block = NULL;
 	long_map_put_tree(map);
 	spin_unlock_irqrestore(&map->lock, flags);
 }
