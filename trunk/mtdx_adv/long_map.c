@@ -15,8 +15,6 @@
 #include <linux/err.h>
 #include "long_map.h"
 
-//#include <stdio.h>
-
 static int extra = 0;
 module_param(extra, int, 0644);
 
@@ -194,8 +192,6 @@ int long_map_prealloc(struct long_map *map, unsigned int count)
                 	if (!b)
 				goto undo_last;
 
-
-			//printf("map: alloc %p\n", b);
 			if (map->alloc_fn) {
 				b->val_ptr = map->alloc_fn(map->param);
 				if (!b->val_ptr) {
@@ -225,7 +221,6 @@ undo_last:
 		if (map->free_fn)
 			map->free_fn(b->val_ptr, map->param);
 
-		//printf("map: free 1 %p\n", b);
 		kfree(b);
 	}
 	return -ENOMEM;
@@ -248,7 +243,6 @@ void long_map_destroy(struct long_map *map)
 		if (map->free_fn)
 			map->free_fn(b->val_ptr, map->param);
 
-		//printf("map: free 2 %p\n", b);
 		kfree(b);
 	}
 	kfree(map);

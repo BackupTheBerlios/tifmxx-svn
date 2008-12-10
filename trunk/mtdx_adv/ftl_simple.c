@@ -484,11 +484,15 @@ static void ftl_simple_advance(struct ftl_simple_data *fsd)
 			*map_ref = tmp_off;
 
 		if (!*map_ref
-		    || (*map_ref >= fsd->geo.page_cnt))
+		    || (*map_ref >= fsd->geo.page_cnt)) {
 			long_map_erase(fsd->b_map, map_key);
-		else if (fsd->dst_block != map_key)
+			dev_dbg(&fsd_dev(fsd), "erase useful %x\n", map_key);
+		} else if (fsd->dst_block != map_key) {
 			long_map_move(fsd->b_map, fsd->dst_block,
 				      map_key);
+			dev_dbg(&fsd_dev(fsd), "move useful %x -> %x\n",
+				map_key, fsd->dst_block);
+		}
 	} else {
 		unsigned int p_off = fsd->b_off / fsd->geo.page_size;
 		unsigned int p_len = fsd->b_len / fsd->geo.page_size;
@@ -515,11 +519,15 @@ static void ftl_simple_advance(struct ftl_simple_data *fsd)
 		bitmap_set_region(map_ref, p_off, p_len);
 
 		if (bitmap_full(map_ref, fsd->geo.page_cnt)
-		    || bitmap_empty(map_ref, fsd->geo.page_cnt))
+		    || bitmap_empty(map_ref, fsd->geo.page_cnt)) {
 			long_map_erase(fsd->b_map, map_key);
-		else if (fsd->src_block != fsd->dst_block)
+			dev_dbg(&fsd_dev(fsd), "erase useful %x\n", map_key);
+		} else if (fsd->src_block != fsd->dst_block) {
 			long_map_move(fsd->b_map, fsd->dst_block,
 				      map_key);
+			dev_dbg(&fsd_dev(fsd), "move useful %x -> %x\n",
+				map_key, fsd->dst_block);
+		}
 	}
 out:
 	dev_dbg(&fsd_dev(fsd), "advance out %x, req %x\n", fsd->t_count,
@@ -1009,6 +1017,7 @@ static void ftl_simple_alloc_node(struct work_struct *work)
 			spin_unlock_irqrestore(&fsd->lock, flags);
 	}
 	fsd->req_suspend = 0;
+	fsd->bmap_avail = 1;
 	spin_unlock_irqrestore(&fsd->lock, flags);
 	parent->new_request(parent, fsd->mdev);
 }

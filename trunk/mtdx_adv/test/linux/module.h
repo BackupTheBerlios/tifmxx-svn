@@ -13,6 +13,7 @@
 
 #define PAGE_SIZE 4096
 #define PAGE_MASK       (~(PAGE_SIZE-1))
+#define PAGE_SHIFT 12
 
 #define MODULE_LICENSE(x)
 #define MODULE_AUTHOR(x)
@@ -34,7 +35,7 @@ void *kmalloc(size_t size, gfp_t flags);
 
 unsigned int random32(void);
 
-#define virt_to_page(x) (x)
+#define virt_to_page(x) (void*)(((unsigned long)(x) >> PAGE_SHIFT) << PAGE_SHIFT)
 
 #define offset_in_page(p)       ((unsigned long)(p) & ~PAGE_MASK)
 

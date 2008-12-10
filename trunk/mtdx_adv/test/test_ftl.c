@@ -45,6 +45,7 @@ void btm_trans_data(struct mtdx_request *req, int dir)
 
 	while (r_len) {
 		mtdx_data_iter_get_bvec(req->req_data, &b_vec, req->length);
+		printf("trans %d: %x, %x, %x\n", dir, r_len, c_pos, b_vec.bv_len);
 		if (dir)
 			memcpy(trans_space + c_pos,
 			       b_vec.bv_page + b_vec.bv_offset,
@@ -401,8 +402,8 @@ int main(int argc, char **argv)
 			size = random32() % (btm_geo.log_block_cnt
 					     * btm_geo.page_cnt - off);
 		} while (!size);
-		//off = 0;
-		//size = 1;
+		off = 1;
+		size = 5;
 
 		top_size = size * btm_geo.page_size;
 
@@ -445,12 +446,12 @@ int main(int argc, char **argv)
 
 		wait_event_interruptible(top_cond_wq, top_req_done >= 2);
 		printf("Read signalled %d\n", top_req_done);
-/*
-		printf("data_w %04x, %04x, %04x\n", *(int*)data_w,
+
+		printf("data_w %08x, %08x, %08x\n", *(int*)data_w,
 		       *(int*)(data_w + 512), *(int*)(data_w + 1024));
-		printf("data_r %04x, %04x, %04x\n", *(int*)data_r,
+		printf("data_r %08x, %08x, %08x\n", *(int*)data_r,
 		       *(int*)(data_r + 512), *(int*)(data_r + 1024));
-*/
+
 		if (memcmp(data_w, data_r, top_size)) {
 			printf("read/write err - %d\n", t_cnt);
 			break;
