@@ -480,11 +480,11 @@ static void ftl_simple_advance(struct ftl_simple_data *fsd)
 		if (!*map_ref
 		    || (*map_ref >= fsd->geo.page_cnt)) {
 			long_map_erase(fsd->b_map, map_key);
-			dev_dbg(&fsd_dev(fsd), "erase useful %x\n", map_key);
+			dev_dbg(&fsd_dev(fsd), "erase useful %lx\n", map_key);
 		} else if (fsd->dst_block != map_key) {
 			long_map_move(fsd->b_map, fsd->dst_block,
 				      map_key);
-			dev_dbg(&fsd_dev(fsd), "move useful %x -> %x\n",
+			dev_dbg(&fsd_dev(fsd), "move useful %lx -> %x\n",
 				map_key, fsd->dst_block);
 		}
 	} else {
@@ -515,11 +515,11 @@ static void ftl_simple_advance(struct ftl_simple_data *fsd)
 		if (bitmap_full(map_ref, fsd->geo.page_cnt)
 		    || bitmap_empty(map_ref, fsd->geo.page_cnt)) {
 			long_map_erase(fsd->b_map, map_key);
-			dev_dbg(&fsd_dev(fsd), "erase useful %x\n", map_key);
+			dev_dbg(&fsd_dev(fsd), "erase useful %lx\n", map_key);
 		} else if (fsd->src_block != fsd->dst_block) {
 			long_map_move(fsd->b_map, fsd->dst_block,
 				      map_key);
-			dev_dbg(&fsd_dev(fsd), "move useful %x -> %x\n",
+			dev_dbg(&fsd_dev(fsd), "move useful %lx -> %x\n",
 				map_key, fsd->dst_block);
 		}
 	}
@@ -617,6 +617,20 @@ static int ftl_simple_erase_dst(struct ftl_simple_data *fsd)
 	return 0;
 }
 
+static void ftl_simple_end_select_src(struct ftl_simple_data *fsd,
+				      unsigned int count)
+{
+	FUNC_START_DBG(fsd);
+
+	if (fsd->dst_error) {
+		ftl_simple_pop_all_req_fn(fsd);
+		ftl_simple_push_req_fn(fsd, ftl_simple_invalidate_dst);
+		fsd->src_error = fsd->dst_error;
+		ftl_simple_end_abort(fsd, 1);
+	}
+}
+
+
 static int ftl_simple_select_src(struct ftl_simple_data *fsd)
 {
 	FUNC_START_DBG(fsd);
@@ -630,7 +644,7 @@ static int ftl_simple_select_src(struct ftl_simple_data *fsd)
 	fsd->req_out.length = fsd->geo.page_size;
 	fsd->req_out.req_data = NULL;
 	fsd->req_out.req_oob = &fsd->req_oob;
-	fsd->end_req_fn = ftl_simple_end_invalidate_dst;
+	fsd->end_req_fn = ftl_simple_end_select_src;
 	return 0;
 }
 
@@ -1302,8 +1316,13 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 			if (fsd->req_dev)
 				fsd->req_in = fsd->req_dev
 						 ->get_request(fsd->req_dev);
-			if (fsd->req_in)
+			if (fsd->req_in) {
+				dev_dbg(&this_dev->dev, "req_in %x, %x-%x:%x\n",
+					fsd->req_in->cmd, fsd->req_in->logical,
+					fsd->req_in->phy.offset,
+					fsd->req_in->length);
 				continue;
+			}
 
 			put_device(&fsd->req_dev->dev);
 			fsd->req_dev = mtdx_dev_queue_pop_front(&fsd->c_queue);

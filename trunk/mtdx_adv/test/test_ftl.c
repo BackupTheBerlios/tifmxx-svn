@@ -405,8 +405,8 @@ int main(int argc, char **argv)
 			size = random32() % (btm_geo.log_block_cnt
 					     * btm_geo.page_cnt - off);
 		} while (!size);
-		off = 1;
-		size = 5;
+		//off = 1;
+		//size = 5;
 
 		top_size = size * btm_geo.page_size;
 

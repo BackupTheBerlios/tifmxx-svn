@@ -290,6 +290,7 @@ static int mtdx_block_init_disk(struct mtdx_dev *mdev)
 
 	set_capacity(mbd->disk, capacity);
 	dev_dbg(&mdev->dev, "capacity set %ld\n", capacity);
+	msleep(50);
 
 	add_disk(mbd->disk);
 	return 0;
