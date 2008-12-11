@@ -21,10 +21,7 @@ module_param(extra, int, 0644);
 struct map_node {
 	struct rb_node node;
 	unsigned long  key;
-	union {
-		unsigned long  val;
-		void           *val_ptr;
-	};
+	char           data[];
 };
 
 struct long_map {
@@ -188,17 +185,24 @@ int long_map_prealloc(struct long_map *map, unsigned int count)
 		h = NULL;
 
 		while (r_cnt) {
-			b = kzalloc(sizeof(struct map_node), GFP_KERNEL);
-                	if (!b)
-				goto undo_last;
+			if (!map->alloc_fn) {
+				b = kzalloc(sizeof(struct map_node)
+					    + map->param, GFP_KERNEL);
+                		if (!b)
+					goto undo_last;
+			} else {
+				b = kzalloc(sizeof(struct map_node)
+					    + sizeof(void *), GFP_KERNEL);
+                		if (!b)
+					goto undo_last;
 
-			if (map->alloc_fn) {
-				b->val_ptr = map->alloc_fn(map->param);
-				if (!b->val_ptr) {
+				*(void **)b->data = map->alloc_fn(map->param);
+				if (!*(void **)b->data) {
 					kfree(b);
 					goto undo_last;
 				}
 			}
+
 			b->node.rb_right = h;
 			h = &b->node;
 			r_cnt--;
@@ -219,7 +223,7 @@ undo_last:
 		b = rb_entry(h, struct map_node, node);
 		h = b->node.rb_right;
 		if (map->free_fn)
-			map->free_fn(b->val_ptr, map->param);
+			map->free_fn(*(void **)b->data, map->param);
 
 		kfree(b);
 	}
@@ -241,7 +245,7 @@ void long_map_destroy(struct long_map *map)
 		b = rb_entry(map->retired_nodes, struct map_node, node);
 		map->retired_nodes = b->node.rb_right;
 		if (map->free_fn)
-			map->free_fn(b->val_ptr, map->param);
+			map->free_fn(*(void **)b->data, map->param);
 
 		kfree(b);
 	}
@@ -249,11 +253,11 @@ void long_map_destroy(struct long_map *map)
 }
 EXPORT_SYMBOL(long_map_destroy);
 
-unsigned long *long_map_get(struct long_map *map, unsigned long key)
+void *long_map_get(struct long_map *map, unsigned long key)
 {
 	struct map_node *b;
 	unsigned long flags;
-	unsigned long *rv = NULL;
+	void *rv = NULL;
 
 	if (!map)
 		return NULL;
@@ -262,20 +266,20 @@ unsigned long *long_map_get(struct long_map *map, unsigned long key)
 	b = long_map_find_useful(map, key);
 	if (b) {
 		if (map->alloc_fn)
-			rv = b->val_ptr;
+			rv = *(void **)b->data;
 		else
-			rv = &b->val;
+			rv = b->data;
 	}
 	spin_unlock_irqrestore(&map->lock, flags);
 	return rv;
 }
 EXPORT_SYMBOL(long_map_get);
 
-unsigned long *long_map_insert(struct long_map *map, unsigned long key)
+void *long_map_insert(struct long_map *map, unsigned long key)
 {
 	struct map_node *b;
 	unsigned long flags;
-	unsigned long *rv = NULL;
+	void *rv = NULL;
 
 	if (!map)
 		return NULL;
@@ -289,9 +293,9 @@ unsigned long *long_map_insert(struct long_map *map, unsigned long key)
 
 		if (!IS_ERR(rv)) {
 			if (map->alloc_fn)
-				rv = b->val_ptr;
+				rv = *(void **)b->data;
 			else
-				rv = &b->val;
+				rv = b->data;
 
 			map->c_block = b;
 		} else {

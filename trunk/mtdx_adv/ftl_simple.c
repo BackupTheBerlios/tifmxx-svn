@@ -100,12 +100,6 @@ static char *ftl_simple_src_oob(struct ftl_simple_data *fsd)
 	return fsd->oob_buf + fsd->geo.oob_size;
 }
 
-static void *ftl_simple_alloc_pmap(unsigned long num_bits)
-{
-	return kmalloc(BITS_TO_LONGS(num_bits) * sizeof(unsigned long),
-		       GFP_KERNEL);
-}
-
 static unsigned long *ftl_simple_zone_map(struct ftl_simple_data *fsd)
 {
 	if (fsd->geo.zone_cnt > BITS_PER_LONG)
@@ -1461,19 +1455,20 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 
 	if (!rc) {
 		if (parent->id.inp_wmode == MTDX_WMODE_PAGE_PEB_INC) {
-			fsd->b_map = long_map_create(NULL, NULL, 0);
+			rc = sizeof(unsigned long);
 			dev_info(&mdev->dev, "using incremental page "
 				 "tracking\n");
 			fsd->track_inc = 1;
 		} else if (parent->id.inp_wmode == MTDX_WMODE_PAGE_PEB) {
-			fsd->b_map = long_map_create((fsd->geo.page_cnt
-						      > BITS_PER_LONG)
-						     ? ftl_simple_alloc_pmap
-						     : NULL, NULL,
-						     fsd->geo.page_cnt);
+			rc = BITS_TO_LONGS(fsd->geo.page_cnt)
+			     * sizeof(unsigned long);
 			dev_info(&mdev->dev, "using random access page "
 				 "tracking\n");
 		}
+
+		fsd->b_map = long_map_create(NULL, NULL, rc);
+		rc = 0;
+
 
 		if (fsd->b_map)
 			INIT_WORK(&fsd->b_map_alloc, ftl_simple_alloc_node);

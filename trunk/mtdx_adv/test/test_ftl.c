@@ -163,6 +163,9 @@ void *request_thread(void *data)
 			case MTDX_CMD_COPY:
 				src_blk = req->copy.b_addr;
 				src_off = req->copy.offset;
+				printf("rt: copy from %x - %x to %x - %x, %x\n",
+				       src_blk, src_off, req->phy.b_addr,
+				       req->phy.offset, req->length);
 
 				memcpy(trans_space
 				       + req->phy.b_addr * block_size +
