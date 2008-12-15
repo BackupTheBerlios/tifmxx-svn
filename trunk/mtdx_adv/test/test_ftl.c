@@ -59,7 +59,7 @@ void btm_trans_data(struct mtdx_request *req, int dir)
 		c_pos += b_vec.bv_len;
 	}
 
-	printf("trans data end");
+	printf("trans data end\n");
 }
 
 int btm_trans_oob(struct mtdx_request *req, int dir)
@@ -398,7 +398,7 @@ int main(int argc, char **argv)
 	exp_mtdx_ftl_simple_init();
 	test_driver->probe(&ftl_dev);
 
-	for (t_cnt = 7; t_cnt; --t_cnt) {
+	for (t_cnt = 70; t_cnt; --t_cnt) {
 		do {
 			off = random32() % (btm_geo.log_block_cnt
 					    * btm_geo.page_cnt);
@@ -459,7 +459,7 @@ int main(int argc, char **argv)
 			printf("read/write err - %d\n", t_cnt);
 			break;
 		} else
-			printf("req OK!\n");
+			printf("req OK! - %d\n", t_cnt);
 
 clean_up:
 		free(data_w);

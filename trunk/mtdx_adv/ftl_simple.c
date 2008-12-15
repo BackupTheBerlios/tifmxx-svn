@@ -158,6 +158,7 @@ static void ftl_simple_end_abort(struct ftl_simple_data *fsd, int free_dst)
 {
 	FUNC_START_DBG(fsd);
 	if (free_dst && (fsd->dst_block != fsd->src_block)) {
+		dev_dbg(&fsd_dev(fsd), "release dst %x\n", fsd->dst_block);
 		fsd->b_alloc->put_peb(fsd->b_alloc, fsd->dst_block,
 				      fsd->clean_dst == 1);
 		fsd->dst_block = MTDX_INVALID_BLOCK;
@@ -572,8 +573,10 @@ static void ftl_simple_end_erase_src(struct ftl_simple_data *fsd,
 {
 	FUNC_START_DBG(fsd);
 
-	if (!fsd->dst_error)
+	if (!fsd->dst_error) {
+		dev_dbg(&fsd_dev(fsd), "release src %x\n", fsd->src_block);
 		fsd->b_alloc->put_peb(fsd->b_alloc, fsd->src_block, 1);
+	}
 }
 
 static int ftl_simple_erase_src(struct ftl_simple_data *fsd)
@@ -1182,8 +1185,10 @@ static int ftl_simple_fill_data(struct ftl_simple_data *fsd)
 
 	fsd->t_count += fsd->b_len;
 
-	if (fsd->t_count >= fsd->req_in->length)
+	if (fsd->t_count >= fsd->req_in->length) {
 		ftl_simple_complete_req(fsd);
+		return -EAGAIN;
+	}
 
 	return 0;
 }

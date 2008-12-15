@@ -19,12 +19,8 @@ struct rand_peb_alloc {
 	unsigned long         *map_a;
 	unsigned long         *map_b;
 	unsigned long         *erase_map; /* erase status of block        */
-	union {                           /* 0 - use map A, 1 - use map B */
-		unsigned long zone_map;
-		unsigned long *zone_map_ptr;
-	};
-	unsigned int          zone_cnt;
 	struct mtdx_peb_alloc mpa;
+	unsigned long         zone_map[]; /* 0 - use map A, 1 - use map B */
 };
 
 /*
@@ -34,14 +30,6 @@ struct rand_peb_alloc {
  * are no more free blocks in the selected map, selection is reversed and
  * search is retried.
  */
-
-static unsigned long *zone_map(struct rand_peb_alloc *rb)
-{
-	if (rb->zone_cnt <= BITS_PER_LONG)
-		return &rb->zone_map;
-	else
-		return rb->zone_map_ptr;
-}
 
 static unsigned int rand_peb_alloc_find_circ(unsigned long *map,
 					     unsigned int min_pos,
@@ -83,14 +71,14 @@ static unsigned int rand_peb_alloc_get(struct mtdx_peb_alloc *bal,
 	if (rand_pos > bal->geo->phy_block_cnt)
 		rand_pos = bal->geo->phy_block_cnt - 1;
 
-	c_map = test_bit(zone, zone_map(rb)) ? rb->map_b : rb->map_a;
+	c_map = test_bit(zone, rb->zone_map) ? rb->map_b : rb->map_a;
 
 	f_pos = rand_peb_alloc_find_circ(c_map, zone_min, zone_max,
 					 rand_pos);
 
 	if (f_pos == MTDX_INVALID_BLOCK) {
-		c_map = test_bit(zone, zone_map(rb)) ? rb->map_a : rb->map_b;
-		change_bit(zone, zone_map(rb));
+		c_map = test_bit(zone, rb->zone_map) ? rb->map_a : rb->map_b;
+		change_bit(zone, rb->zone_map);
 
 		f_pos = rand_peb_alloc_find_circ(c_map, zone_min,
 						 zone_max, rand_pos);
@@ -138,7 +126,7 @@ static void rand_peb_alloc_put(struct mtdx_peb_alloc *bal, unsigned int peb,
 	unsigned int z_off;
 	unsigned int zone = mtdx_geo_phy_to_zone(bal->geo, peb, &z_off);
 
-	if (test_bit(zone, zone_map(rb))) {
+	if (test_bit(zone, rb->zone_map)) {
 		set_bit(peb, rb->map_b);
 		clear_bit(peb, rb->map_a);
 	} else {
@@ -159,7 +147,7 @@ static void rand_peb_alloc_reset(struct mtdx_peb_alloc *bal, unsigned int zone)
 		bitmap_fill(rb->map_a, bal->geo->phy_block_cnt);
 		bitmap_fill(rb->map_b, bal->geo->phy_block_cnt);
 		bitmap_fill(rb->erase_map, bal->geo->phy_block_cnt);
-		bitmap_zero(zone_map(rb), rb->zone_cnt);
+		bitmap_zero(rb->zone_map, rb->mpa.geo->zone_cnt);
 	} else {
 		unsigned int z_off = mtdx_geo_zone_to_phy(bal->geo, zone, 0);
 		unsigned int z_cnt = mtdx_geo_zone_to_phy(bal->geo, zone + 1,
@@ -172,7 +160,7 @@ static void rand_peb_alloc_reset(struct mtdx_peb_alloc *bal, unsigned int zone)
 		bitmap_set_region(rb->map_a, z_off, z_cnt);
 		bitmap_set_region(rb->map_b, z_off, z_cnt);
 		bitmap_set_region(rb->erase_map, z_off, z_cnt);
-		clear_bit(zone, zone_map(rb));
+		clear_bit(zone, rb->zone_map);
 	}
 }
 
@@ -183,15 +171,15 @@ static void rand_peb_alloc_free(struct mtdx_peb_alloc *bal)
 	kfree(rb->map_a);
 	kfree(rb->map_b);
 	kfree(rb->erase_map);
-	if (rb->zone_cnt > BITS_PER_LONG)
-		kfree(rb->zone_map_ptr);
 
 	kfree(rb);
 }
 
 struct mtdx_peb_alloc *mtdx_rand_peb_alloc(const struct mtdx_geo *geo)
 {
-	struct rand_peb_alloc *rb = kzalloc(sizeof(struct rand_peb_alloc),
+	struct rand_peb_alloc *rb = kzalloc(sizeof(struct rand_peb_alloc)
+					    + BITS_TO_LONGS(geo->zone_cnt)
+					      * sizeof(unsigned long),
 					    GFP_KERNEL);
 	unsigned int z_off;
 
@@ -199,9 +187,6 @@ struct mtdx_peb_alloc *mtdx_rand_peb_alloc(const struct mtdx_geo *geo)
 		return NULL;
 
 	rb->mpa.geo = geo;
-	rb->zone_cnt = mtdx_geo_phy_to_zone(geo, geo->phy_block_cnt - 1,
-					    &z_off) + 1;
-
 	rb->mpa.get_peb = rand_peb_alloc_get;
 	rb->mpa.put_peb = rand_peb_alloc_put;
 	rb->mpa.reset = rand_peb_alloc_reset;
@@ -213,14 +198,6 @@ struct mtdx_peb_alloc *mtdx_rand_peb_alloc(const struct mtdx_geo *geo)
 			    * sizeof(unsigned long), GFP_KERNEL);
 	rb->erase_map = kmalloc(BITS_TO_LONGS(geo->phy_block_cnt)
 				* sizeof(unsigned long), GFP_KERNEL);
-
-	if (rb->zone_cnt > BITS_PER_LONG) {
-		rb->zone_map_ptr = kmalloc(BITS_TO_LONGS(rb->zone_cnt)
-					   * sizeof(unsigned long),
-					   GFP_KERNEL);
-		if (!rb->zone_map_ptr)
-			goto err_out;
-	}
 
 	if (!rb->map_a || !rb->map_b || !rb->erase_map)
 		goto err_out;
