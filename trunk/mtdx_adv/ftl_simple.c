@@ -20,6 +20,9 @@
 #define DRIVER_NAME "ftl_simple"
 #define fsd_dev(fsd) (fsd->mdev->dev)
 
+#undef dev_dbg
+#define dev_dbg dev_emerg
+
 #define FUNC_START_DBG(fsd) dev_dbg(&fsd_dev(fsd), "%s begin\n", __func__)
 
 struct ftl_simple_data;
@@ -527,8 +530,6 @@ static void ftl_simple_advance(struct ftl_simple_data *fsd)
 out:
 	dev_dbg(&fsd_dev(fsd), "advance out %x, req %x\n", fsd->t_count,
 		fsd->req_in->length);
-	if (fsd->t_count >=  fsd->req_in->length)
-		ftl_simple_complete_req(fsd);
 }
 
 static void ftl_simple_end_invalidate_dst(struct ftl_simple_data *fsd,
@@ -766,6 +767,8 @@ static int ftl_simple_submit_last(struct ftl_simple_data *fsd,
 	fsd->req_out.cmd = cmd;
 	fsd->req_out.phy.b_addr = fsd->dst_block;
 	fsd->req_out.phy.offset = tmp_off;
+	fsd->req_out.copy.b_addr = fsd->src_block;
+	fsd->req_out.copy.offset = tmp_off;
 
 	mtdx_data_iter_init_buf(&fsd->req_data, fsd->block_buf + tmp_off,
 				fsd->req_out.length);
@@ -878,6 +881,8 @@ static int ftl_simple_copy_first(struct ftl_simple_data *fsd)
 	fsd->req_out.cmd = MTDX_CMD_COPY;
 	fsd->req_out.phy.b_addr = fsd->dst_block;
 	fsd->req_out.phy.offset = 0;
+	fsd->req_out.copy.b_addr = fsd->src_block;
+	fsd->req_out.copy.offset = 0;
 	fsd->req_out.length = fsd->b_off;
 
 	memset(fsd->block_buf, fsd->geo.fill_value, fsd->req_out.length);
@@ -1202,7 +1207,7 @@ static void ftl_simple_end_read_data(struct ftl_simple_data *fsd,
 
 	fsd->t_count += count;
 
-	if (fsd->dst_error || (fsd->t_count >= fsd->req_in->length))
+	if (fsd->dst_error)
 		ftl_simple_complete_req(fsd);
 }
 
@@ -1260,6 +1265,9 @@ static int ftl_simple_setup_request(struct ftl_simple_data *fsd)
 {
 	int rc = 0;
 
+	if (fsd->t_count >= fsd->req_in->length)
+		return -EAGAIN;
+
 	if (fsd->req_in->cmd == MTDX_CMD_READ)
 		rc = ftl_simple_setup_read(fsd);
 	else if (fsd->req_in->cmd == MTDX_CMD_WRITE) {
@@ -1312,7 +1320,7 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 					return NULL;
 				}
 			} else {
-				fsd->dst_error = rc;
+				fsd->dst_error = (rc == -EAGAIN) ? 0 : rc;
 				ftl_simple_complete_req(fsd);
 			}
 		}
@@ -1329,7 +1337,9 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 				continue;
 			}
 
-			put_device(&fsd->req_dev->dev);
+			dev_emerg(&this_dev->dev, "put device %p\n",
+				  &fsd->req_dev);
+			//put_device(&fsd->req_dev->dev);
 			fsd->req_dev = mtdx_dev_queue_pop_front(&fsd->c_queue);
 
 			if (!fsd->req_dev) {
@@ -1440,8 +1450,8 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 	}
 
 	fsd->block_size = fsd->geo.page_cnt * fsd->geo.page_size;
-	dev_dbg(&mdev->dev, "zone_cnt %x, oob_size %x\n",
-		fsd->geo.zone_cnt, fsd->geo.oob_size);
+	dev_dbg(&mdev->dev, "mdev %p, zone_cnt %x, oob_size %x\n",
+		mdev, fsd->geo.zone_cnt, fsd->geo.oob_size);
 
 	spin_lock_init(&fsd->lock);
 	mtdx_dev_queue_init(&fsd->c_queue);

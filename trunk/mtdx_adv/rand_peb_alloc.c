@@ -181,7 +181,6 @@ struct mtdx_peb_alloc *mtdx_rand_peb_alloc(const struct mtdx_geo *geo)
 					    + BITS_TO_LONGS(geo->zone_cnt)
 					      * sizeof(unsigned long),
 					    GFP_KERNEL);
-	unsigned int z_off;
 
 	if (!rb)
 		return NULL;

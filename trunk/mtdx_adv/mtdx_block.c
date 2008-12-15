@@ -135,7 +135,7 @@ static void mtdx_block_end_request(struct mtdx_dev *this_dev,
 		count = blk_rq_bytes(mbd->block_req);
 	}
 
-	blk_end_request(mbd->block_req, dst_error, count);
+	__blk_end_request(mbd->block_req, dst_error, count);
 	mbd->block_req = NULL;
 	spin_unlock_irqrestore(&mbd->q_lock, flags);
 }
@@ -289,7 +289,7 @@ static int mtdx_block_init_disk(struct mtdx_dev *mdev)
 	capacity >>= 9;
 
 	set_capacity(mbd->disk, capacity);
-	dev_dbg(&mdev->dev, "capacity set %ld\n", capacity);
+	dev_dbg(&mdev->dev, "mdev %p, capacity set %ld\n", mdev, capacity);
 	msleep(50);
 
 	add_disk(mbd->disk);

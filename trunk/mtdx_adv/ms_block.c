@@ -869,7 +869,7 @@ static int h_ms_block_req_init(struct memstick_dev *card,
 	dev_dbg(&card->dev, "1 dev %p, req %p\n", msb->req_dev, msb->req_in);
 	do {
 		if (msb->req_dev)
-			msb->req_in = msb->mdev->get_request(msb->req_dev);
+			msb->req_in = msb->req_dev->get_request(msb->req_dev);
 
 		dev_dbg(&card->dev, "2 dev %p, req %p\n", msb->req_dev, msb->req_in);
 		if (msb->req_in)
@@ -878,7 +878,9 @@ static int h_ms_block_req_init(struct memstick_dev *card,
 
 		dev_dbg(&card->dev, "3 dev %p, req %p\n", msb->req_dev, msb->req_in);
 		if (msb->req_dev) {
-			put_device(&msb->req_dev->dev);
+			dev_dbg(&card->dev, "put device %p\n",
+				msb->req_dev);
+			//put_device(&msb->req_dev->dev);
 			msb->req_dev = NULL;
 		}
 
@@ -895,6 +897,10 @@ static int h_ms_block_req_init(struct memstick_dev *card,
 		return -EAGAIN;
 	}
 	dev_dbg(&card->dev, "5 dev %p, req %p\n", msb->req_dev, msb->req_in);
+	dev_dbg(&card->dev, "submit request %x, %x, %x:%x\n", msb->req_in->cmd,
+		msb->req_in->phy.b_addr, msb->req_in->phy.offset,
+		msb->req_in->length);
+
 	memstick_init_req(*mrq, MS_TPC_SET_CMD, &c_cmd, 1);
 	card->next_request = h_ms_block_clear_buf;
 	return 0;
@@ -2405,7 +2411,7 @@ static int ms_block_probe(struct memstick_dev *card)
 
 
 	rc = device_add(&msb->mdev->dev);
-	dev_dbg(&card->dev, "dev add %d\n", rc);
+	dev_dbg(&card->dev, "mdev %p, dev add %d\n", msb->mdev, rc);
 	if (rc)
 		goto err_out_free_mdev;
 
