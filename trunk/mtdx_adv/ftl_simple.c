@@ -8,7 +8,6 @@
  * published by the Free Software Foundation.
  *
  */
-
 #include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/wait.h>
@@ -20,8 +19,8 @@
 #define DRIVER_NAME "ftl_simple"
 #define fsd_dev(fsd) (fsd->mdev->dev)
 
-#undef dev_dbg
-#define dev_dbg dev_emerg
+//#undef dev_dbg
+//#define dev_dbg dev_emerg
 
 #define FUNC_START_DBG(fsd) dev_dbg(&fsd_dev(fsd), "%s begin\n", __func__)
 
@@ -252,20 +251,20 @@ static void ftl_simple_end_lookup_block(struct ftl_simple_data *fsd,
 
 	p_info.phy_block = fsd->zone_scan_pos;
 
-	if (!fsd->dst_error)
+	if (!fsd->dst_error) {
 		fsd->dst_error = parent->oob_to_info(parent, &p_info,
 						     fsd->oob_buf);
-	else if (fsd->dst_error == -EFAULT) {
+		zone = mtdx_geo_log_to_zone(&fsd->geo, p_info.log_block,
+					    &z_log_block);
+		if (zone != fsd->zone) {
+			p_info.log_block = MTDX_INVALID_BLOCK;
+			p_info.status = MTDX_PAGE_UNMAPPED;
+		}	
+	} else if (fsd->dst_error == -EFAULT) {
 		/* Uncorrectable error reading block */
 		p_info.status = MTDX_PAGE_FAILURE;
 		p_info.log_block = MTDX_INVALID_BLOCK;
 		fsd->dst_error = 0;
-	}
-
-	zone = mtdx_geo_log_to_zone(&fsd->geo, p_info.log_block, &z_log_block);
-	if (zone != fsd->zone) {
-		p_info.log_block = MTDX_INVALID_BLOCK;
-		p_info.status = MTDX_PAGE_UNMAPPED;
 	}
 
 	if (!fsd->dst_error) {
@@ -1339,7 +1338,9 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 
 			dev_emerg(&this_dev->dev, "put device %p\n",
 				  &fsd->req_dev);
-			//put_device(&fsd->req_dev->dev);
+			if (fsd->req_dev)
+				put_device(&fsd->req_dev->dev);
+
 			fsd->req_dev = mtdx_dev_queue_pop_front(&fsd->c_queue);
 
 			if (!fsd->req_dev) {
@@ -1371,6 +1372,7 @@ static void ftl_simple_new_request(struct mtdx_dev *this_dev,
 					       struct mtdx_dev, dev);
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(this_dev);
 
+	dev_emerg(&this_dev->dev, "get device %p\n", req_dev);
 	get_device(&req_dev->dev);
 	mtdx_dev_queue_push_back(&fsd->c_queue, req_dev);
 
@@ -1567,8 +1569,10 @@ static void ftl_simple_remove(struct mtdx_dev *mdev)
 
 	do {
 		c_dev = mtdx_dev_queue_pop_front(&fsd->c_queue);
-		if (c_dev)
+		if (c_dev) {
+			dev_dbg(&mdev->dev, "put device %p\n", c_dev);
 			put_device(&c_dev->dev);
+		}
 	} while (c_dev);
 
 	/* Wait for last client to finish. */
