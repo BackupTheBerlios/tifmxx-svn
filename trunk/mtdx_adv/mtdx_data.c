@@ -128,7 +128,10 @@ static void mtdx_data_iter_bio_inc(struct mtdx_data_iter *iter,
 	for (; b_iter->seg; b_iter->seg = b_iter->seg->bi_next) {
 		for (; b_iter->idx < b_iter->seg->bi_vcnt;
 		     ++b_iter->idx) {
-			inc = b_iter->seg->bi_io_vec[b_iter->idx].bv_len;
+			inc = b_iter->vec_pos
+			      + b_iter->seg->bi_io_vec[b_iter->idx].bv_len
+			      - iter->iter_pos;
+			
 			if (off >= inc) {
 				off -= inc;
 				iter->iter_pos += inc;
@@ -141,9 +144,10 @@ static void mtdx_data_iter_bio_inc(struct mtdx_data_iter *iter,
 							.bv_len;
 		}
 		b_iter->seg_pos = b_iter->vec_pos;
+		b_iter->idx = 0;
 	}
 
-	iter->iter_pos = b_iter->vec_pos;
+	iter->iter_pos = b_iter->seg_pos;
 }
 
 static void mtdx_data_iter_bio_dec(struct mtdx_data_iter *iter,

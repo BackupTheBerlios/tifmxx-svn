@@ -123,9 +123,8 @@ static void mtdx_block_end_request(struct mtdx_dev *this_dev,
 	struct mtdx_block_data *mbd = mtdx_get_drvdata(this_dev);
 	unsigned int flags;
 
-	dev_dbg(&this_dev->dev, "end_request %x, %d\n", count, dst_error);
+	dev_dbg(&this_dev->dev, "end_request 1 %d, %x\n", dst_error, count);
 	spin_lock_irqsave(&mbd->q_lock, flags);
-
 	if (count)
 		dst_error = 0;
 	else {
@@ -135,10 +134,14 @@ static void mtdx_block_end_request(struct mtdx_dev *this_dev,
 		count = blk_rq_bytes(mbd->block_req);
 	}
 
+	dev_dbg(&this_dev->dev, "end_request 2 %d, %x\n", dst_error, count);
+
 	__blk_end_request(mbd->block_req, dst_error, count);
 	mbd->block_req = NULL;
 	spin_unlock_irqrestore(&mbd->q_lock, flags);
 }
+
+//int limit = 500;
 
 static struct mtdx_request *mtdx_block_get_request(struct mtdx_dev *mdev)
 {
@@ -146,6 +149,9 @@ static struct mtdx_request *mtdx_block_get_request(struct mtdx_dev *mdev)
 	sector_t t_sec;
 	unsigned int flags;
 
+//	if (!limit)
+//		return NULL;
+//	limit--;
 	spin_lock_irqsave(&mbd->q_lock, flags);
 try_again:
 	if (mbd->block_req) {
@@ -290,7 +296,6 @@ static int mtdx_block_init_disk(struct mtdx_dev *mdev)
 
 	set_capacity(mbd->disk, capacity);
 	dev_dbg(&mdev->dev, "mdev %p, capacity set %ld\n", mdev, capacity);
-	msleep(50);
 
 	add_disk(mbd->disk);
 	return 0;
