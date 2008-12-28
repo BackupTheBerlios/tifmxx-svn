@@ -21,8 +21,8 @@ struct mtdx_geo btm_geo = {
 	.zone_cnt = 8,
 	.log_block_cnt = 48,
 	.phy_block_cnt = 64,
-	.page_cnt = 4,
-	.page_size = 512,
+	.page_cnt = 64,
+	.page_size = 64,
 	.oob_size = sizeof(struct btm_oob),
 	.fill_value = 0xff
 };
@@ -248,7 +248,8 @@ static int btm_get_param(struct mtdx_dev *this_dev,
 
 struct mtdx_dev btm_dev = {
 	.id = {
-		MTDX_WMODE_PAGE_PEB_INC, MTDX_WMODE_NONE, MTDX_RMODE_PAGE_PEB,
+		MTDX_WMODE_PAGE_PEB, MTDX_WMODE_NONE, MTDX_RMODE_PAGE_PEB,
+//		MTDX_WMODE_PEB, MTDX_WMODE_NONE, MTDX_RMODE_PAGE_PEB,
 		MTDX_RMODE_NONE, MTDX_TYPE_MEDIA, MTDX_ID_MEDIA_MEMORYSTICK
 	},
 	.dev = {
@@ -262,7 +263,8 @@ struct mtdx_dev btm_dev = {
 
 struct mtdx_dev ftl_dev = {
 	.id = {
-		MTDX_WMODE_PAGE, MTDX_WMODE_PAGE_PEB_INC, MTDX_RMODE_PAGE,
+		MTDX_WMODE_PAGE, MTDX_WMODE_PAGE_PEB, MTDX_RMODE_PAGE,
+//		MTDX_WMODE_PAGE, MTDX_WMODE_PEB, MTDX_RMODE_PAGE,
 		MTDX_RMODE_PAGE_PEB, MTDX_TYPE_FTL, MTDX_ID_FTL_SIMPLE
 	},
 	.dev = {

@@ -199,10 +199,10 @@ static void mtdx_data_iter_bio_get_sg(struct mtdx_data_iter *iter,
 	struct bio_vec *bvec, *bvprv;
 	unsigned int c_off, c_sz;
 
-	sg->length = 0;
-
-	if (!b_iter->seg)
+	if (!b_iter->seg) {
+		memset(sg, 0, sizeof(struct scatterlist));
 		return;
+	}
 
 	bvprv = &b_iter->seg->bi_io_vec[b_iter->idx];
 	c_off = iter->iter_pos - b_iter->vec_pos;
@@ -235,10 +235,10 @@ static void mtdx_data_iter_bio_get_bvec(struct mtdx_data_iter *iter,
 	struct mtdx_bio_iter *b_iter = &iter->r_bio;
 	unsigned int c_off;
 
-	bvec->bv_len = 0;
-
-	if (!b_iter->seg)
+	if (!b_iter->seg) {
+		memset(bvec, 0, sizeof(struct bio_vec));
 		return;
+	}
 
 	memcpy(bvec, &b_iter->seg->bi_io_vec[b_iter->idx],
 	       sizeof(struct bio_vec));

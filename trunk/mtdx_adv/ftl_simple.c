@@ -1128,7 +1128,7 @@ static int ftl_simple_setup_write(struct ftl_simple_data *fsd)
 				dev_dbg(&fsd_dev(fsd), "partial block write\n");
 
 				map_ref = ftl_simple_make_useful_dst(fsd);
-				if (!map_ref) {
+				if (!map_ref && fsd->b_map) {
 					fsd->req_suspend = 1;
 					schedule_work(&fsd->b_map_alloc);
 					return 0;
@@ -1491,20 +1491,19 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 
 	if (!rc) {
 		if (parent->id.inp_wmode == MTDX_WMODE_PAGE_PEB_INC) {
-			rc = sizeof(unsigned long);
+			fsd->b_map = long_map_create(NULL, NULL, 
+						     sizeof(unsigned long));
 			dev_info(&mdev->dev, "using incremental page "
 				 "tracking\n");
 			fsd->track_inc = 1;
 		} else if (parent->id.inp_wmode == MTDX_WMODE_PAGE_PEB) {
-			rc = BITS_TO_LONGS(fsd->geo.page_cnt)
-			     * sizeof(unsigned long);
+			fsd->b_map = long_map_create(NULL, NULL,
+						     BITS_TO_LONGS(fsd->geo
+								   .page_cnt)
+						     * sizeof(unsigned long));
 			dev_info(&mdev->dev, "using random access page "
 				 "tracking\n");
 		}
-
-		fsd->b_map = long_map_create(NULL, NULL, rc);
-		rc = 0;
-
 
 		if (fsd->b_map)
 			INIT_WORK(&fsd->b_map_alloc, ftl_simple_alloc_node);
@@ -1515,8 +1514,7 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 			goto err_out;
 		}
 
-		fsd->block_buf = kmalloc(fsd->geo.page_cnt * fsd->geo.page_size,
-					 GFP_KERNEL);
+		fsd->block_buf = kmalloc(fsd->block_size, GFP_KERNEL);
 		if (!fsd->block_buf) {
 			rc = -ENOMEM;
 			goto err_out;
