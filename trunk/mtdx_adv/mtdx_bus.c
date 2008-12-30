@@ -344,6 +344,25 @@ void mtdx_drop_children(struct mtdx_dev *mdev)
 }
 EXPORT_SYMBOL(mtdx_drop_children);
 
+static int mtdx_child_notify(struct device *dev, void *data)
+{
+	enum mtdx_message msg = (enum mtdx_message)data;
+	struct mtdx_dev *cdev = container_of(dev, struct mtdx_dev, dev);
+
+	if (dev->type == &mtdx_type) {
+		if (cdev->notify)
+			cdev->notify(cdev, msg);
+	}
+
+	return 0;
+}
+
+void mtdx_notify_children(struct mtdx_dev *mdev, enum mtdx_message msg)
+{
+	device_for_each_child(&mdev->dev, (void *)msg, mtdx_child_notify);
+}
+EXPORT_SYMBOL(mtdx_notify_children);
+
 int mtdx_page_list_append(struct list_head *head, struct mtdx_page_info *info)
 {
 	struct list_head *p = head;

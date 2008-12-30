@@ -185,6 +185,11 @@ enum mtdx_param {
 	MTDX_PARAM_DMA_MASK        /* u64*                           */
 };
 
+enum mtdx_message {
+	MTDX_MSG_NONE = 0,
+	MTDX_MSG_INV_BLOCK_MAP     /* invalidate flash translation maps */
+};
+
 struct mtdx_pos {
 	unsigned int b_addr;
 	unsigned int offset;
@@ -226,13 +231,13 @@ struct mtdx_dev {
 					    void *oob,
 					    struct mtdx_page_info *p_info);
 
-	/* Get/set device metadata.                                   */
+	/* Get device metadata (child calls parent)                    */
 	int                  (*get_param)(struct mtdx_dev *this_dev,
 					  enum mtdx_param param,
 					  void *val);
-	int                  (*set_param)(struct mtdx_dev *this_dev,
-					  enum mtdx_param param,
-					  unsigned long val);
+	/* notify children about some event                            */
+	void                 (*notify)(struct mtdx_dev *this_dev,
+				       enum mtdx_message msg);
 
 	struct device         dev;
 };
@@ -260,6 +265,7 @@ struct mtdx_dev *mtdx_alloc_dev(struct device *parent,
 				const struct mtdx_device_id *id);
 void __mtdx_free_dev(struct mtdx_dev *mdev);
 void mtdx_drop_children(struct mtdx_dev *mdev);
+void mtdx_notify_children(struct mtdx_dev *mdev, enum mtdx_message msg);
 int mtdx_page_list_append(struct list_head *head, struct mtdx_page_info *info);
 void mtdx_page_list_free(struct list_head *head);
 

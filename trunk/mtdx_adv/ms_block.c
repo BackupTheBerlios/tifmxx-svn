@@ -606,13 +606,11 @@ static int ms_block_format(void *data)
 	struct ms_block_data *msb = memstick_get_drvdata(card);
 	LIST_HEAD(s_blocks);
 	struct list_head *s_block_pos;
-	struct ms_param_register param;
 	unsigned long flags;
 	int rc;
 
 	msb->mdev->get_param(msb->mdev, MTDX_PARAM_SPECIAL_BLOCKS, &s_blocks);
 	s_block_pos = s_blocks.next;
-	msb->src_pos.b_addr = 0;
 
 	if (ms_block_reg_addr_cmp(card, &ms_block_r_stat_w_param)) {
 		ms_block_reg_addr_set(card, &ms_block_r_stat_w_param);
@@ -624,39 +622,46 @@ static int ms_block_format(void *data)
 		}
 	}
 
+	mtdx_notify_children(msb->mdev, MTDX_MSG_INV_BLOCK_MAP);
+
+	msb->internal_req.cmd = MTDX_CMD_ERASE;
+	msb->internal_req.logical = MTDX_INVALID_BLOCK;
+	msb->internal_req.phy.b_addr = 0;
+	msb->internal_req.phy.offset = 0;
+	msb->internal_req.length = 0;
+	msb->internal_req.req_data = NULL;
+	msb->internal_req.req_oob = NULL;
+
 	while (!kthread_should_stop()
-	       && (msb->src_pos.b_addr < msb->geo.phy_block_cnt)) {
+	       && (msb->internal_req.phy.b_addr < msb->geo.phy_block_cnt)) {
 		if (s_block_pos != &s_blocks) {
 			if (list_entry(s_block_pos, struct mtdx_page_info, node)
-			    ->phy_block == msb->src_pos.b_addr) {
+			    ->phy_block == msb->internal_req.phy.b_addr) {
 				dev_info(&card->dev, "skipping block %x\n",
-					 msb->src_pos.b_addr);
-				msb->src_pos.b_addr++;
+					 msb->internal_req.phy.b_addr);
+				msb->internal_req.phy.b_addr++;
 				s_block_pos = s_block_pos->next;
 				continue;
 			}
 		}
 
-		msb->req_dev = msb->mdev;
 		dev_dbg(&card->dev, "get device %p\n", msb->mdev);
 		get_device(&msb->mdev->dev);
-		msb->cmd = MS_CMD_BLOCK_ERASE;
-		param.system = msb->system;
-		param.cp = MEMSTICK_CP_BLOCK;
-		param.page_address = 0;
-		ms_param_set_addr(&param, msb->src_pos.b_addr);
-		memstick_init_req(&card->current_mrq, MS_TPC_WRITE_REG, &param,
-				  sizeof(param));
-		msb->mrq_handler = h_ms_block_write_param;
-		card->next_request = h_ms_block_internal_req_init;
+		msb->req_dev = msb->mdev;
+		msb->int_issue = 1;
+		msb->int_err = 0;
+		msb->int_count = 0;
+
+		card->next_request = h_ms_block_req_init;
 		memstick_new_req(card->host);
 		wait_for_completion(&card->mrq_complete);
-		if (card->current_mrq.error)
-			dev_warn(&card->dev, "format: error %d erasing block "
-				 "%x\n", card->current_mrq.error,
-				 msb->src_pos.b_addr);
 
-		msb->src_pos.b_addr++;
+		if (msb->int_err)
+			dev_warn(&card->dev, "format: error %d erasing block "
+				 "%x\n", msb->int_err,
+				 msb->internal_req.phy.b_addr);
+
+		msb->internal_req.phy.b_addr++;
 	}
 
 out:
@@ -689,7 +694,7 @@ static ssize_t ms_block_format_show(struct device *dev,
 	dev_dbg(&msb->card->dev, "format show\n");
 	spin_lock_irqsave(&msb->lock, flags);
 	if (msb->f_thread)
-		f_pos = msb->src_pos.b_addr;
+		f_pos = msb->internal_req.phy.b_addr;
 	spin_unlock_irqrestore(&msb->lock, flags);
 
 	if (f_pos != MTDX_INVALID_BLOCK)

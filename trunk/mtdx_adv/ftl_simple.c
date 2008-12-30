@@ -1409,6 +1409,28 @@ static int ftl_simple_get_param(struct mtdx_dev *this_dev,
 	}
 }
 
+static void ftl_simple_notify(struct mtdx_dev *this_dev, enum mtdx_message msg)
+{
+	struct ftl_simple_data *fsd = mtdx_get_drvdata(this_dev);
+	unsigned long flags;
+	unsigned int cnt;
+
+	switch (msg) {
+	case MTDX_MSG_INV_BLOCK_MAP:
+		spin_lock_irqsave(&fsd->lock, flags);
+		for (cnt = 0; cnt < fsd->geo.zone_cnt; ++cnt) {
+			if (test_bit(cnt, ftl_simple_zone_map(fsd))) {
+				fsd->zone = cnt;
+				ftl_simple_clear_zone(fsd);
+			}
+		}
+		fsd->zone = 0;
+		spin_unlock_irqrestore(&fsd->lock, flags);
+	default:
+		mtdx_notify_children(this_dev, msg);
+	}
+}
+
 static void ftl_simple_free(struct ftl_simple_data *fsd)
 {
 	if (!fsd)
@@ -1533,6 +1555,7 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 	mdev->get_request = ftl_simple_get_request;
 	mdev->end_request = ftl_simple_end_request;
 	mdev->get_param = ftl_simple_get_param;
+	mdev->notify = ftl_simple_notify;
 
 	{
 		struct mtdx_dev *cdev;
