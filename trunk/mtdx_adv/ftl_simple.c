@@ -335,35 +335,40 @@ static void ftl_simple_end_lookup_block(struct ftl_simple_data *fsd,
 
 static int ftl_simple_lookup_block(struct ftl_simple_data *fsd)
 {
+	unsigned int max_block = mtdx_geo_zone_to_phy(&fsd->geo,
+						      fsd->zone + 1,
+						      0);
+	struct mtdx_page_info *p_info;
+
 	FUNC_START_DBG(fsd);
 
-	if (fsd->sp_block_pos) {
-		struct mtdx_page_info *p_info;
-		unsigned int max_block = mtdx_geo_zone_to_phy(&fsd->geo,
-							      fsd->zone + 1,
-							      0);
+	if (max_block == MTDX_INVALID_BLOCK)
+		max_block = fsd->geo.phy_block_cnt;
 
-		if (max_block == MTDX_INVALID_BLOCK)
-			max_block = fsd->geo.phy_block_cnt;
+	while (fsd->sp_block_pos) {
+		if (fsd->sp_block_pos == &fsd->special_blocks) {
+			fsd->sp_block_pos = NULL;
+				break;
+		}
 
-		p_info  = list_entry(fsd->sp_block_pos, struct mtdx_page_info,
+		p_info  = list_entry(fsd->sp_block_pos,
+				     struct mtdx_page_info,
 				     node);
 		if (p_info->phy_block == fsd->zone_scan_pos) {
+			dev_dbg(&fsd_dev(fsd), "skipping block %x\n",
+				fsd->zone_scan_pos);
 			fsd->sp_block_pos = p_info->node.next;
-
-			if (fsd->sp_block_pos == &fsd->special_blocks)
-				fsd->sp_block_pos = NULL;
-
 			fsd->zone_scan_pos++;
-			if (fsd->zone_scan_pos < max_block) {
-				ftl_simple_pop_all_req_fn(fsd);
-				ftl_simple_push_req_fn(fsd,
-						       ftl_simple_lookup_block);
-			} else
-				set_bit(fsd->zone, ftl_simple_zone_map(fsd));
+		} else
+			break;
+	}
 
-			return -EAGAIN;
-		}
+	if (fsd->zone_scan_pos < max_block) {
+		ftl_simple_pop_all_req_fn(fsd);
+		ftl_simple_push_req_fn(fsd, ftl_simple_lookup_block);
+	} else {
+		set_bit(fsd->zone, ftl_simple_zone_map(fsd));
+		return -EAGAIN;
 	}
 
 	memset(fsd->oob_buf, fsd->geo.fill_value, fsd->geo.oob_size);
@@ -404,15 +409,18 @@ static void ftl_simple_clear_zone(struct ftl_simple_data *fsd)
 
 static int ftl_simple_setup_zone_scan(struct ftl_simple_data *fsd)
 {
-	unsigned int max_block = mtdx_geo_phy_to_zone(&fsd->geo, fsd->zone + 1,
+	unsigned int max_block = mtdx_geo_zone_to_phy(&fsd->geo, fsd->zone + 1,
 						      0);
 	struct mtdx_page_info *p_info;
 
-	FUNC_START_DBG(fsd);
-
-	dev_dbg(&fsd_dev(fsd), "scanning zone %x\n", fsd->zone);
 	fsd->zone_scan_pos = mtdx_geo_zone_to_phy(&fsd->geo, fsd->zone, 0);
 	fsd->conflict_pos = MTDX_INVALID_BLOCK;
+
+	if (max_block == MTDX_INVALID_BLOCK)
+		max_block = fsd->geo.phy_block_cnt;
+
+	dev_dbg(&fsd_dev(fsd), "scanning zone %x, range %x : %x\n", fsd->zone,
+		fsd->zone_scan_pos, max_block);
 
 	ftl_simple_clear_zone(fsd);
 
@@ -426,6 +434,13 @@ static int ftl_simple_setup_zone_scan(struct ftl_simple_data *fsd)
 
 	if (fsd->sp_block_pos == &fsd->special_blocks)
 		fsd->sp_block_pos = NULL;
+
+	if (fsd->sp_block_pos) {
+		p_info = list_entry(fsd->sp_block_pos, struct mtdx_page_info,
+				    node);
+		dev_dbg(&fsd_dev(fsd), "setting skip block pos to %x\n",
+			p_info->phy_block);
+	}
 
 	ftl_simple_push_req_fn(fsd, ftl_simple_lookup_block);
 	return 0;
@@ -1182,7 +1197,8 @@ partial_continue:
 
 static int ftl_simple_fill_data(struct ftl_simple_data *fsd)
 {
-	FUNC_START_DBG(fsd);
+	dev_dbg(&fsd_dev(fsd), "ftl_simple_data_fill %x + %x\n",
+		fsd->t_count, fsd->b_len);
 
 	mtdx_data_iter_fill(fsd->req_in->req_data, fsd->geo.fill_value,
 			    fsd->b_len);
@@ -1336,8 +1352,6 @@ static struct mtdx_request *ftl_simple_get_request(struct mtdx_dev *this_dev)
 				continue;
 			}
 
-			dev_emerg(&this_dev->dev, "put device %p\n",
-				  &fsd->req_dev);
 			if (fsd->req_dev)
 				put_device(&fsd->req_dev->dev);
 
@@ -1372,7 +1386,6 @@ static void ftl_simple_new_request(struct mtdx_dev *this_dev,
 					       struct mtdx_dev, dev);
 	struct ftl_simple_data *fsd = mtdx_get_drvdata(this_dev);
 
-	dev_emerg(&this_dev->dev, "get device %p\n", req_dev);
 	get_device(&req_dev->dev);
 	mtdx_dev_queue_push_back(&fsd->c_queue, req_dev);
 
@@ -1474,8 +1487,11 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 	}
 
 	fsd->block_size = fsd->geo.page_cnt * fsd->geo.page_size;
-	dev_dbg(&mdev->dev, "mdev %p, zone_cnt %x, oob_size %x\n",
-		mdev, fsd->geo.zone_cnt, fsd->geo.oob_size);
+	dev_dbg(&mdev->dev, "parent geo: zone_cnt %x, log_block_cnt %x, "
+		"phy_block_cnt %x, page_cnt %x, page_size %x, oob_size %x\n",
+		fsd->geo.zone_cnt, fsd->geo.log_block_cnt,
+		fsd->geo.phy_block_cnt, fsd->geo.page_cnt, fsd->geo.page_size,
+		fsd->geo.oob_size);
 
 	spin_lock_init(&fsd->lock);
 	mtdx_dev_queue_init(&fsd->c_queue);
@@ -1546,6 +1562,21 @@ static int ftl_simple_probe(struct mtdx_dev *mdev)
 	INIT_LIST_HEAD(&fsd->special_blocks);
 	parent->get_param(parent, MTDX_PARAM_SPECIAL_BLOCKS,
 			  &fsd->special_blocks);
+
+	if (!list_empty(&fsd->special_blocks)) {
+		int cnt = 0;
+		struct mtdx_page_info *p_info;
+		
+		dev_dbg(&mdev->dev, "got special blocks:\n");
+				
+		list_for_each(fsd->sp_block_pos, &fsd->special_blocks) {
+			p_info  = list_entry(fsd->sp_block_pos,
+					     struct mtdx_page_info,
+					     node);
+			dev_dbg(&mdev->dev, "   pos %x: phy %x\n", cnt++,
+				p_info->phy_block);
+		}
+	}
 
 	fsd->mdev = mdev;
 	fsd->src_block = MTDX_INVALID_BLOCK;

@@ -21,8 +21,8 @@
 #define MTDX_BLOCK_MAX_SEGS  32
 #define MTDX_BLOCK_MAX_PAGES 0x7ffffff
 
-#undef dev_dbg
-#define dev_dbg dev_emerg
+//#undef dev_dbg
+//#define dev_dbg dev_emerg
 
 static int major;
 module_param(major, int, 0644);

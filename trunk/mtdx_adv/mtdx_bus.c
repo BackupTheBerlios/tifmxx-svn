@@ -400,6 +400,7 @@ int mtdx_page_list_append(struct list_head *head, struct mtdx_page_info *info)
 	c_info->log_block = info->log_block;
 	c_info->page_offset = info->page_offset;
 	list_add_tail(&c_info->node, p);
+
 	return 0;
 }
 EXPORT_SYMBOL(mtdx_page_list_append);

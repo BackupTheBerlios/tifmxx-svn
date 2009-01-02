@@ -24,6 +24,8 @@
 
 #define FUNC_START_DBG(card) dev_dbg(&(card)->dev, "%s start\n", __func__)
 
+#define BREQ_RETRIES 4
+
 struct ms_block_system_item {
 	unsigned int  start_addr;
 	unsigned int  data_size;
@@ -140,7 +142,8 @@ struct ms_block_data {
 				 active:1,
 				 stopped:1,
 				 format:1,
-				 int_issue:1; 
+				 int_issue:1,
+				 ced_signalled:1;
 	unsigned char            cmd_flags;
 #define MS_BLOCK_FLG_DATA     0x01
 #define MS_BLOCK_FLG_EXTRA    0x02
@@ -169,6 +172,7 @@ struct ms_block_data {
 	int                      src_error;
 	int                      int_err;   /* internal request error */
 	unsigned int             int_count; /* internal request count */
+	unsigned int             breq_count;
 };
 
 static const struct ms_register_addr ms_block_r_stat_w_param = {
@@ -789,9 +793,10 @@ static DEVICE_ATTR(format, 0644, ms_block_format_show, ms_block_format_store);
  * 7-1 (page_inc)
  * 7-1-1. data_get_int
  * 7-1-2. -> 5
- * 7-2 (!page_inc)
- * 7-2-1. set_param_addr
- * 7-2-2. -> 2
+ * 7-2 (end)
+ * 7-3 (!page_inc)
+ * 7-3-1. set_param_addr
+ * 7-3-2. -> 2
  *
  *
  * Expected callback activation sequence for erasing:
@@ -809,8 +814,7 @@ static DEVICE_ATTR(format, 0644, ms_block_format_show, ms_block_format_store);
  * 5-1-1. set_extra_addr_w
  * 5-1-2. trans_extra
  * 5-2 (error)
- * 6-1 (data)
- * 6-1-1. trans_data
+ * 6. trans_data (data)
  * 7. data_get_int
  * 8-1 (page_inc)
  * 8-1-1. -> 5
@@ -1241,6 +1245,11 @@ static int h_ms_block_trans_extra(struct memstick_dev *card,
 			memstick_init_req(*mrq, MS_TPC_GET_INT, NULL, 1);
 			(*mrq)->need_card_int = 1;
 			card->next_request = h_ms_block_data_get_int;
+
+			if (msb->ced_signalled) {
+				(*mrq)->data[0] = MEMSTICK_INT_CED;
+				return h_ms_block_data_get_int(card, mrq);
+			}
 		} else {
 			memstick_init_req(*mrq, MS_TPC_SET_RW_REG_ADRS,
 					  &ms_block_r_stat_w_param,
@@ -1286,6 +1295,10 @@ static int h_ms_block_data_get_int(struct memstick_dev *card,
 			return ms_block_complete_multi(card, mrq, -EIO);
 		else if (int_reg & MEMSTICK_INT_ERR)
 			(*mrq)->error = -EFAULT;
+
+		if (!msb->ced_signalled)
+			msb->ced_signalled = (int_reg & MEMSTICK_INT_CED)
+					     ? 1 : 0;
 	} else
 		return ms_block_complete_multi(card, mrq, (*mrq)->error);
 
@@ -1316,6 +1329,15 @@ static int h_ms_block_data_get_int(struct memstick_dev *card,
 	if (msb->t_count == msb->page_count)
 		return ms_block_complete_multi(card, mrq, 0);
 	else if (msb->cmd_flags & MS_BLOCK_FLG_PAGE_INC) {
+		if (!(int_reg & MEMSTICK_INT_BREQ)) {
+			msb->breq_count++;
+			if (msb->breq_count > BREQ_RETRIES)
+				return ms_block_complete_multi(card, mrq, -EIO);
+
+			return 0;
+		} else
+			msb->breq_count = 0;
+
 		if (msb->cmd == MS_CMD_BLOCK_READ)
 			return ms_block_setup_read(card, mrq);
 		else
@@ -1345,11 +1367,15 @@ static int h_ms_block_trans_data(struct memstick_dev *card,
 	msb->dst_page++;
 	msb->t_count++;
 
+
 	memstick_init_req(*mrq, MS_TPC_GET_INT, NULL, 1);
 	card->next_request = h_ms_block_data_get_int;
 
 	if (msb->caps & MEMSTICK_CAP_AUTO_GET_INT) {
 		(*mrq)->data[0] = (*mrq)->int_reg;
+		return h_ms_block_data_get_int(card, mrq);
+	} else if (msb->ced_signalled) {
+		(*mrq)->data[0] = MEMSTICK_INT_CED;
 		return h_ms_block_data_get_int(card, mrq);
 	}
 
@@ -1369,12 +1395,17 @@ static int h_ms_block_cmd_get_int(struct memstick_dev *card,
 		return 0;
 	}
 
+	if (!msb->ced_signalled)
+		msb->ced_signalled = (int_reg & MEMSTICK_INT_CED) ? 1 : 0;
+
 	switch (msb->cmd) {
 	case MS_CMD_BLOCK_END:
 		if (msb->trans_err)
 			(*mrq)->error = msb->trans_err;
 
-		ms_block_complete_req(card, (*mrq)->error);
+		if (msb->ced_signalled)
+			ms_block_complete_req(card, (*mrq)->error);
+
 		return 0;
 	case MS_CMD_BLOCK_READ:
 		if (int_reg & MEMSTICK_INT_CMDNAK) {
@@ -1390,6 +1421,15 @@ static int h_ms_block_cmd_get_int(struct memstick_dev *card,
 				return 0;
 			} else
 				return h_ms_block_set_stat_addr_r(card, mrq);
+		} else if (msb->cmd_flags & MS_BLOCK_FLG_PAGE_INC) {
+			if (!(int_reg & MEMSTICK_INT_BREQ)) {
+				msb->breq_count++;
+				if (msb->breq_count > BREQ_RETRIES)
+					ms_block_complete_req(card, -EIO);
+
+				return 0;
+			} else
+				msb->breq_count = 0;
 		}
 
 		return ms_block_setup_read(card, mrq);
@@ -1399,22 +1439,27 @@ static int h_ms_block_cmd_get_int(struct memstick_dev *card,
 			return 0;
 		} else if (int_reg & MEMSTICK_INT_ERR)
 			return ms_block_complete_multi(card, mrq, -EFAULT);
+		else if (msb->cmd_flags & MS_BLOCK_FLG_PAGE_INC) {
+			if (!(int_reg & MEMSTICK_INT_BREQ)) {
+				msb->breq_count++;
+				if (msb->breq_count > BREQ_RETRIES)
+					ms_block_complete_req(card, -EIO);
+
+				return 0;
+			} else
+				msb->breq_count = 0;
+		}
 
 		return ms_block_setup_write(card, mrq);
 	case MS_CMD_BLOCK_ERASE:
-		if (int_reg & MEMSTICK_INT_CMDNAK) {
+		if (int_reg & MEMSTICK_INT_CMDNAK)
 			ms_block_complete_req(card, -EIO);
-			return 0;
-		} else if (int_reg & MEMSTICK_INT_ERR) {
+		else if (int_reg & MEMSTICK_INT_ERR)
 			ms_block_complete_req(card, -EFAULT);
-			return 0;
-		}
+		else  if (msb->ced_signalled)
+			ms_block_complete_req(card, 0);
 
-		/* retry until CED is signalled */
-		if (!(int_reg & MEMSTICK_INT_CED))
-			return 0;
-
-		/* fall through */
+		return 0;
 	default: /* other memstick commands */
 		ms_block_complete_req(card, (*mrq)->error);
 		return 0;
@@ -1585,6 +1630,7 @@ static void ms_block_complete_req(struct memstick_dev *card, int error)
 	msb->src_error = 0;
 	msb->page_count = 0;
 	msb->cmd_flags = 0;
+	msb->ced_signalled = 0;
 	card->next_request = h_ms_block_req_init;
 	
 	spin_unlock_irqrestore(&msb->lock, flags);
