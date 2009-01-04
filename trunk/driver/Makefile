@@ -12,7 +12,7 @@ KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 #KERNELDIR ?= /usr/src/linux-2.6.23
 PWD       := $(shell pwd)
 MODULE_INSTALLDIR = /lib/modules/$(shell uname -r)
-EXTRA_CFLAGS = -fno-inline -DCONFIG_MEMSTICK_UNSAFE_RESUME -DCONFIG_XD_CARD_UNSAFE_RESUME -DCONFIG_DEBUG_SPINLOCK
+EXTRA_CFLAGS = -fno-inline -DDEBUG -DCONFIG_MEMSTICK_UNSAFE_RESUME -DCONFIG_XD_CARD_UNSAFE_RESUME -DCONFIG_DEBUG_SPINLOCK
 
 all:
 	echo $(PWD)

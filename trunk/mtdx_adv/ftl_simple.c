@@ -208,7 +208,7 @@ static void ftl_simple_end_resolve(struct ftl_simple_data *fsd,
 	}
 
 	fsd->zone_scan_pos++;
-	if (fsd->zone_scan_pos < max_block) {
+	if (fsd->zone_scan_pos >= max_block) {
 		ftl_simple_pop_all_req_fn(fsd);
 		set_bit(fsd->zone, ftl_simple_zone_map(fsd));
 	} else
@@ -1005,6 +1005,12 @@ static void ftl_simple_set_address(struct ftl_simple_data *fsd)
 	fsd->b_off = pos % fsd->block_size;
 	fsd->b_len = min(fsd->req_in->length - fsd->t_count,
 			 fsd->block_size - fsd->b_off);
+	dev_dbg(&fsd_dev(fsd), "set address in_blk %x, in_off %x, t_count %x, "
+		"out_blk %x, zone %x (%x), b_off %x, b_len %x\n",
+		fsd->req_in->logical, fsd->req_in->phy.offset, fsd->t_count,
+		fsd->req_out.logical, fsd->zone, fsd->z_log_block,
+		fsd->b_off, fsd->b_len);
+		
 }
 
 static unsigned long *ftl_simple_make_useful_dst(struct ftl_simple_data *fsd)
@@ -1205,20 +1211,21 @@ static int ftl_simple_fill_data(struct ftl_simple_data *fsd)
 
 	fsd->t_count += fsd->b_len;
 
-	if (fsd->t_count >= fsd->req_in->length) {
+	if (fsd->t_count >= fsd->req_in->length)
 		ftl_simple_complete_req(fsd);
-		return -EAGAIN;
-	}
 
-	return 0;
+	return -EAGAIN;
 }
 
 static void ftl_simple_end_read_data(struct ftl_simple_data *fsd,
 				     unsigned int count)
 {
 	FUNC_START_DBG(fsd);
-	if (!fsd->dst_error && count != fsd->b_len)
+	if (!fsd->dst_error && (count != fsd->b_len)) {
+		dev_dbg(&fsd_dev(fsd), "bad read err %d, count %x, b_len %x\n",
+			fsd->dst_error, count, fsd->b_len);
 		fsd->dst_error = -EIO;
+	}
 
 	fsd->t_count += count;
 

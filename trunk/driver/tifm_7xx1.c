@@ -71,8 +71,11 @@ static irqreturn_t tifm_7xx1_isr(int irq, void *dev_id)
 		complete_all(fm->finish_me);
 	else if (!fm->socket_change_set)
 		writel(TIFM_IRQ_ENABLE, fm->addr + FM_SET_INTERRUPT_ENABLE);
-	else
+	else {
+		dev_dbg(fm->dev.parent, "switching on irq_status %08x\n",
+			irq_status);
 		tifm_queue_work(&fm->media_switcher);
+	}
 
 	spin_unlock(&fm->lock);
 	return IRQ_HANDLED;
