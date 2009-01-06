@@ -246,7 +246,8 @@ static void ftl_simple_end_lookup_block(struct ftl_simple_data *fsd,
 
 	FUNC_START_DBG(fsd);
 
-	if (max_block == MTDX_INVALID_BLOCK)
+	if ((max_block == MTDX_INVALID_BLOCK)
+	    || (max_block > fsd->geo.phy_block_cnt))
 		max_block = fsd->geo.phy_block_cnt;
 
 	p_info.phy_block = fsd->zone_scan_pos;
@@ -393,7 +394,8 @@ static void ftl_simple_clear_zone(struct ftl_simple_data *fsd)
 
 	FUNC_START_DBG(fsd);
 
-	if (log_max == MTDX_INVALID_BLOCK)
+	if ((log_max == MTDX_INVALID_BLOCK)
+	    || (log_max > fsd->geo.log_block_cnt))
 		log_max = fsd->geo.log_block_cnt;
 
 	while (log_min < log_max) {

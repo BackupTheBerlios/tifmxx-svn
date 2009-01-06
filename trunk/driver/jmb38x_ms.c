@@ -17,7 +17,7 @@
 
 #include "linux/memstick.h"
 
-#define PCI_DEVICE_ID_JMICRON_JMB38X_MS 0x2383
+#define PCI_DEVICE_ID_JMICRON_JMB38X_MS_R2 0x2388
 #define DRIVER_NAME "jmb38x_ms"
 
 static int no_dma;
@@ -141,6 +141,9 @@ struct jmb38x_ms {
 #define CLOCK_CONTROL_60MHZ   0x00000008
 #define CLOCK_CONTROL_62_5MHZ 0x0000000c
 #define CLOCK_CONTROL_OFF     0x00000000
+
+#define PCI_CTL_POWER_ADDR_A     0x000000ac
+#define PCI_CTL_POWER_ADDR_B     0x000000bc
 
 #define PCI_CTL_CLOCK_DLY_ADDR   0x000000b0
 #define PCI_CTL_CLOCK_DLY_MASK_A 0x00000f00
@@ -822,11 +825,22 @@ static struct memstick_host* jmb38x_ms_alloc_host(struct jmb38x_ms *jm, int cnt)
 {
 	struct memstick_host *msh;
 	struct jmb38x_ms_host *host;
+	int rc;
 
 	msh = memstick_alloc_host(sizeof(struct jmb38x_ms_host),
 				  &jm->pdev->dev);
 	if (!msh)
 		return NULL;
+
+	if (cnt == 0) {
+		pci_read_config_dword(jm->pdev, PCI_CTL_POWER_ADDR_A, &rc);
+		pci_write_config_dword(jm->pdev, PCI_CTL_POWER_ADDR_A,
+				       rc | 0x00470000);
+	} else if (cnt == 1) {
+		pci_read_config_dword(jm->pdev, PCI_CTL_POWER_ADDR_B, &rc);
+		pci_write_config_dword(jm->pdev, PCI_CTL_POWER_ADDR_B,
+				       rc | 0x00004a00);
+	}
 
 	host = memstick_priv(msh);
 	host->chip = jm;
@@ -863,9 +877,22 @@ err_out_free:
 static void jmb38x_ms_free_host(struct memstick_host *msh)
 {
 	struct jmb38x_ms_host *host = memstick_priv(msh);
+	struct jmb38x_ms *jm = host->chip;
+	int rc;
 
 	free_irq(host->irq, msh);
 	iounmap(host->addr);
+
+	if (host->id == 0) {
+		pci_read_config_dword(jm->pdev, PCI_CTL_POWER_ADDR_A, &rc);
+		pci_write_config_dword(jm->pdev, PCI_CTL_POWER_ADDR_A,
+				       rc & ~0x00470000);
+	} else if (host->id == 1) {
+		pci_read_config_dword(jm->pdev, PCI_CTL_POWER_ADDR_B, &rc);
+		pci_write_config_dword(jm->pdev, PCI_CTL_POWER_ADDR_B,
+				       rc & ~0x00004a00);
+	}
+
 	memstick_free_host(msh);
 }
 
@@ -891,9 +918,6 @@ static int jmb38x_ms_probe(struct pci_dev *pdev,
 		pci_dev_busy = 1;
 		goto err_out;
 	}
-
-	pci_read_config_dword(pdev, 0xac, &rc);
-	pci_write_config_dword(pdev, 0xac, rc | 0x00470000);
 
 	cnt = jmb38x_ms_count_slots(pdev);
 	if (!cnt) {
@@ -982,6 +1006,8 @@ static void jmb38x_ms_remove(struct pci_dev *dev)
 
 static struct pci_device_id jmb38x_ms_id_tbl [] = {
 	{ PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB38X_MS, PCI_ANY_ID,
+	  PCI_ANY_ID, 0, 0, 0 },
+	{ PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB38X_MS_R2, PCI_ANY_ID,
 	  PCI_ANY_ID, 0, 0, 0 },
 	{ }
 };

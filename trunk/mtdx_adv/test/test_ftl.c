@@ -367,6 +367,49 @@ int driver_register(struct device_driver *drv)
 	return 0;
 }
 
+void test_bb() {
+	unsigned int bb[] = {0x00000004, 0x000003fe, 0x000003ff, 0x00000000,
+			     0x00000001, 0x00001ffe, 0x00001fff};
+	struct mtdx_page_info info;
+	struct list_head p_list;
+	int rc, cnt;
+
+	INIT_LIST_HEAD(&p_list);
+
+	info.log_block = MTDX_INVALID_BLOCK;
+	info.page_offset = 0;
+
+	info.status = MTDX_PAGE_RESERVED;
+	info.phy_block = 0x00000003;
+
+	rc = mtdx_page_list_append(&p_list, &info);
+	printf("append boot %d\n", rc);
+
+	for (cnt = 0; cnt < 7; ++cnt) {
+		info.status = MTDX_PAGE_INVALID;
+		info.phy_block = bb[cnt];
+
+		rc = mtdx_page_list_append(&p_list, &info);
+		printf("append bad (%d) %d\n", cnt, rc);
+	}
+
+	if (!list_empty(&p_list)) {
+		cnt = 0;
+		struct mtdx_page_info *p_info;
+		struct list_head *p_pos;
+		
+		printf("got special blocks:\n");
+				
+		list_for_each(p_pos, &p_list) {
+			p_info  = list_entry(p_pos,
+					     struct mtdx_page_info,
+					     node);
+			printf("   pos %x: phy %x\n", cnt++,
+			       p_info->phy_block);
+		}
+	}
+}
+
 int main(int argc, char **argv)
 {
 	unsigned int t_cnt, err_cnt = 0;
@@ -400,6 +443,8 @@ int main(int argc, char **argv)
 	exp_mtdx_ftl_simple_init();
 	test_driver->probe(&ftl_dev);
 
+	test_bb();
+	return 0;
 	for (t_cnt = 70; t_cnt; --t_cnt) {
 		do {
 			off = random32() % (btm_geo.log_block_cnt

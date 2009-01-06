@@ -1000,8 +1000,10 @@ static int ms_block_setup_read(struct memstick_dev *card,
 
 		card->next_request = h_ms_block_trans_data;
 
-		if ((msb->cmd_flags & MS_BLOCK_FLG_PAGE_INC)
-		    || (msb->cmd_flags & MS_BLOCK_FLG_WRITE))
+		if (msb->cmd_flags & MS_BLOCK_FLG_WRITE)
+			(*mrq)->need_card_int = 1;
+		else if ((msb->cmd_flags & MS_BLOCK_FLG_PAGE_INC)
+			 && !msb->ced_signalled)
 			(*mrq)->need_card_int = 1;
 
 		return 0;
