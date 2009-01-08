@@ -96,9 +96,10 @@ struct ms_extra_data_register {
 struct ms_register {
 	struct ms_status_register     status;
 	struct ms_id_register         id;
-	unsigned char                 reserved[8];
+	unsigned char                 reserved0[8];
 	struct ms_param_register      param;
 	struct ms_extra_data_register extra_data;
+	unsigned char                 reserved1[2]; /* pad to word boundary */
 } __attribute__((packed));
 
 struct mspro_param_register {
@@ -253,8 +254,8 @@ struct memstick_request {
 	union {
 		struct scatterlist sg;
 		struct {
+			unsigned char data[31];
 			unsigned char data_len;
-			unsigned char data[15];
 		};
 	};
 };
