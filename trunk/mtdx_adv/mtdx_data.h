@@ -124,4 +124,9 @@ static inline char *mtdx_oob_get_next(struct mtdx_oob *m_oob)
 	return rv;
 }
 
+static inline char *mtdx_oob_get_cur(struct mtdx_oob *m_oob)
+{
+	return &m_oob->data[m_oob->pos];
+}
+
 #endif

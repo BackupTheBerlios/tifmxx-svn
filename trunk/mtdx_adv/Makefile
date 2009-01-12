@@ -1,6 +1,6 @@
 obj-m += mtdx_core.o
 obj-m += rand_peb_alloc.o long_map.o
-obj-m += mtdx_block.o ftl_simple.o ms_block.o test_mtdx_block.o
+obj-m += mtdx_block.o ftl_simple.o ms_block.o # test_mtdx_block.o
 
 mtdx_core-y := mtdx_bus.o mtdx_data.o
 
