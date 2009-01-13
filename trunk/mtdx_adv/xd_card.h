@@ -94,20 +94,39 @@ struct xd_card_req {
 	struct scatterlist sg;
 };
 
-struct xd_card_host {
-	unsigned int caps;
+struct xd_host {
+	struct device      *dev;
+	struct mutex       lock;
+	struct work_struct media_checker;
+	unsigned int       caps;
 #define XD_CARD_CAP_AUTO_ECC   1
 #define XD_CARD_CAP_AUTO_CMD   2
 #define XD_CARD_CAP_SPLIT_PAGE 4
 
-
+	struct mtdx_dev    *card;
+	char               host_data[];
 };
 
-void xd_card_detect_media(struct xd_card_host *host);
-void xd_card_eject_media(struct xd_card_host *host);
-struct xd_card_host *xd_card_alloc_host();
-void xd_card_free_host(struct xd_card_host *host);
-int xd_card_suspend_host(struct xd_card_host *host);
-void xd_card_resume_host(struct xd_card_host *host);
+void xd_host_detect_media(struct xd_host *host);
+void xd_host_eject_media(struct xd_host *host);
+int xd_host_suspend(struct xd_host *host);
+void xd_host_resume(struct xd_host *host);
+
+/* struct xd_host will be set as host driver's device drvdata. Host driver
+ * can use host_data field to store the rest of it's private bits.
+ */
+struct xd_host *xd_card_alloc_host(struct device *dev, unsigned int extra);
+void xd_host_free(struct xd_host *host);
+
+
+static inline void *xd_host_private(struct xd_host *host)
+{
+	return (void *)host->host_data;
+}
+
+static inline struct xd_host *xd_host_from_dev(struct device *dev)
+{
+	return dev_get_drvdata(dev);
+}
 
 #endif

@@ -71,7 +71,7 @@ int btm_trans_oob(struct mtdx_request *req, int dir)
 	c_pos += req->phy.offset / btm_geo.page_size;
 
 	for (; cnt; --cnt) {
-		oob_buf = mtdx_oob_get_next(req->req_oob);
+		oob_buf = mtdx_oob_iter_get(req->req_oob);
 		if (!oob_buf)
 			return -ENOMEM;
 
@@ -82,6 +82,7 @@ int btm_trans_oob(struct mtdx_request *req, int dir)
 			memcpy(oob_buf, &pages[c_pos],
 			       sizeof(struct btm_oob));
 		c_pos++;
+		mtdx_oob_iter_inc(req->req_oob, 1);
 	}
 	return 0;
 }

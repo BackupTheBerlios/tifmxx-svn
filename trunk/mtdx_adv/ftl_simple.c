@@ -87,7 +87,7 @@ struct ftl_simple_data {
 	void                  (*end_req_fn)(struct ftl_simple_data *fsd,
 					    unsigned int count);
 	unsigned char         *oob_buf;
-	struct mtdx_oob       req_oob;
+	struct mtdx_oob_iter  req_oob;
 	unsigned char         *block_buf;
 	struct mtdx_data_iter req_data;
 };
@@ -220,8 +220,8 @@ static int ftl_simple_resolve(struct ftl_simple_data *fsd)
 	FUNC_START_DBG(fsd);
 
 	memset(fsd->oob_buf, fsd->geo.fill_value, fsd->geo.oob_size);
-	mtdx_oob_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
-		      fsd->geo.oob_size);
+	mtdx_oob_iter_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
+			   fsd->geo.oob_size);
 
 	fsd->req_out.cmd = MTDX_CMD_READ;
 	fsd->req_out.phy.b_addr = fsd->conflict_pos;
@@ -373,8 +373,8 @@ static int ftl_simple_lookup_block(struct ftl_simple_data *fsd)
 	}
 
 	memset(fsd->oob_buf, fsd->geo.fill_value, fsd->geo.oob_size);
-	mtdx_oob_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
-		      fsd->geo.oob_size);
+	mtdx_oob_iter_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
+			   fsd->geo.oob_size);
 	fsd->req_out.cmd = MTDX_CMD_READ;
 	fsd->req_out.phy.b_addr = fsd->zone_scan_pos;
 	fsd->req_out.phy.offset = 0;
@@ -572,8 +572,8 @@ static int ftl_simple_invalidate_dst(struct ftl_simple_data *fsd)
 	if (rc)
 		return rc;
 
-	mtdx_oob_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
-		      fsd->geo.oob_size);
+	mtdx_oob_iter_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
+			   fsd->geo.oob_size);
 
 	fsd->req_out.cmd = MTDX_CMD_WRITE;
 	fsd->req_out.phy.b_addr = fsd->dst_block;
@@ -655,10 +655,10 @@ static int ftl_simple_select_src(struct ftl_simple_data *fsd)
 {
 	FUNC_START_DBG(fsd);
 
-	mtdx_oob_init(&fsd->req_oob, ftl_simple_src_oob(fsd), 1,
-		      fsd->geo.oob_size);
+	mtdx_oob_iter_init(&fsd->req_oob, ftl_simple_src_oob(fsd), 1,
+			   fsd->geo.oob_size);
 
-	fsd->req_out.cmd = MTDX_CMD_WRITE;
+	fsd->req_out.cmd = MTDX_CMD_OVERWRITE;
 	fsd->req_out.phy.b_addr = fsd->src_block;
 	fsd->req_out.phy.offset = 0;
 	fsd->req_out.length = fsd->geo.page_size;
@@ -686,8 +686,8 @@ static int ftl_simple_merge_data(struct ftl_simple_data *fsd)
 {
 	FUNC_START_DBG(fsd);
 
-	mtdx_oob_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
-		      fsd->geo.oob_size);
+	mtdx_oob_iter_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
+			   fsd->geo.oob_size);
 
 	fsd->req_out.cmd = MTDX_CMD_WRITE;
 	fsd->req_out.phy.b_addr = fsd->dst_block;
@@ -717,8 +717,8 @@ static int ftl_simple_write_data(struct ftl_simple_data *fsd)
 {
 	FUNC_START_DBG(fsd);
 
-	mtdx_oob_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
-		      fsd->geo.oob_size);
+	mtdx_oob_iter_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
+			   fsd->geo.oob_size);
 
 	fsd->req_out.cmd = MTDX_CMD_WRITE;
 	fsd->req_out.phy.b_addr = fsd->dst_block;
@@ -790,8 +790,8 @@ static int ftl_simple_submit_last(struct ftl_simple_data *fsd,
 				fsd->req_out.length);
 	fsd->req_out.req_data = &fsd->req_data;
 
-	mtdx_oob_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
-		      fsd->geo.oob_size);
+	mtdx_oob_iter_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
+			   fsd->geo.oob_size);
 	fsd->req_out.req_oob = &fsd->req_oob;
 
 	fsd->end_req_fn = ftl_simple_end_copy_last;
@@ -876,8 +876,8 @@ static int ftl_simple_write_first(struct ftl_simple_data *fsd)
 				fsd->req_out.length);
 	fsd->req_out.req_data = &fsd->req_data;
 
-	mtdx_oob_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
-		      fsd->geo.oob_size);
+	mtdx_oob_iter_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
+			   fsd->geo.oob_size);
 	fsd->req_out.req_oob = &fsd->req_oob;
 
 	fsd->end_req_fn = ftl_simple_end_copy_first;
@@ -906,8 +906,8 @@ static int ftl_simple_copy_first(struct ftl_simple_data *fsd)
 				fsd->req_out.length);
 	fsd->req_out.req_data = &fsd->req_data;
 
-	mtdx_oob_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
-		      fsd->geo.oob_size);
+	mtdx_oob_iter_init(&fsd->req_oob, ftl_simple_dst_oob(fsd), 1,
+			   fsd->geo.oob_size);
 	fsd->req_out.req_oob = &fsd->req_oob;
 
 	fsd->end_req_fn = ftl_simple_end_copy_first;

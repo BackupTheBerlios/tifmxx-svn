@@ -90,15 +90,16 @@ static inline void mtdx_data_iter_get_bvec(struct mtdx_data_iter *iter,
 	iter->ops->get_bvec(iter, bvec, length);
 }
 
-struct mtdx_oob {
+struct mtdx_oob_iter {
 	char         *data;
 	unsigned int count;
 	unsigned int inc;
 	unsigned int pos;
 };
 
-static inline void mtdx_oob_init(struct mtdx_oob *m_oob, void *data,
-				 unsigned int num_entries, unsigned int inc)
+static inline void mtdx_oob_iter_init(struct mtdx_oob_iter *m_oob, void *data,
+				      unsigned int num_entries,
+				      unsigned int inc)
 {
 	m_oob->data = data;
 	m_oob->count = num_entries * inc;
@@ -106,25 +107,23 @@ static inline void mtdx_oob_init(struct mtdx_oob *m_oob, void *data,
 	m_oob->pos = 0;
 }
 
-static inline char *mtdx_oob_get_entry(struct mtdx_oob *m_oob, unsigned int idx)
+static inline void mtdx_oob_iter_inc(struct mtdx_oob_iter *m_oob,
+				     unsigned int off)
 {
-	if ((m_oob->inc * idx) < m_oob->count)
-		return &m_oob->data[m_oob->inc * idx];
+	m_oob->pos = min(m_oob->pos + off * m_oob->inc,
+			 m_oob->count - m_oob->inc);
+}
+
+static inline void mtdx_oob_iter_dec(struct mtdx_oob_iter *m_oob,
+				     unsigned int off)
+{
+	if (off * m_oob->inc <= m_oob->pos)
+		m_oob->pos -= off * m_oob->inc;
 	else
-		return &m_oob->data[m_oob->count - m_oob->inc];
+		m_oob->pos = 0;
 }
 
-static inline char *mtdx_oob_get_next(struct mtdx_oob *m_oob)
-{
-	char *rv = &m_oob->data[m_oob->pos];
-
-	if ((m_oob->pos + m_oob->inc) < m_oob->count)
-		m_oob->pos += m_oob->inc;
-
-	return rv;
-}
-
-static inline char *mtdx_oob_get_cur(struct mtdx_oob *m_oob)
+static inline char *mtdx_oob_iter_get(struct mtdx_oob_iter *m_oob)
 {
 	return &m_oob->data[m_oob->pos];
 }

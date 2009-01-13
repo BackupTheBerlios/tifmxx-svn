@@ -150,6 +150,7 @@ enum mtdx_command {
 	MTDX_CMD_READ,       /* read both page data and oob    */
 	MTDX_CMD_ERASE,      /* erase block                    */
 	MTDX_CMD_WRITE,      /* write both page data and oob   */
+	MTDX_CMD_OVERWRITE,  /* special cases write            */
 	MTDX_CMD_COPY        /* copy pages                     */
 };
 
@@ -202,7 +203,7 @@ struct mtdx_request {
 	struct mtdx_pos       copy;      /* request copy source address     */
 	unsigned int          length;    /* request data length             */
 	struct mtdx_data_iter *req_data; /* optional - request data         */
-	struct mtdx_oob       *req_oob;  /* optional - request extra data   */
+	struct mtdx_oob_iter  *req_oob;  /* optional - request extra data   */
 };
 
 struct mtdx_dev {
