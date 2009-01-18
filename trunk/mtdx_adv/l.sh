@@ -5,8 +5,8 @@ insmod ./mtdx_core.ko
 insmod ./long_map.ko
 insmod ./rand_peb_alloc.ko
 #insmod ./test_mtdx_block.ko
-insmod ./ftl_simple.ko
-insmod ./mtdx_block.ko
+#insmod ./ftl_simple.ko
+#insmod ./mtdx_block.ko
 insmod ./ms_block.ko
 #insmod ../driver/jmb38x_ms.ko
 #insmod ./flash_bd.ko
