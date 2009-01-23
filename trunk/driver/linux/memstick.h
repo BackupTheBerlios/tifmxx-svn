@@ -287,6 +287,7 @@ struct memstick_host {
 #define MEMSTICK_CAP_AUTO_GET_INT  1
 #define MEMSTICK_CAP_PAR4          2
 #define MEMSTICK_CAP_PAR8          4
+#define MEMSTICK_CAP_REG_QUIRK     8
 
 	struct work_struct  media_checker;
 	struct device dev;

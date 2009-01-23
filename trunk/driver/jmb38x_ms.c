@@ -759,7 +759,8 @@ static int jmb38x_ms_suspend(struct pci_dev *dev, pm_message_t state)
 	int cnt;
 
 	for (cnt = 0; cnt < jm->host_cnt; ++cnt) {
-		dev_dbg(&jm->pdev->dev, "suspend %d, %p\n", cnt, jm->hosts[cnt]);
+		dev_dbg(&jm->pdev->dev, "suspend %d, %p\n", cnt,
+			jm->hosts[cnt]);
 		if (!jm->hosts[cnt])
 			break;
 		memstick_suspend_host(jm->hosts[cnt]);
@@ -860,7 +861,8 @@ static struct memstick_host* jmb38x_ms_alloc_host(struct jmb38x_ms *jm, int cnt)
 	msh->request = jmb38x_ms_submit_req;
 	msh->set_param = jmb38x_ms_set_param;
 
-	msh->caps = MEMSTICK_CAP_PAR4 | MEMSTICK_CAP_PAR8;
+	msh->caps = MEMSTICK_CAP_PAR4 | MEMSTICK_CAP_PAR8
+		    | MEMSTICK_CAP_REG_QUIRK;
 
 	setup_timer(&host->timer, jmb38x_ms_abort, (unsigned long)msh);
 
