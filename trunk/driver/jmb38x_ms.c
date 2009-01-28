@@ -20,6 +20,10 @@
 #define PCI_DEVICE_ID_JMICRON_JMB38X_MS_R2 0x2388
 #define DRIVER_NAME "jmb38x_ms"
 
+#ifndef DEVICE_ID_SIZE
+#define DEVICE_ID_SIZE 32
+#endif
+
 static int no_dma;
 module_param(no_dma, bool, 0644);
 
@@ -60,6 +64,7 @@ struct jmb38x_ms_host {
 	struct timer_list       timer;
 	struct memstick_request *req;
 	unsigned char           cmd_flags;
+	unsigned char           eject;
 	unsigned char           io_pos;
 	unsigned int            io_word[2];
 };
@@ -303,7 +308,7 @@ static int jmb38x_ms_transfer_data(struct jmb38x_ms_host *host)
 {
 	unsigned int length;
 	unsigned int off;
-	unsigned int t_size, p_off, p_cnt;
+	unsigned int t_size, p_off = 0, p_cnt;
 	unsigned char *buf;
 	struct page *pg;
 	unsigned long flags = 0;
@@ -370,7 +375,7 @@ static int jmb38x_ms_issue_cmd(struct memstick_host *msh)
 	unsigned char *data;
 	unsigned int data_len, cmd, t_val;
 
-	if (!(STATUS_HAS_MEDIA & readl(host->addr + STATUS))) {
+	if (host->eject || !(STATUS_HAS_MEDIA & readl(host->addr + STATUS))) {
 		dev_dbg(&msh->dev, "no media status\n");
 		host->req->error = -ETIME;
 		return host->req->error;
@@ -388,7 +393,6 @@ static int jmb38x_ms_issue_cmd(struct memstick_host *msh)
 
 	cmd = host->req->tpc << 16;
 	cmd |= TPC_DATA_SEL;
-
 	if (host->req->data_dir == READ)
 		cmd |= TPC_DIR;
 	if (host->req->need_card_int)
@@ -432,13 +436,13 @@ static int jmb38x_ms_issue_cmd(struct memstick_host *msh)
 		writel(((1 << 16) & BLOCK_COUNT_MASK)
 		       | (data_len & BLOCK_SIZE_MASK),
 		       host->addr + BLOCK);
-			t_val = readl(host->addr + INT_STATUS_ENABLE);
+			t_val = readl(host->addr + INT_SIGNAL_ENABLE);
 			t_val |= host->req->data_dir == READ
 				 ? INT_STATUS_FIFO_RRDY
 				 : INT_STATUS_FIFO_WRDY;
 
-			writel(t_val, host->addr + INT_STATUS_ENABLE);
 			writel(t_val, host->addr + INT_SIGNAL_ENABLE);
+			writel(t_val, host->addr + INT_STATUS_ENABLE);
 	} else {
 		cmd &= ~(TPC_DATA_SEL | 0xf);
 		host->cmd_flags |= REG_DATA;
@@ -462,7 +466,7 @@ static int jmb38x_ms_issue_cmd(struct memstick_host *msh)
 	return 0;
 }
 
-static void jmb38x_ms_complete_cmd(struct memstick_host *msh, int last)
+static void jmb38x_ms_complete_cmd(struct memstick_host *msh)
 {
 	struct jmb38x_ms_host *host = memstick_priv(msh);
 	unsigned int t_val = 0;
@@ -484,20 +488,20 @@ static void jmb38x_ms_complete_cmd(struct memstick_host *msh, int last)
 			     host->req->data_dir == READ
 			     ? PCI_DMA_FROMDEVICE : PCI_DMA_TODEVICE);
 	} else {
-		t_val = readl(host->addr + INT_STATUS_ENABLE);
+		t_val = readl(host->addr + INT_SIGNAL_ENABLE);
 		if (host->req->data_dir == READ)
 			t_val &= ~INT_STATUS_FIFO_RRDY;
 		else
 			t_val &= ~INT_STATUS_FIFO_WRDY;
 
-		writel(t_val, host->addr + INT_STATUS_ENABLE);
 		writel(t_val, host->addr + INT_SIGNAL_ENABLE);
+		writel(t_val, host->addr + INT_STATUS_ENABLE);
 	}
 
 	writel((~HOST_CONTROL_LED) & readl(host->addr + HOST_CONTROL),
 	       host->addr + HOST_CONTROL);
 
-	if (!last) {
+	if (!host->eject) {
 		do {
 			rc = memstick_next_req(msh, &host->req);
 		} while (!rc && jmb38x_ms_issue_cmd(msh));
@@ -507,6 +511,20 @@ static void jmb38x_ms_complete_cmd(struct memstick_host *msh, int last)
 			if (!rc)
 				host->req->error = -ETIME;
 		} while (!rc);
+	}
+}
+
+static void jmb38x_ms_drain_fifo(struct jmb38x_ms_host *host)
+{
+	if (host->cmd_flags & REG_DATA) {
+		host->io_word[0] = readl(host->addr + TPC_P0);
+		host->io_word[1] = readl(host->addr + TPC_P1);
+		host->io_pos = 8;
+		jmb38x_ms_transfer_data(host);
+		host->cmd_flags |= FIFO_READY;
+	} else {
+		if (!jmb38x_ms_transfer_data(host))
+			host->cmd_flags |= FIFO_READY;
 	}
 }
 
@@ -547,19 +565,12 @@ static irqreturn_t jmb38x_ms_isr(int irq, void *dev_id)
 
 			if (irq_status & INT_STATUS_EOTPC) {
 				host->cmd_flags |= CMD_READY;
-				if (host->cmd_flags & REG_DATA) {
-					if (host->req->data_dir == READ) {
-						host->io_word[0]
-							= readl(host->addr
-								+ TPC_P0);
-						host->io_word[1]
-							= readl(host->addr
-								+ TPC_P1);
-						host->io_pos = 8;
 
-						jmb38x_ms_transfer_data(host);
-					}
-					host->cmd_flags |= FIFO_READY;
+				if (!(host->cmd_flags & DMA_DATA)) {
+					if (host->req->data_dir == READ)
+						jmb38x_ms_drain_fifo(host);
+					else
+						host->cmd_flags |= FIFO_READY;
 				}
 			}
 		}
@@ -576,7 +587,7 @@ static irqreturn_t jmb38x_ms_isr(int irq, void *dev_id)
 	    && (((host->cmd_flags & CMD_READY)
 		 && (host->cmd_flags & FIFO_READY))
 		|| host->req->error))
-		jmb38x_ms_complete_cmd(msh, 0);
+		jmb38x_ms_complete_cmd(msh);
 
 	spin_unlock(&host->lock);
 	return IRQ_HANDLED;
@@ -592,7 +603,7 @@ static void jmb38x_ms_abort(unsigned long data)
 	spin_lock_irqsave(&host->lock, flags);
 	if (host->req) {
 		host->req->error = -ETIME;
-		jmb38x_ms_complete_cmd(msh, 0);
+		jmb38x_ms_complete_cmd(msh);
 	}
 	spin_unlock_irqrestore(&host->lock, flags);
 }
@@ -612,11 +623,6 @@ static void jmb38x_ms_req_tasklet(unsigned long data)
 		} while (!rc && jmb38x_ms_issue_cmd(msh));
 	}
 	spin_unlock_irqrestore(&host->lock, flags);
-}
-
-static void jmb38x_ms_dummy_submit(struct memstick_host *msh)
-{
-	return;
 }
 
 static void jmb38x_ms_submit_req(struct memstick_host *msh)
@@ -973,7 +979,6 @@ static void jmb38x_ms_remove(struct pci_dev *dev)
 	struct jmb38x_ms *jm = pci_get_drvdata(dev);
 	struct jmb38x_ms_host *host;
 	int cnt;
-	unsigned long flags;
 
 	for (cnt = 0; cnt < jm->host_cnt; ++cnt) {
 		if (!jm->hosts[cnt])
@@ -981,21 +986,16 @@ static void jmb38x_ms_remove(struct pci_dev *dev)
 
 		host = memstick_priv(jm->hosts[cnt]);
 
-		jm->hosts[cnt]->request = jmb38x_ms_dummy_submit;
-		tasklet_kill(&host->notify);
+		dev_dbg(&jm->pdev->dev, "removing host %d\n", cnt);
+		host->eject = 1;
+		memstick_remove_host(jm->hosts[cnt]);
+
+		dev_dbg(&jm->pdev->dev, "memstick host removed\n");
+
 		writel(0, host->addr + INT_SIGNAL_ENABLE);
 		writel(0, host->addr + INT_STATUS_ENABLE);
 		mmiowb();
 		dev_dbg(&jm->pdev->dev, "interrupts off\n");
-		spin_lock_irqsave(&host->lock, flags);
-		if (host->req) {
-			host->req->error = -ETIME;
-			jmb38x_ms_complete_cmd(jm->hosts[cnt], 1);
-		}
-		spin_unlock_irqrestore(&host->lock, flags);
-
-		memstick_remove_host(jm->hosts[cnt]);
-		dev_dbg(&jm->pdev->dev, "host removed\n");
 
 		jmb38x_ms_free_host(jm->hosts[cnt]);
 	}

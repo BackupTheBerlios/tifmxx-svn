@@ -827,7 +827,7 @@ static void mspro_block_submit_req(struct request_queue *q)
 
 	if (msb->eject) {
 		while ((req = elv_next_request(q)) != NULL)
-			end_queued_request(req, -ENODEV);
+			__blk_end_request(req, -ENODEV, blk_rq_bytes(req));
 
 		return;
 	}
@@ -1043,7 +1043,6 @@ static int mspro_block_read_attributes(struct memstick_dev *card)
 
 		s_attr->dev_attr.attr.name = s_attr->name;
 		s_attr->dev_attr.attr.mode = S_IRUGO;
-		s_attr->dev_attr.attr.owner = THIS_MODULE;
 		s_attr->dev_attr.show = mspro_block_attr_show(s_attr->id);
 
 		if (!rc)
