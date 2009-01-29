@@ -123,7 +123,7 @@ static inline void mtdx_oob_iter_dec(struct mtdx_oob_iter *m_oob,
 		m_oob->pos = 0;
 }
 
-static inline char *mtdx_oob_iter_get(struct mtdx_oob_iter *m_oob)
+static inline void *mtdx_oob_iter_get(struct mtdx_oob_iter *m_oob)
 {
 	return &m_oob->data[m_oob->pos];
 }
