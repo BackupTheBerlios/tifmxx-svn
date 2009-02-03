@@ -314,9 +314,8 @@ static ssize_t ms_block_boot_address_show(struct device *dev,
 					  char *buf)
 {
 	int idx = (attr == &ms_block_boot_address[1]) ? 1 : 0;
-	struct ms_block_data *msb
-		= memstick_get_drvdata(container_of(dev, struct memstick_dev,
-						    dev));
+	struct ms_block_data *msb = dev_get_drvdata(dev);
+
 	return scnprintf(buf, PAGE_SIZE, "%08x",
 			 msb->boot_blocks[idx].phy_block);
 }
@@ -326,9 +325,8 @@ static ssize_t ms_block_boot_record_show(struct device *dev,
 					 char *buf)
 {
 	int idx = (attr == &ms_block_boot_record[1]) ? 1 : 0;
-	struct ms_block_data *msb
-		= memstick_get_drvdata(container_of(dev, struct memstick_dev,
-						    dev));
+	struct ms_block_data *msb = dev_get_drvdata(dev);
+
 	ssize_t rc = min(msb->boot_blocks[idx].size, (unsigned int)PAGE_SIZE);
 
 	if (rc)
@@ -342,9 +340,8 @@ static ssize_t ms_block_info_show(struct device *dev,
 				  char *buf)
 {
 	int idx = (attr == &ms_block_info[1]) ? 1 : 0;
-	struct ms_block_data *msb
-		= memstick_get_drvdata(container_of(dev, struct memstick_dev,
-						    dev));
+	struct ms_block_data *msb = dev_get_drvdata(dev);
+
 	ssize_t rc = 0;
 	struct ms_block_boot_attr_info *info;
 	unsigned short as_year;
@@ -420,9 +417,8 @@ static ssize_t ms_block_defects_show(struct device *dev,
 				     char *buf)
 {
 	int idx = (attr == &ms_block_defects[1]) ? 1 : 0;
-	struct ms_block_data *msb
-		= memstick_get_drvdata(container_of(dev, struct memstick_dev,
-						    dev));
+	struct ms_block_data *msb = dev_get_drvdata(dev);
+
 	unsigned int cnt;
 	ssize_t rc = 0;
 
@@ -443,9 +439,7 @@ static ssize_t ms_block_cis_show(struct device *dev,
 				 char *buf)
 {
 	int idx = (attr == &ms_block_cis[1]) ? 1 : 0;
-	struct ms_block_data *msb
-		= memstick_get_drvdata(container_of(dev, struct memstick_dev,
-						    dev));
+	struct ms_block_data *msb = dev_get_drvdata(dev);
 
 	if (!msb->boot_blocks[idx].cis_idi)
 		return 0;
@@ -460,9 +454,8 @@ static ssize_t ms_block_idi_show(struct device *dev,
 {
 	int idx = (attr == &ms_block_idi[1]) ? 1 : 0;
 	int cnt;
-	struct ms_block_data *msb
-		= memstick_get_drvdata(container_of(dev, struct memstick_dev,
-						    dev));
+	struct ms_block_data *msb = dev_get_drvdata(dev);
+
 	ssize_t rc = 0;
 	struct ms_block_idi *idi;
 
@@ -2255,28 +2248,27 @@ static void ms_block_mtdx_new_request(struct mtdx_dev *this_dev,
 	msb->card->host->request(msb->card->host);
 }
 
-static int ms_block_sysfs_register(struct memstick_dev *card)
+static int ms_block_sysfs_register(struct ms_block_data *msb)
 {
-	struct ms_block_data *msb = memstick_get_drvdata(card);
 	int rc;
 
-	rc = sysfs_create_group(&card->dev.kobj, &ms_block_grp_boot0);
+	rc = sysfs_create_group(&msb->mdev->dev.kobj, &ms_block_grp_boot0);
 	if (rc)
 		return rc;
 
-	rc = sysfs_create_group(&card->dev.kobj, &ms_block_grp_boot1);
+	rc = sysfs_create_group(&msb->mdev->dev.kobj, &ms_block_grp_boot1);
 	if (rc)
 		goto err_out_boot0;
 
 	if (!msb->read_only)
-		rc = device_create_file(&card->dev, &dev_attr_format);
+		rc = device_create_file(&msb->mdev->dev, &dev_attr_format);
 
 	if (!rc)
 		return 0;
 
-	sysfs_remove_group(&card->dev.kobj, &ms_block_grp_boot1);
+	sysfs_remove_group(&msb->mdev->dev.kobj, &ms_block_grp_boot1);
 err_out_boot0:
-	sysfs_remove_group(&card->dev.kobj, &ms_block_grp_boot0);
+	sysfs_remove_group(&msb->mdev->dev.kobj, &ms_block_grp_boot0);
 	return rc;
 }
 
@@ -2528,7 +2520,7 @@ static int ms_block_probe(struct memstick_dev *card)
 	if (rc)
 		goto err_out_free_mdev;
 
-	rc = ms_block_sysfs_register(card);
+	rc = ms_block_sysfs_register(msb);
 	dev_dbg(&card->dev, "sysfs register %d\n", rc);
 
 	if (!rc) {

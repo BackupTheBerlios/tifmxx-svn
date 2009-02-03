@@ -94,7 +94,21 @@ struct xd_card_req {
 	struct scatterlist sg;
 };
 
-struct xd_host {
+enum xd_card_param {
+	XD_CARD_POWER = 1,
+	XD_CARD_CLOCK,
+	XD_CARD_PAGE_SIZE,
+	XD_CARD_EXTRA_SIZE,
+	XD_CARD_ADDR_SIZE
+};
+
+#define XD_CARD_POWER_OFF 0
+#define XD_CARD_POWER_ON  1
+
+#define XD_CARD_NORMAL   0
+#define XD_CARD_SLOW     1
+
+struct xd_card_host {
 	struct device      *dev;
 	struct mutex       lock;
 	struct work_struct media_checker;
@@ -103,28 +117,38 @@ struct xd_host {
 #define XD_CARD_CAP_AUTO_CMD   2
 #define XD_CARD_CAP_SPLIT_PAGE 4
 
-	struct mtdx_dev    *card;
-	char               host_data[];
+	struct mtdx_dev       *card;
+	struct mtdx_dev_queue c_queue;
+
+	/* Notify the host that some flash memory requests are pending. */
+	void                  (*request)(struct xd_card_host *host);
+	/* Set host IO parameters (power, clock, etc).     */
+        int                   (*set_param)(struct xd_card_host *host,
+					   enum xd_card_param param,
+					   int value);
+
+	char                  host_data[];
 };
 
-void xd_host_detect_media(struct xd_host *host);
-void xd_host_eject_media(struct xd_host *host);
-int xd_host_suspend(struct xd_host *host);
-void xd_host_resume(struct xd_host *host);
+void xd_host_detect_media(struct xd_card_host *host);
+void xd_host_eject_media(struct xd_card_host *host);
+int xd_host_suspend(struct xd_card_host *host);
+void xd_host_resume(struct xd_card_host *host);
 
-/* struct xd_host will be set as host driver's device drvdata. Host driver
+/* Struct xd_host will be set as host driver's device drvdata. Host driver
  * can use host_data field to store the rest of it's private bits.
  */
-struct xd_host *xd_card_alloc_host(struct device *dev, unsigned int extra);
-void xd_host_free(struct xd_host *host);
+struct xd_card_host *xd_card_alloc_host(struct device *dev,
+					unsigned long extra);
+void xd_card_free_host(struct xd_card_host *host);
 
 
-static inline void *xd_host_private(struct xd_host *host)
+static inline void *xd_card_host_private(struct xd_card_host *host)
 {
 	return (void *)host->host_data;
 }
 
-static inline struct xd_host *xd_host_from_dev(struct device *dev)
+static inline struct xd_card_host *xd_card_host_from_dev(struct device *dev)
 {
 	return dev_get_drvdata(dev);
 }

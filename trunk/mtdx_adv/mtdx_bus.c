@@ -20,7 +20,6 @@ static struct device_type mtdx_type = {
 	.name = "mtdx"
 };
 
-
 static void mtdx_free_dev(struct device *dev)
 {
 	struct mtdx_dev *mdev = container_of(dev, struct mtdx_dev, dev);
